@@ -18,7 +18,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <cyhal_uart.h>
-#include <cyhal_utils_psoc.h>
+#include <cyhal_utils_impl.h>
 #include <cyhal_scb_common.h>
 
 /* Data structure */
@@ -153,11 +153,14 @@ static uint32_t _convert_uart_data_bits_z_to_cyhal(enum uart_config_data_bits da
 
 static int32_t _get_hw_block_num(CySCB_Type *reg_addr)
 {
+	extern const uint8_t _CYHAL_SCB_BASE_ADDRESS_INDEX[_SCB_ARRAY_SIZE];
+	extern CySCB_Type *const _CYHAL_SCB_BASE_ADDRESSES[_SCB_ARRAY_SIZE];
+
 	uint32_t i;
 
 	for (i = 0u; i < _SCB_ARRAY_SIZE; i++) {
 		if (_CYHAL_SCB_BASE_ADDRESSES[i] == reg_addr) {
-			return i;
+			return _CYHAL_SCB_BASE_ADDRESS_INDEX[i];
 		}
 	}
 
@@ -227,9 +230,13 @@ static int ifx_cat1_uart_configure(const struct device *dev,
 		result = cyhal_uart_set_baud(&data->obj, cfg->baudrate, NULL);
 	}
 
+	/* Set RTS/CTS flow control pins as NC so cyhal will skip initialization */
+	data->obj.pin_cts = NC;
+	data->obj.pin_rts = NC;
+
 	/* Enable RTS/CTS flow control */
 	if ((result == CY_RSLT_SUCCESS) && cfg->flow_ctrl) {
-		result = cyhal_uart_enable_flow_control(&data->obj, true, true);
+		Cy_SCB_UART_EnableCts(data->obj.base);
 	}
 
 	return (result == CY_RSLT_SUCCESS) ? 0 : -ENOTSUP;
@@ -433,6 +440,11 @@ static int ifx_cat1_uart_init(const struct device *dev)
 		.resource = &data->hw_resource,
 		.config = &_cyhal_uart_default_config,
 		.clock = &data->clock,
+		.gpios = {
+			.pin_tx  = NC,
+			.pin_rts = NC,
+			.pin_cts = NC,
+		},
 	};
 
 	/* Dedicate SCB HW resource */
@@ -473,7 +485,7 @@ static int ifx_cat1_uart_init(const struct device *dev)
 	return ret;
 }
 
-static const struct uart_driver_api ifx_cat1_uart_driver_api = {
+static DEVICE_API(uart, ifx_cat1_uart_driver_api) = {
 	.poll_in = ifx_cat1_uart_poll_in,
 	.poll_out = ifx_cat1_uart_poll_out,
 	.err_check = ifx_cat1_uart_err_check,
@@ -517,7 +529,7 @@ static const struct uart_driver_api ifx_cat1_uart_driver_api = {
 	};										     \
 											     \
 	DEVICE_DT_INST_DEFINE(n,							     \
-			      &ifx_cat1_uart_init, NULL,				     \
+			      ifx_cat1_uart_init, NULL,					     \
 			      &ifx_cat1_uart##n##_data,					     \
 			      &ifx_cat1_uart##n##_cfg, PRE_KERNEL_1,			     \
 			      CONFIG_SERIAL_INIT_PRIORITY,				     \

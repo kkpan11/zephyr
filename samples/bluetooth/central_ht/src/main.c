@@ -174,7 +174,7 @@ static bool eir_found(struct bt_data *data, void *user_data)
 		}
 
 		for (i = 0; i < data->data_len; i += sizeof(uint16_t)) {
-			struct bt_uuid *uuid;
+			const struct bt_uuid *uuid;
 			uint16_t u16;
 			int err;
 
@@ -243,7 +243,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	printk("Disconnected: %s (reason 0x%02x)\n", addr, reason);
+	printk("Disconnected: %s, reason 0x%02x %s\n", addr, reason, bt_hci_err_to_str(reason));
 
 	if (default_conn != conn) {
 		return;

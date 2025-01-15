@@ -8,7 +8,7 @@
 #include <zephyr/device.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
-#include <zephyr/arch/arm/aarch32/cortex_m/fpu.h>
+#include <zephyr/arch/arm/cortex_m/fpu.h>
 
 #include <tfm_ns_interface.h>
 
@@ -28,14 +28,14 @@ int32_t tfm_ns_interface_dispatch(veneer_fn fn,
 				  uint32_t arg0, uint32_t arg1,
 				  uint32_t arg2, uint32_t arg3)
 {
-	int32_t result;
-	bool is_pre_kernel = k_is_pre_kernel();
+	bool isr_mode = k_is_in_isr() || k_is_pre_kernel();
 	int tfm_ns_saved_prio;
+	int32_t result;
 
-	if (!is_pre_kernel) {
+	if (!isr_mode) {
 		/* TF-M request protected by NS lock */
 		if (k_mutex_lock(&tfm_mutex, K_FOREVER) != 0) {
-			return (int32_t)TFM_ERROR_GENERIC;
+			return (int32_t)PSA_ERROR_GENERIC_ERROR;
 		}
 
 #if !defined(CONFIG_ARM_NONSECURE_PREEMPTIBLE_SECURE_CALLS)
@@ -61,7 +61,7 @@ int32_t tfm_ns_interface_dispatch(veneer_fn fn,
 
 	z_arm_restore_fp_context(&context_buffer);
 
-	if (!is_pre_kernel) {
+	if (!isr_mode) {
 #if !defined(CONFIG_ARM_NONSECURE_PREEMPTIBLE_SECURE_CALLS)
 		/* Restore thread priority, to allow the thread to be preempted. */
 		k_thread_priority_set(k_current_get(), tfm_ns_saved_prio);
@@ -79,7 +79,7 @@ uint32_t tfm_ns_interface_init(void)
 	 * The static K_MUTEX_DEFINE handles mutex initialization,
 	 * so this function may be implemented as no-op.
 	 */
-	return TFM_SUCCESS;
+	return PSA_SUCCESS;
 }
 
 
@@ -90,7 +90,7 @@ uint32_t tfm_ns_interface_init(void)
 static int ns_interface_init(void)
 {
 
-	__ASSERT(tfm_ns_interface_init() == TFM_SUCCESS,
+	__ASSERT(tfm_ns_interface_init() == PSA_SUCCESS,
 		"TF-M NS interface init failed");
 
 	return 0;

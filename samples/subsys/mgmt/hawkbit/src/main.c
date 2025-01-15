@@ -5,13 +5,15 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/mgmt/hawkbit.h>
+#include <zephyr/mgmt/hawkbit/hawkbit.h>
+#include <zephyr/mgmt/hawkbit/config.h>
+#include <zephyr/mgmt/hawkbit/autohandler.h>
+#include <zephyr/mgmt/hawkbit/event.h>
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log.h>
-
-#include "dhcp.h"
+#include <zephyr/data/json.h>
 
 #if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
 #include <zephyr/net/tls_credentials.h>
@@ -20,33 +22,103 @@
 
 LOG_MODULE_REGISTER(main);
 
+#ifdef CONFIG_HAWKBIT_CUSTOM_ATTRIBUTES
+struct hawkbit_cfg_data {
+	const char *VIN;
+	const char *customAttr;
+};
+
+struct hawkbit_cfg {
+	const char *mode;
+	struct hawkbit_cfg_data data;
+};
+
+static const struct json_obj_descr json_cfg_data_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct hawkbit_cfg_data, VIN, JSON_TOK_STRING),
+	JSON_OBJ_DESCR_PRIM(struct hawkbit_cfg_data, customAttr, JSON_TOK_STRING),
+};
+
+static const struct json_obj_descr json_cfg_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct hawkbit_cfg, mode, JSON_TOK_STRING),
+	JSON_OBJ_DESCR_OBJECT(struct hawkbit_cfg, data, json_cfg_data_descr),
+};
+
+int hawkbit_new_config_data_cb(const char *device_id, uint8_t *buffer, const size_t buffer_size)
+{
+	struct hawkbit_cfg cfg = {
+		.mode = "merge",
+		.data.VIN = device_id,
+		.data.customAttr = "Hello World!",
+	};
+
+	return json_obj_encode_buf(json_cfg_descr, ARRAY_SIZE(json_cfg_descr), &cfg, buffer,
+				   buffer_size);
+}
+#endif /* CONFIG_HAWKBIT_CUSTOM_ATTRIBUTES */
+
+#ifdef CONFIG_HAWKBIT_EVENT_CALLBACKS
+void hawkbit_event_cb(struct hawkbit_event_callback *cb, enum hawkbit_event_type event)
+{
+	LOG_INF("hawkBit event: %d", event);
+
+	switch (event) {
+	case HAWKBIT_EVENT_START_RUN:
+		LOG_INF("Run of hawkBit started");
+		break;
+
+	case HAWKBIT_EVENT_END_RUN:
+		LOG_INF("Run of hawkBit ended");
+		break;
+
+	default:
+		break;
+	}
+}
+
+static HAWKBIT_EVENT_CREATE_CALLBACK(hb_event_cb_start, hawkbit_event_cb, HAWKBIT_EVENT_START_RUN);
+static HAWKBIT_EVENT_CREATE_CALLBACK(hb_event_cb_end, hawkbit_event_cb, HAWKBIT_EVENT_END_RUN);
+#endif /* CONFIG_HAWKBIT_EVENT_CALLBACKS */
+
 int main(void)
 {
 	int ret = -1;
 
-	LOG_INF("Hawkbit sample app started");
+	LOG_INF("hawkBit sample app started");
 	LOG_INF("Image build time: " __DATE__ " " __TIME__);
-
-	app_dhcpv4_startup();
 
 #if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
 	tls_credential_add(CA_CERTIFICATE_TAG, TLS_CREDENTIAL_CA_CERTIFICATE,
 			   ca_certificate, sizeof(ca_certificate));
 #endif
+#ifdef CONFIG_HAWKBIT_CUSTOM_ATTRIBUTES
+	ret = hawkbit_set_custom_data_cb(hawkbit_new_config_data_cb);
+	if (ret < 0) {
+		LOG_ERR("Failed to set custom data callback");
+	}
+#endif /* CONFIG_HAWKBIT_CUSTOM_ATTRIBUTES */
+
+#ifdef CONFIG_HAWKBIT_EVENT_CALLBACKS
+	hawkbit_event_add_callback(&hb_event_cb_start);
+	hawkbit_event_add_callback(&hb_event_cb_end);
+#endif /* CONFIG_HAWKBIT_EVENT_CALLBACKS */
 
 	ret = hawkbit_init();
-
 	if (ret < 0) {
-		LOG_ERR("Failed to init hawkbit");
+		LOG_ERR("Failed to init hawkBit");
 	}
 
+#ifdef CONFIG_HAWKBIT_SET_SETTINGS_RUNTIME
+	hawkbit_set_server_addr(CONFIG_HAWKBIT_SERVER);
+	hawkbit_set_server_port(CONFIG_HAWKBIT_PORT);
+#endif
+
 #if defined(CONFIG_HAWKBIT_POLLING)
-	LOG_INF("Starting hawkbit polling mode");
-	hawkbit_autohandler();
+	LOG_INF("Starting hawkBit polling mode");
+	hawkbit_autohandler(true);
 #endif
 
 #if defined(CONFIG_HAWKBIT_MANUAL)
-	LOG_INF("Starting hawkbit manual mode");
+	LOG_INF("Starting hawkBit manual mode");
 
 	switch (hawkbit_probe()) {
 	case HAWKBIT_UNCONFIRMED_IMAGE:
@@ -62,20 +134,12 @@ int main(void)
 		LOG_INF("No update found");
 		break;
 
-	case HAWKBIT_CANCEL_UPDATE:
-		LOG_INF("Hawkbit update cancelled from server");
-		break;
-
-	case HAWKBIT_OK:
-		LOG_INF("Image is already updated");
-		break;
-
 	case HAWKBIT_UPDATE_INSTALLED:
 		LOG_INF("Update installed");
 		break;
 
 	case HAWKBIT_PROBE_IN_PROGRESS:
-		LOG_INF("Hawkbit is already running");
+		LOG_INF("hawkBit is already running");
 		break;
 
 	default:

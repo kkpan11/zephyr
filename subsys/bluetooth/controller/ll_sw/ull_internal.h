@@ -8,15 +8,19 @@
  *  User CPR Interval
  */
 #if !defined(CONFIG_BT_CTLR_USER_CPR_INTERVAL_MIN)
+#if defined(CONFIG_BT_CTLR_CONN_INTERVAL_LOW_LATENCY)
+#define CONN_INTERVAL_MIN(x) (0U)
+#else /* !CONFIG_BT_CTLR_CONN_INTERVAL_LOW_LATENCY */
 /* Bluetooth defined CPR Interval Minimum (7.5ms) */
-#define CONN_INTERVAL_MIN(x) (6)
+#define CONN_INTERVAL_MIN(x) (6U)
+#endif /* !CONFIG_BT_CTLR_CONN_INTERVAL_LOW_LATENCY */
 #else /* CONFIG_BT_CTLR_USER_CPR_INTERVAL_MIN */
 /* Proprietary user defined CPR Interval Minimum */
-#define CONN_INTERVAL_MIN(x) (MAX(ull_conn_interval_min_get(x), 1))
+#define CONN_INTERVAL_MIN(x) (MAX(ull_conn_interval_min_get(x), 1U))
 #endif /* CONFIG_BT_CTLR_USER_CPR_INTERVAL_MIN */
 
 /**
- *  User deferance of CPR Anchor Point Move
+ *  User deference of CPR Anchor Point Move
  */
 #if !defined(CONFIG_BT_CTLR_USER_CPR_ANCHOR_POINT_MOVE)
 #define DEFER_APM_CHECK(x, y, z) (false)
@@ -44,6 +48,9 @@ extern bool ull_handle_cpr_anchor_point_move(struct ll_conn *conn, uint16_t *off
 
 /* Macro to convert time in us to periodic advertising interval units */
 #define RADIO_SYNC_EVENTS(x, y) ((uint16_t)DIV_ROUND_UP(x, y))
+
+/* Macro to mark address type as identity address from RPA (0x02, 0x03) */
+#define MARK_AS_IDENTITY_ADDR(addr_type) ((addr_type) += 2U)
 
 static inline uint8_t ull_ref_get(struct ull_hdr *hdr)
 {
@@ -107,19 +114,21 @@ void ull_drift_ticks_get(struct node_rx_event_done *done,
 #define RXFIFO_DEFINE(_name, _size, _count, _extra_links) \
 	MFIFO_DEFINE(_name, sizeof(void *), _count); \
 	\
-	static struct { \
-		void *free; \
+	static const struct { \
 		uint16_t size; \
 		uint8_t count; \
 		uint8_t extra_links; \
-		uint8_t pool[MROUND(_size) * (_count)]; \
 	} mem_##_name = { .size = MROUND(_size), .count = _count, \
 			  .extra_links = _extra_links }; \
 	\
 	static struct { \
 		void *free; \
-		uint8_t pool[sizeof(memq_link_t) * \
-		     (_count + _extra_links)]; \
+		uint8_t pool[MROUND(_size) * (_count)]; \
+	} mem_pool_##_name; \
+	\
+	static struct { \
+		void *free; \
+		uint8_t pool[sizeof(memq_link_t) * (_count + _extra_links)]; \
 	} mem_link_##_name
 
 /**
@@ -129,11 +138,12 @@ void ull_drift_ticks_get(struct node_rx_event_done *done,
  */
 #define RXFIFO_INIT(_name) \
 	MFIFO_INIT(_name); \
-	mem_init(mem_##_name.pool, mem_##_name.size, \
-		 mem_##_name.count, &mem_##_name.free); \
+	mem_init(mem_pool_##_name.pool, mem_##_name.size, \
+		 mem_##_name.count, &mem_pool_##_name.free); \
 	\
-	mem_init(mem_link_##_name.pool, sizeof(memq_link_t), mem_##_name.count + \
-		 mem_##_name.extra_links, &mem_link_##_name.free)
+	mem_init(mem_link_##_name.pool, sizeof(memq_link_t), \
+		 (mem_##_name.count + mem_##_name.extra_links), \
+		 &mem_link_##_name.free)
 
 /**
  * @brief   Allocate FIFO elements with backing
@@ -141,8 +151,9 @@ void ull_drift_ticks_get(struct node_rx_event_done *done,
  *          enqueuing pointers to memory elements with associated memq links.
  */
 #define RXFIFO_ALLOC(_name, _count) \
-	ull_rxfifo_alloc(mfifo_##_name.s, mfifo_##_name.n, mfifo_##_name.f, \
-			 &mfifo_##_name.l, mfifo_##_name.m, &mem_##_name.free, \
+	ull_rxfifo_alloc(mfifo_##_name.s, mfifo_##_name.n, \
+			 mfifo_fifo_##_name.f, &mfifo_fifo_##_name.l, \
+			 mfifo_fifo_##_name.m, &mem_pool_##_name.free, \
 			 &mem_link_##_name.free, _count)
 
 /**
@@ -157,11 +168,13 @@ void ull_drift_ticks_get(struct node_rx_event_done *done,
  * @details Enqueues an RX node back into the FIFO.
  */
 #define RXFIFO_RELEASE(_name, _link, _rx) \
-	ull_rxfifo_release(mfifo_##_name.s, mfifo_##_name.n, mfifo_##_name.f, \
-			   &mfifo_##_name.l, mfifo_##_name.m, _link, \
+	ull_rxfifo_release(mfifo_##_name.s, mfifo_##_name.n, \
+			   mfifo_fifo_##_name.f, &mfifo_fifo_##_name.l, \
+			   mfifo_fifo_##_name.m, _link, \
 			   (struct node_rx_hdr *)_rx)
 
 void ull_rxfifo_alloc(uint8_t s, uint8_t n, uint8_t f, uint8_t *l, uint8_t *m,
 		      void *mem_free, void *link_free, uint8_t max);
 void *ull_rxfifo_release(uint8_t s, uint8_t n, uint8_t f, uint8_t *l, uint8_t *m,
 			 memq_link_t *link, struct node_rx_hdr *rx);
+uint32_t ull_get_wrapped_time_us(uint32_t time_now_us, int32_t time_diff_us);

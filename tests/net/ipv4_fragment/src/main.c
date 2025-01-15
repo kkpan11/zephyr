@@ -13,14 +13,14 @@ LOG_MODULE_REGISTER(net_ipv4_test, CONFIG_NET_IPV4_LOG_LEVEL);
 #include <string.h>
 #include <errno.h>
 #include <zephyr/linker/sections.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 #include <zephyr/ztest.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/dummy.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_if.h>
-#include <fcntl.h>
+#include <zephyr/posix/fcntl.h>
 #include <zephyr/net/socket.h>
 #include <net_private.h>
 #include <ipv4.h>
@@ -31,7 +31,7 @@ LOG_MODULE_REGISTER(net_ipv4_test, CONFIG_NET_IPV4_LOG_LEVEL);
 #define IPV4_TEST_PACKET_SIZE 2048
 
 /* Wait times for semaphores and buffers */
-#define WAIT_TIME K_SECONDS(2)
+#define WAIT_TIME K_MSEC(1100)
 #define ALLOC_TIMEOUT K_MSEC(500)
 
 /* Dummy network addresses, 192.168.8.1 and 192.168.8.2 */
@@ -636,7 +636,7 @@ ZTEST(net_ipv4_fragment, test_udp)
 	net_pkt_cursor_init(pkt);
 	net_pkt_set_overwrite(pkt, true);
 	net_pkt_skip(pkt, net_pkt_ip_hdr_len(pkt));
-	net_udp_finalize(pkt);
+	net_udp_finalize(pkt, false);
 
 	pkt_recv_expected_size = net_pkt_get_len(pkt);
 
@@ -706,7 +706,7 @@ ZTEST(net_ipv4_fragment, test_tcp)
 	net_pkt_set_overwrite(pkt, true);
 	net_pkt_skip(pkt, net_pkt_ip_hdr_len(pkt));
 
-	net_tcp_finalize(pkt);
+	net_tcp_finalize(pkt, false);
 
 	pkt_recv_expected_size = net_pkt_get_len(pkt);
 
@@ -776,7 +776,7 @@ ZTEST(net_ipv4_fragment, test_fragment_timeout)
 	zassert_equal(packets, 1, "Expected fragment to be present in buffer");
 
 	/* Delay briefly and re-check number of pending reassembly packets */
-	k_sleep(K_SECONDS(6));
+	k_sleep(K_MSEC(1100));
 	packets = 0;
 	net_ipv4_frag_foreach(reassembly_foreach_cb, &packets);
 	zassert_equal(packets, 0, "Expected fragment to be dropped after timeout");
@@ -790,7 +790,7 @@ ZTEST(net_ipv4_fragment, test_fragment_timeout)
 	zassert_equal(sem_count, 0, "Expected no complete upper-layer packets");
 
 	/* Check packet counts are valid */
-	k_sleep(K_SECONDS(1));
+	k_sleep(K_MSEC(500));
 	zassert_equal(lower_layer_packet_count, 1, "Expected 1 packet at lower layers");
 	zassert_equal(upper_layer_packet_count, 0, "Expected no packets at upper layers");
 	zassert_equal(last_packet_received, 1, "Expected last packet");
@@ -849,7 +849,7 @@ ZTEST(net_ipv4_fragment, test_do_not_fragment)
 	net_pkt_cursor_init(pkt);
 	net_pkt_set_overwrite(pkt, true);
 	net_pkt_skip(pkt, net_pkt_ip_hdr_len(pkt));
-	net_udp_finalize(pkt);
+	net_udp_finalize(pkt, false);
 
 	pkt_recv_expected_size = net_pkt_get_len(pkt);
 
@@ -862,7 +862,7 @@ ZTEST(net_ipv4_fragment, test_do_not_fragment)
 		      "Expected timeout waiting for packet to be received");
 
 	/* Check packet counts are valid */
-	k_sleep(K_SECONDS(1));
+	k_sleep(K_MSEC(100));
 	zassert_equal(lower_layer_packet_count, 0, "Expected no packets at lower layers");
 	zassert_equal(upper_layer_packet_count, 0, "Expected no packets at upper layers");
 	zassert_equal(last_packet_received, 0, "Did not expect last packet");

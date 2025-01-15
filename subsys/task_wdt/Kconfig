@@ -12,9 +12,9 @@ menuconfig TASK_WDT
 	  The task watchdog allows to have individual watchdog channels
 	  per thread, even if the hardware supports only a single watchdog.
 
+if TASK_WDT
 config TASK_WDT_CHANNELS
 	int "Maximum number of task watchdog channels"
-	depends on TASK_WDT
 	default 5
 	range 2 100
 	help
@@ -23,7 +23,6 @@ config TASK_WDT_CHANNELS
 
 config TASK_WDT_HW_FALLBACK
 	bool "Use hardware watchdog as a fallback"
-	depends on TASK_WDT
 	default y
 	help
 	  This option allows to specify a hardware watchdog device in the
@@ -48,7 +47,7 @@ config TASK_WDT_HW_FALLBACK_DELAY
 	int "Additional delay for hardware watchdog (ms)"
 	depends on TASK_WDT_HW_FALLBACK
 	default 20
-	range 1 1000
+	range 1 10000
 	help
 	  The timeout of the hardware watchdog fallback will be increased by
 	  this value to provide sufficient time for corrective actions in the
@@ -58,3 +57,11 @@ config TASK_WDT_HW_FALLBACK_DELAY
 	  between different clock sources for the hardware watchdog and the
 	  kernel timer. This is especially important if the hardware watchdog
 	  is clocked by an inaccurate low-speed RC oscillator.
+
+config TASK_WDT_SHELL
+	bool "Task watchdog shell utilities"
+	depends on SHELL
+	help
+	  Activate shell module that provides Task watchdog commands.
+
+endif

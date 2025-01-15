@@ -1,7 +1,8 @@
-.. _x-nucleo-iks02a1-shub-sample:
+.. zephyr:code-sample:: x-nucleo-iks02a1-shub
+   :name: X-NUCLEO-IKS02A1 shield - SensorHub (Mode 2)
+   :relevant-api: sensor_interface
 
-X-NUCLEO-IKS02A1 shield: Sensorhub (Mode 2) sample
-##################################################
+   Interact with all the sensors of an X-NUCLEO-IKS02A1 shield using Sensor Hub mode.
 
 Overview
 ********
@@ -27,11 +28,10 @@ Requirements
 This sample communicates over I2C with the X-NUCLEO-IKS02A1 shield
 stacked on a board with an Arduino connector. The board's I2C must be
 configured for the I2C Arduino connector (both for pin muxing
-and devicetree). See for example the :ref:`nucleo_f401re_board` board
+and devicetree). See for example the :zephyr:board:`nucleo_f401re` board
 source code:
 
-- :zephyr_file:`boards/arm/nucleo_f401re/nucleo_f401re.dts`
-- :zephyr_file:`boards/arm/nucleo_f401re/pinmux.c`
+- :zephyr_file:`boards/st/nucleo_f401re/nucleo_f401re.dts`
 
 Please note that this sample can't be used with boards already supporting
 one of the sensors available on the shield (such as disco_l475_iot1)
@@ -40,13 +40,13 @@ as sensors multiple instances are not supported.
 References
 **********
 
-- X-NUCLEO-IKS02A1: http://www.st.com/en/ecosystems/x-nucleo-iks02a1.html
+- X-NUCLEO-IKS02A1: https://www.st.com/en/ecosystems/x-nucleo-iks02a1.html
 
 Building and Running
 ********************
 
 This sample runs with X-NUCLEO-IKS02A1 stacked on any board with a matching
-Arduino connector. For this example, we use a :ref:`nucleo_f401re_board` board.
+Arduino connector. For this example, we use a :zephyr:board:`nucleo_f401re` board.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/shields/x_nucleo_iks02a1/sensorhub/

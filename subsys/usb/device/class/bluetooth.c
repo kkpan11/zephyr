@@ -12,13 +12,13 @@
 #include <zephyr/usb/usb_device.h>
 #include <usb_descriptor.h>
 
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
 #include <zephyr/bluetooth/buf.h>
 #include <zephyr/bluetooth/hci_raw.h>
 #include <zephyr/bluetooth/l2cap.h>
 #include <zephyr/bluetooth/hci_vs.h>
-#include <zephyr/drivers/bluetooth/hci_driver.h>
+#include <zephyr/drivers/bluetooth.h>
 #include <zephyr/sys/atomic.h>
 
 #include <zephyr/logging/log.h>
@@ -122,14 +122,18 @@ static struct usb_ep_cfg_data bluetooth_ep_data[] = {
 	},
 };
 
-static void hci_tx_thread(void)
+static void hci_tx_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	LOG_DBG("Start USB Bluetooth thread");
 
 	while (true) {
 		struct net_buf *buf;
 
-		buf = net_buf_get(&tx_queue, K_FOREVER);
+		buf = k_fifo_get(&tx_queue, K_FOREVER);
 
 		if (IS_ENABLED(CONFIG_USB_DEVICE_BLUETOOTH_VS_H4) &&
 		    bt_hci_raw_get_mode() == BT_HCI_RAW_MODE_H4) {
@@ -174,13 +178,17 @@ static void hci_tx_thread(void)
 	}
 }
 
-static void hci_rx_thread(void)
+static void hci_rx_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	while (true) {
 		struct net_buf *buf;
 		int err;
 
-		buf = net_buf_get(&rx_queue, K_FOREVER);
+		buf = k_fifo_get(&rx_queue, K_FOREVER);
 
 		err = bt_send(buf);
 		if (err) {
@@ -288,7 +296,7 @@ static void acl_read_cb(uint8_t ep, int size, void *priv)
 	}
 
 	if (buf != NULL && pkt_len == buf->len) {
-		net_buf_put(&rx_queue, buf);
+		k_fifo_put(&rx_queue, buf);
 		LOG_DBG("put");
 		buf = NULL;
 		pkt_len = 0;
@@ -365,7 +373,7 @@ static uint8_t vs_read_usb_transport_mode(struct net_buf *buf)
 	net_buf_add_u8(rsp, BT_HCI_VS_USB_H2_MODE);
 	net_buf_add_u8(rsp, BT_HCI_VS_USB_H4_MODE);
 
-	net_buf_put(&tx_queue, rsp);
+	k_fifo_put(&tx_queue, rsp);
 
 	return BT_HCI_ERR_EXT_HANDLED;
 }
@@ -422,7 +430,7 @@ static int bluetooth_class_handler(struct usb_setup_packet *setup,
 		return -ENOMEM;
 	}
 
-	net_buf_put(&rx_queue, buf);
+	k_fifo_put(&rx_queue, buf);
 
 	return 0;
 }
@@ -467,14 +475,14 @@ static int bluetooth_init(void)
 
 	k_thread_create(&rx_thread_data, rx_thread_stack,
 			K_KERNEL_STACK_SIZEOF(rx_thread_stack),
-			(k_thread_entry_t)hci_rx_thread, NULL, NULL, NULL,
+			hci_rx_thread, NULL, NULL, NULL,
 			K_PRIO_COOP(8), 0, K_NO_WAIT);
 
 	k_thread_name_set(&rx_thread_data, "usb_bt_rx");
 
 	k_thread_create(&tx_thread_data, tx_thread_stack,
 			K_KERNEL_STACK_SIZEOF(tx_thread_stack),
-			(k_thread_entry_t)hci_tx_thread, NULL, NULL, NULL,
+			hci_tx_thread, NULL, NULL, NULL,
 			K_PRIO_COOP(8), 0, K_NO_WAIT);
 
 	k_thread_name_set(&tx_thread_data, "usb_bt_tx");

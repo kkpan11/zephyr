@@ -26,7 +26,7 @@ uint8_t mock_ext_addr_be[8] = {0x00, 0x12, 0x4b, 0x00, 0x00, 0x9e, 0xa3, 0xc2};
 
 static enum ieee802154_hw_caps fake_get_capabilities(const struct device *dev)
 {
-	return IEEE802154_HW_FCS | IEEE802154_HW_2_4_GHZ;
+	return IEEE802154_HW_FCS;
 }
 
 static int fake_cca(const struct device *dev)
@@ -36,14 +36,14 @@ static int fake_cca(const struct device *dev)
 
 static int fake_set_channel(const struct device *dev, uint16_t channel)
 {
-	NET_INFO("Channel %u\n", channel);
+	NET_INFO("Channel %u", channel);
 
 	return 0;
 }
 
 static int fake_set_txpower(const struct device *dev, int16_t dbm)
 {
-	NET_INFO("TX power %d dbm\n", dbm);
+	NET_INFO("TX power %d dbm", dbm);
 
 	return 0;
 }
@@ -68,7 +68,7 @@ static int fake_tx(const struct device *dev,
 		   struct net_pkt *pkt,
 		   struct net_buf *frag)
 {
-	NET_INFO("Sending packet %p - length %zu\n",
+	NET_INFO("Sending packet %p - length %zu",
 		 pkt, net_pkt_get_len(pkt));
 
 	if (!current_pkt) {
@@ -86,12 +86,12 @@ static int fake_tx(const struct device *dev,
 		ack_pkt = net_pkt_rx_alloc_with_buffer(iface, IEEE802154_ACK_PKT_LENGTH, AF_UNSPEC,
 						       0, K_FOREVER);
 		if (!ack_pkt) {
-			NET_ERR("*** Could not allocate ack pkt.\n");
+			NET_ERR("*** Could not allocate ack pkt.");
 			return -ENOMEM;
 		}
 
 		if (!ieee802154_create_ack_frame(iface, ack_pkt, ctx->ack_seq)) {
-			NET_ERR("*** Could not create ack frame.\n");
+			NET_ERR("*** Could not create ack frame.");
 			net_pkt_unref(ack_pkt);
 			return -EFAULT;
 		}
@@ -107,16 +107,30 @@ static int fake_tx(const struct device *dev,
 
 static int fake_start(const struct device *dev)
 {
-	NET_INFO("FAKE ieee802154 driver started\n");
+	NET_INFO("FAKE ieee802154 driver started");
 
 	return 0;
 }
 
 static int fake_stop(const struct device *dev)
 {
-	NET_INFO("FAKE ieee802154 driver stopped\n");
+	NET_INFO("FAKE ieee802154 driver stopped");
 
 	return 0;
+}
+
+/* driver-allocated attribute memory - constant across all driver instances */
+IEEE802154_DEFINE_PHY_SUPPORTED_CHANNELS(drv_attr, 11, 26);
+
+/* API implementation: attr_get */
+static int fake_attr_get(const struct device *dev, enum ieee802154_attr attr,
+			 struct ieee802154_attr_value *value)
+{
+	ARG_UNUSED(dev);
+
+	return ieee802154_attr_get_channel_page_and_range(
+		attr, IEEE802154_ATTR_PHY_CHANNEL_PAGE_ZERO_OQPSK_2450_BPSK_868_915,
+		&drv_attr.phy_supported_channels, value);
 }
 
 static void fake_iface_init(struct net_if *iface)
@@ -132,7 +146,7 @@ static void fake_iface_init(struct net_if *iface)
 	ctx->channel = 26U;
 	ctx->sequence = 62U;
 
-	NET_INFO("FAKE ieee802154 iface initialized\n");
+	NET_INFO("FAKE ieee802154 iface initialized");
 }
 
 static int fake_init(const struct device *dev)
@@ -152,6 +166,7 @@ static struct ieee802154_radio_api fake_radio_api = {
 	.start			= fake_start,
 	.stop			= fake_stop,
 	.tx			= fake_tx,
+	.attr_get		= fake_attr_get,
 };
 
 NET_DEVICE_INIT(fake, "fake_ieee802154",

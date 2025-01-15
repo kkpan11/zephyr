@@ -4,8 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <stdint.h>
+
+#include "adv.h"
 #include "subnet.h"
+#include <zephyr/bluetooth/mesh/keys.h>
 #include <zephyr/bluetooth/mesh/sar_cfg.h>
+#include <zephyr/kernel.h>
+#include <zephyr/net_buf.h>
+#include <zephyr/sys/atomic.h>
+#include <zephyr/sys/slist.h>
 
 #define BT_MESH_IV_UPDATE(flags)   ((flags >> 1) & 0x01)
 #define BT_MESH_KEY_REFRESH(flags) (flags & 0x01)
@@ -291,7 +299,7 @@ bool bt_mesh_net_iv_update(uint32_t iv_index, bool iv_update);
 int bt_mesh_net_encode(struct bt_mesh_net_tx *tx, struct net_buf_simple *buf,
 		       enum bt_mesh_nonce_type type);
 
-int bt_mesh_net_send(struct bt_mesh_net_tx *tx, struct net_buf *buf,
+int bt_mesh_net_send(struct bt_mesh_net_tx *tx, struct bt_mesh_adv *adv,
 		     const struct bt_mesh_send_cb *cb, void *cb_data);
 
 int bt_mesh_net_decode(struct net_buf_simple *in, enum bt_mesh_net_if net_if,

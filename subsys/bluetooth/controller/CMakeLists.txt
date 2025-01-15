@@ -7,6 +7,12 @@ if(CONFIG_BT_CTLR_ADVANCED_FEATURES)
 endif()
 
 zephyr_library()
+zephyr_library_link_libraries(subsys__bluetooth)
+
+if(CONFIG_BT_SHELL AND CONFIG_BT_LL_SW_SPLIT)
+  add_subdirectory(ticker/shell)
+  add_subdirectory(ll_sw/shell)
+endif()
 
 zephyr_library_sources(
   util/mem.c
@@ -20,6 +26,10 @@ zephyr_library_sources(
   ll_sw/ll_addr.c
   ll_sw/ull.c
   ll_sw/lll_common.c
+  )
+
+zephyr_library_sources_ifdef(
+  CONFIG_BT_CTLR_HCI
   hci/hci_driver.c
   hci/hci.c
   )
@@ -88,7 +98,13 @@ if(CONFIG_BT_CONN)
     ll_sw/ull_llcp_chmu.c
     ll_sw/ull_llcp_remote.c
     )
-  zephyr_library_sources_ifdef(
+    if (CONFIG_BT_CTLR_SYNC_TRANSFER_SENDER OR
+        CONFIG_BT_CTLR_SYNC_TRANSFER_RECEIVER)
+      zephyr_library_sources(
+        ll_sw/ull_llcp_past.c
+      )
+    endif()
+    zephyr_library_sources_ifdef(
     CONFIG_BT_PERIPHERAL
     ll_sw/ull_peripheral.c
     )
@@ -165,35 +181,50 @@ zephyr_library_sources_ifdef(
   flash/soc_flash_nrf_ticker.c
   )
 
+zephyr_library_include_directories(
+  .
+  include
+  ../crypto
+  )
+
+zephyr_library_include_directories_ifdef(
+  CONFIG_SOC_FLASH_NRF_RADIO_SYNC_TICKER
+  ${ZEPHYR_BASE}/drivers/flash
+  )
+
+zephyr_library_include_directories_ifdef(
+  CONFIG_BT_LLL_VENDOR_NORDIC
+  ll_sw/nordic
+  ll_sw/nordic/hci
+  )
+
+zephyr_library_include_directories_ifdef(
+  CONFIG_BT_LLL_VENDOR_OPENISA
+  ll_sw/openisa
+  ll_sw/openisa/hci
+  )
+
 add_subdirectory_ifdef(
   CONFIG_BT_CTLR_COEX_DRIVERS
   coex
   )
 
-if(CONFIG_SOC_COMPATIBLE_NRF)
-  include(ll_sw/nrf.cmake)
-elseif(CONFIG_SOC_OPENISA_RV32M1_RISCV32)
-  include(ll_sw/openisa.cmake)
-endif()
-
-zephyr_library_include_directories(
-  .
-  include
+add_subdirectory_ifdef(
+  CONFIG_BT_LLL_VENDOR_NORDIC
+  ll_sw/nordic
   )
 
-zephyr_library_include_directories_ifdef(
-  CONFIG_BT_CTLR_CRYPTO
-  ../crypto
-)
+add_subdirectory_ifdef(
+  CONFIG_BT_LLL_VENDOR_OPENISA
+  ll_sw/openisa
+  )
 
-zephyr_library_include_directories_ifdef(
-  CONFIG_SOC_FLASH_NRF_RADIO_SYNC_TICKER
-  ${ZEPHYR_BASE}/drivers/flash
-)
+zephyr_library_compile_options_ifdef(
+  CONFIG_BT_CTLR_OPTIMIZE_FOR_SIZE
+  ${OPTIMIZE_FOR_SIZE_FLAG}
+  )
 
 zephyr_library_compile_options_ifdef(
   CONFIG_BT_CTLR_OPTIMIZE_FOR_SPEED
   ${OPTIMIZE_FOR_SPEED_FLAG}
   )
-
-zephyr_library_link_libraries(subsys__bluetooth)

@@ -3,15 +3,23 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
-#ifdef CONFIG_BT_MCS
-
+#include <zephyr/autoconf.h>
+#include <zephyr/bluetooth/addr.h>
 #include <zephyr/bluetooth/audio/mcc.h>
 #include <zephyr/bluetooth/audio/media_proxy.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/services/ots.h>
+#include <zephyr/sys/printk.h>
 
+#include "bstests.h"
 #include "common.h"
 
+#ifdef CONFIG_BT_MCS
 extern enum bst_result_t bst_result;
 
 static uint64_t g_icon_object_id;
@@ -587,7 +595,7 @@ static bool test_verify_media_state_wait_flags(uint8_t expected_state)
 	return true;
 }
 
-/* Helper function to write commands to to the control point, including the
+/* Helper function to write commands to the control point, including the
  * flag handling.
  * Will FAIL on error to send the command.
  * Will WAIT for the required flags before returning.
@@ -879,7 +887,7 @@ static void test_cp_prev_track(void)
 	 * and can change between them.
 	 */
 
-	/* To verify that a track change has happeded, the test checks that the
+	/* To verify that a track change has happened, the test checks that the
 	 * current track object ID has changed.
 	 */
 
@@ -1047,7 +1055,7 @@ static void test_cp_prev_group(void)
 	 * and can change between them.
 	 */
 
-	/* To verify that a group change has happeded, the test checks that the
+	/* To verify that a group change has happened, the test checks that the
 	 * current group object ID has changed.
 	 */
 
@@ -1585,6 +1593,8 @@ void initialize_bluetooth(void)
 
 	WAIT_FOR_FLAG(ble_is_initialized);
 	printk("Bluetooth initialized\n");
+
+	bt_le_scan_cb_register(&common_scan_cb);
 }
 
 void scan_and_connect(void)
@@ -1592,7 +1602,7 @@ void scan_and_connect(void)
 	char addr[BT_ADDR_LE_STR_LEN];
 	int err;
 
-	err = bt_le_scan_start(BT_LE_SCAN_PASSIVE, device_found);
+	err = bt_le_scan_start(BT_LE_SCAN_PASSIVE, NULL);
 	if (err) {
 		FAIL("Failed to start scanning (err %d\n)", err);
 		return;
@@ -1645,7 +1655,7 @@ void test_media_controller_remote_player(void)
 	initialize_bluetooth();
 	initialize_media();
 
-	err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, AD_SIZE, NULL, 0);
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, AD_SIZE, NULL, 0);
 	if (err) {
 		FAIL("Advertising failed to start (err %d)\n", err);
 	}
@@ -1685,19 +1695,19 @@ void test_media_controller_server(void)
 static const struct bst_test_instance test_media_controller[] = {
 	{
 		.test_id = "media_controller_local_player",
-		.test_post_init_f = test_init,
+		.test_pre_init_f = test_init,
 		.test_tick_f = test_tick,
 		.test_main_f = test_media_controller_local_player
 	},
 	{
 		.test_id = "media_controller_remote_player",
-		.test_post_init_f = test_init,
+		.test_pre_init_f = test_init,
 		.test_tick_f = test_tick,
 		.test_main_f = test_media_controller_remote_player
 	},
 	{
 		.test_id = "media_controller_server",
-		.test_post_init_f = test_init,
+		.test_pre_init_f = test_init,
 		.test_tick_f = test_tick,
 		.test_main_f = test_media_controller_server
 	},

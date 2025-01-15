@@ -28,7 +28,7 @@ int main(void)
 
 	printk("PWM-based LED fade\n");
 
-	if (!device_is_ready(pwm_led0.dev)) {
+	if (!pwm_is_ready_dt(&pwm_led0)) {
 		printk("Error: PWM device %s is not ready\n",
 		       pwm_led0.dev->name);
 		return 0;
@@ -40,6 +40,7 @@ int main(void)
 			printk("Error %d: failed to set pulse width\n", ret);
 			return 0;
 		}
+		printk("Using pulse width %d%%\n", 100 * pulse_width / pwm_led0.period);
 
 		if (dir) {
 			pulse_width += step;

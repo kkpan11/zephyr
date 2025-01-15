@@ -1,0 +1,18 @@
+identifier: mps2/an385
+name: ARM V2M MPS2
+type: mcu
+arch: arm
+simulation:
+  - name: qemu
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+supported:
+  - counter
+  - netif:serial-net
+  - gpio
+  - watchdog
+testing:
+  default: true
+vendor: arm

@@ -1,7 +1,9 @@
-.. _lsm303dlhc:
+.. zephyr:code-sample:: lsmd303dlhc
+   :name: LSM303DLHC Magnetometer and Accelerometer sensor
+   :relevant-api: sensor_interface
 
-LSM303DLHC: Magnetometer and Accelerometer data Monitor
-#######################################################
+   Get magnetometer and accelerometer data from an LSM303DLHC sensor (polling
+   mode).
 
 Overview
 ********
@@ -20,7 +22,7 @@ References
 **********
 
 For more information about the LSM303DLHC eCompass module, see
-http://www.st.com/en/mems-and-sensors/lsm303dlhc.html
+https://www.st.com/en/mems-and-sensors/lsm303dlhc.html
 
 Building and Running
 ********************

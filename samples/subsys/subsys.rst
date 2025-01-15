@@ -1,10 +1,5 @@
-.. _subsystem-samples:
+.. zephyr:code-sample-category:: subsys
+   :name: Subsystems
+   :show-listing:
 
-Various Subsystems Samples
-##########################
-
-.. toctree::
-   :maxdepth: 2
-   :glob:
-
-   */*
+   These samples demonstrate how to use various subsystems supported by Zephyr.

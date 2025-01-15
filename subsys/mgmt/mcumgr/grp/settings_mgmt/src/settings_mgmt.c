@@ -120,6 +120,8 @@ static int settings_mgmt_read(struct smp_streamer *ctxt)
 
 	if (rc < 0) {
 		if (rc == -EINVAL) {
+			rc = SETTINGS_MGMT_ERR_ROOT_KEY_NOT_FOUND;
+		} else if (rc == -ENOENT) {
 			rc = SETTINGS_MGMT_ERR_KEY_NOT_FOUND;
 		} else if (rc == -ENOTSUP) {
 			rc = SETTINGS_MGMT_ERR_READ_NOT_SUPPORTED;
@@ -231,7 +233,11 @@ static int settings_mgmt_write(struct smp_streamer *ctxt)
 
 	if (rc < 0) {
 		if (rc == -EINVAL) {
+			rc = SETTINGS_MGMT_ERR_ROOT_KEY_NOT_FOUND;
+		} else if (rc == -ENOENT) {
 			rc = SETTINGS_MGMT_ERR_KEY_NOT_FOUND;
+		} else if (rc == -ENOTSUP) {
+			rc = SETTINGS_MGMT_ERR_WRITE_NOT_SUPPORTED;
 		} else {
 			rc = SETTINGS_MGMT_ERR_UNKNOWN;
 		}
@@ -329,8 +335,12 @@ static int settings_mgmt_delete(struct smp_streamer *ctxt)
 #endif
 
 	if (rc < 0) {
-		if (rc == -ENOENT) {
+		if (rc == -EINVAL) {
+			rc = SETTINGS_MGMT_ERR_ROOT_KEY_NOT_FOUND;
+		} else if (rc == -ENOENT) {
 			rc = SETTINGS_MGMT_ERR_KEY_NOT_FOUND;
+		} else if (rc == -ENOTSUP) {
+			rc = SETTINGS_MGMT_ERR_DELETE_NOT_SUPPORTED;
 		} else {
 			rc = SETTINGS_MGMT_ERR_UNKNOWN;
 		}
@@ -505,6 +515,9 @@ static struct mgmt_group settings_mgmt_group = {
 	.mg_group_id = MGMT_GROUP_ID_SETTINGS,
 #ifdef CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL
 	.mg_translate_error = settings_mgmt_translate_error_code,
+#endif
+#ifdef CONFIG_MCUMGR_GRP_ENUM_DETAILS_NAME
+	.mg_group_name = "settings mgmt",
 #endif
 };
 

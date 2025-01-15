@@ -11,18 +11,18 @@ from unidiff import PatchSet
 if "ZEPHYR_BASE" not in os.environ:
     exit("$ZEPHYR_BASE environment variable undefined.")
 
-repository_path = os.environ['ZEPHYR_BASE']
+RESERVED_NAMES_SCRIPT = "/scripts/coccinelle/reserved_names.cocci"
 
-sh_special_args = {
-    '_tty_out': False,
-    '_cwd': repository_path
-}
-
-coccinelle_scripts = ["/scripts/coccinelle/reserved_names.cocci",
+coccinelle_scripts = [RESERVED_NAMES_SCRIPT,
                       "/scripts/coccinelle/same_identifier.cocci",
                       #"/scripts/coccinelle/identifier_length.cocci",
                       ]
 
+coccinelle_reserved_names_exclude_regex = [
+    r"lib/libc/.*",
+    r"lib/posix/.*",
+    r"include/zephyr/posix/.*",
+]
 
 def parse_coccinelle(contents: str, violations: dict):
     reg = re.compile("([a-zA-Z0-9_/]*\\.[ch]:[0-9]*)(:[0-9\\-]*: )(.*)")
@@ -38,7 +38,9 @@ def parse_coccinelle(contents: str, violations: dict):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Check if change requires full twister", allow_abbrev=False)
+        description="Check commits against Cocccinelle rules", allow_abbrev=False)
+    parser.add_argument('-r', "--repository", required=False,
+                        help="Path to repository")
     parser.add_argument('-c', '--commits', default=None,
                         help="Commit range in the form: a..b")
     parser.add_argument("-o", "--output", required=False,
@@ -50,6 +52,16 @@ def main():
     args = parse_args()
     if not args.commits:
         exit("missing commit range")
+
+    if args.repository is None:
+        repository_path = os.environ['ZEPHYR_BASE']
+    else:
+        repository_path = args.repository
+
+    sh_special_args = {
+        '_tty_out': False,
+        '_cwd': repository_path
+    }
 
     # pylint does not like the 'sh' library
     # pylint: disable=too-many-function-args,unexpected-keyword-arg
@@ -64,7 +76,18 @@ def main():
             continue
 
         for script in coccinelle_scripts:
-            script_path = os.getenv("ZEPHYR_BASE") + "/" + script
+
+            skip_reserved_names = False
+            if script == RESERVED_NAMES_SCRIPT:
+                for path in coccinelle_reserved_names_exclude_regex:
+                    if re.match(path, f.path):
+                        skip_reserved_names = True
+                        break
+
+            if skip_reserved_names:
+                continue
+
+            script_path =zephyr_base + "/" + script
             print(f"Running {script} on {f.path}")
             try:
                 cocci = sh.coccicheck(

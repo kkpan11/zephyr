@@ -114,6 +114,10 @@ static int ec_host_cmd_espi_init(const struct ec_host_cmd_backend *backend,
 	espi_read_lpc_request(hc_espi->espi_dev, ECUSTOM_HOST_CMD_GET_PARAM_MEMORY_SIZE,
 			      &tx->len_max);
 
+	/* Set the max len for RX as the min of buffer to store data and shared memory. */
+	hc_espi->rx_ctx->len_max =
+		MIN(CONFIG_EC_HOST_CMD_HANDLER_RX_BUFFER_SIZE, hc_espi->tx->len_max);
+
 	hc_espi->state = ESPI_STATE_READY_TO_RECV;
 
 	return 0;
@@ -127,8 +131,9 @@ static int ec_host_cmd_espi_send(const struct ec_host_cmd_backend *backend)
 	int ret;
 
 	/* Ignore in-progress on eSPI since interface is synchronous anyway */
-	if (result == EC_HOST_CMD_IN_PROGRESS)
+	if (result == EC_HOST_CMD_IN_PROGRESS) {
 		return 0;
+	}
 
 	hc_espi->state = ESPI_STATE_SENDING;
 

@@ -61,6 +61,18 @@
 #endif
 
 /**
+ * @def CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+ *
+ * The maximum number of EID-to-RLOC cache entries that can be used for
+ * "snoop optimization" where an entry is created by inspecting a received message.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+#define OPENTHREAD_CONFIG_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES                  \
+	CONFIG_OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+#endif
+
+/**
  * @def OPENTHREAD_CONFIG_LOG_PREPEND_LEVEL
  *
  * Define to prepend the log level to all log messages.
@@ -199,8 +211,9 @@
  *
  */
 #define OPENTHREAD_CONFIG_PLATFORM_USEC_TIMER_ENABLE                                               \
-	(CONFIG_OPENTHREAD_CSL_RECEIVER &&                                                         \
-	 (OPENTHREAD_CONFIG_THREAD_VERSION >= OT_THREAD_VERSION_1_2))
+	((CONFIG_OPENTHREAD_CSL_RECEIVER &&                                                        \
+	  (OPENTHREAD_CONFIG_THREAD_VERSION >= OT_THREAD_VERSION_1_2)) ||                          \
+	 CONFIG_OPENTHREAD_WAKEUP_END_DEVICE)
 
 /* Zephyr does not use OpenThread's heap. mbedTLS will use heap memory allocated
  * by Zephyr. Here, we use some dummy values to prevent OpenThread warnings.
@@ -270,6 +283,16 @@
  *
  */
 #define RADIO_CONFIG_SRC_MATCH_EXT_ENTRY_NUM 0
+
+/**
+ * @def OPENTHREAD_CONFIG_MAC_CSL_REQUEST_AHEAD_US
+ *
+ * Define how many microseconds ahead should MAC deliver CSL frame to SubMac.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD
+#define OPENTHREAD_CONFIG_MAC_CSL_REQUEST_AHEAD_US CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD
+#endif /* CONFIG_OPENTHREAD_CSL_REQUEST_TIME_AHEAD */
 
 /**
  * @def OPENTHREAD_CONFIG_CSL_RECEIVE_TIME_AHEAD
@@ -385,16 +408,6 @@
 #endif
 
 /**
- * @def OPENTHREAD_CONFIG_PLATFORM_KEY_REFERENCES_ENABLE
- *
- * Set to 1 if you want to enable key reference usage support.
- *
- */
-#ifdef CONFIG_OPENTHREAD_PLATFORM_KEY_REFERENCES_ENABLE
-#define OPENTHREAD_CONFIG_PLATFORM_KEY_REFERENCES_ENABLE 1
-#endif
-
-/**
  * @def OPENTHREAD_CONFIG_PLATFORM_MAC_KEYS_EXPORTABLE_ENABLE
  *
  * Set to 1 if you want to make MAC keys exportable.
@@ -412,6 +425,16 @@
  */
 #ifdef CONFIG_OPENTHREAD_MESSAGE_BUFFER_SIZE
 #define OPENTHREAD_CONFIG_MESSAGE_BUFFER_SIZE CONFIG_OPENTHREAD_MESSAGE_BUFFER_SIZE
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_PLATFORM_MESSAGE_MANAGEMENT
+ *
+ * The message pool is managed by platform defined logic.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_PLATFORM_MESSAGE_MANAGEMENT
+#define OPENTHREAD_CONFIG_PLATFORM_MESSAGE_MANAGEMENT CONFIG_OPENTHREAD_PLATFORM_MESSAGE_MANAGEMENT
 #endif
 
 /**
@@ -437,17 +460,6 @@
 #endif
 
 /**
- * @def OPENTHREAD_CONFIG_PLATFORM_POWER_CALIBRATION_ENABLE
- *
- * In Zephyr, power calibration is handled by Radio Driver, so it can't be handled on OT level.
- *
- */
-#ifndef OPENTHREAD_CONFIG_PLATFORM_POWER_CALIBRATION_ENABLE
-#define OPENTHREAD_CONFIG_PLATFORM_POWER_CALIBRATION_ENABLE 0
-#endif
-
-
-/**
  * @def OPENTHREAD_CONFIG_RADIO_STATS
  *
  * Enable support for Radio Statistics.
@@ -455,6 +467,47 @@
  */
 #ifdef CONFIG_OPENTHREAD_RADIO_STATS
 #define OPENTHREAD_CONFIG_RADIO_STATS_ENABLE CONFIG_OPENTHREAD_RADIO_STATS
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_STORE_FRAME_COUNTER_AHEAD
+ *
+ * The value ahead of the current frame counter for persistent storage.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_STORE_FRAME_COUNTER_AHEAD
+#define OPENTHREAD_CONFIG_STORE_FRAME_COUNTER_AHEAD CONFIG_OPENTHREAD_STORE_FRAME_COUNTER_AHEAD
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_CHILD_SUPERVISION_CHECK_TIMEOUT
+ *
+ * The value of the child supervision check timeout in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CHILD_SUPERVISION_CHECK_TIMEOUT
+#define OPENTHREAD_CONFIG_CHILD_SUPERVISION_CHECK_TIMEOUT                                          \
+	CONFIG_OPENTHREAD_CHILD_SUPERVISION_CHECK_TIMEOUT
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL
+ *
+ * The value of the child supervision interval in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_CHILD_SUPERVISION_INTERVAL
+#define OPENTHREAD_CONFIG_CHILD_SUPERVISION_INTERVAL CONFIG_OPENTHREAD_CHILD_SUPERVISION_INTERVAL
+#endif
+
+/**
+ * @def OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT
+ *
+ * The value of the MLE child timeout in seconds.
+ *
+ */
+#ifdef CONFIG_OPENTHREAD_MLE_CHILD_TIMEOUT
+#define OPENTHREAD_CONFIG_MLE_CHILD_TIMEOUT_DEFAULT CONFIG_OPENTHREAD_MLE_CHILD_TIMEOUT
 #endif
 
 #endif  /* OPENTHREAD_CORE_ZEPHYR_CONFIG_H_ */

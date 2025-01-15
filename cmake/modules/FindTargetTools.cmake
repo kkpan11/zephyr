@@ -31,7 +31,8 @@ endif()
 set(CMAKE_C_COMPILER_FORCED   1)
 set(CMAKE_CXX_COMPILER_FORCED 1)
 
-# No official documentation exists for the "Generic" value, except their wiki.
+# https://cmake.org/cmake/help/latest/variable/CMAKE_SYSTEM_NAME.html:
+#   The name of the operating system for which CMake is to build.
 #
 # https://gitlab.kitware.com/cmake/community/wikis/doc/cmake/CrossCompiling:
 #   CMAKE_SYSTEM_NAME : this one is mandatory, it is the name of the target
@@ -74,7 +75,7 @@ else()
   set(CMAKE_CXX_BYTE_ORDER LITTLE_ENDIAN)
 endif()
 
-# We are not building dynamically loadable libraries
+# Do not build dynamically loadable libraries by default
 set(BUILD_SHARED_LIBS OFF)
 
 # Custom targets for compiler and linker flags.
@@ -103,6 +104,8 @@ include(${TOOLCHAIN_ROOT}/cmake/compiler/${COMPILER}/target.cmake OPTIONAL)
 include(${TOOLCHAIN_ROOT}/cmake/linker/${LINKER}/target.cmake OPTIONAL)
 include(${ZEPHYR_BASE}/cmake/bintools/bintools_template.cmake)
 include(${TOOLCHAIN_ROOT}/cmake/bintools/${BINTOOLS}/target.cmake OPTIONAL)
+
+include(${TOOLCHAIN_ROOT}/cmake/linker/target_template.cmake)
 
 set(TargetTools_FOUND TRUE)
 set(TARGETTOOLS_FOUND TRUE)

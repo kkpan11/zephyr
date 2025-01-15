@@ -10,8 +10,8 @@ menuconfig USBC_TCPC_DRIVER
 
 if USBC_TCPC_DRIVER
 
-config USBC_INIT_PRIORITY
-	int "USBC driver init priority"
+config USBC_TCPC_INIT_PRIORITY
+	int "USB-C TCPC driver init priority"
 	default 80
 	help
 	  USB-C device driver initialization priority.
@@ -19,7 +19,16 @@ config USBC_INIT_PRIORITY
 	  Note that the priority needs to be lower than the USBC stack
 	  so that it can start before the USBC sub-system.
 
+config USBC_TCPC_SHELL
+	bool "Shell commands for TCPC subsystem"
+	help
+	  Enable support for TCPC shell commands that helps with USB-C diagnostics.
+	  Example functions are printing vbus, chip information and dumping registers.
+
 source "drivers/usb_c/tcpc/Kconfig.tcpc_stm32"
+source "drivers/usb_c/tcpc/Kconfig.tcpc_numaker"
+source "drivers/usb_c/tcpc/Kconfig.tcpc_tcpci"
+source "drivers/usb_c/tcpc/Kconfig.tcpc_ps8xxx"
 
 module = USBC
 module-str = usbc

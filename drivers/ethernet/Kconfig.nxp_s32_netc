@@ -1,14 +1,14 @@
-# Copyright 2022 NXP
+# Copyright 2022-2023 NXP
 # SPDX-License-Identifier: Apache-2.0
 
 menuconfig ETH_NXP_S32_NETC
 	bool "NXP S32 Ethernet Switch and Controller (NETC) driver"
 	default y
 	depends on (DT_HAS_NXP_S32_NETC_PSI_ENABLED || DT_HAS_NXP_S32_NETC_VSI_ENABLED)
-	depends on !NET_TEST
 	select MBOX
+	select PINCTRL
 	select MDIO if DT_HAS_NXP_S32_NETC_PSI_ENABLED
-	select NOCACHE_MEMORY
+	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	help
 	  Enable Ethernet Switch and Controller (NETC) driver for NXP S32 SoCs.
 
@@ -77,7 +77,7 @@ config ETH_NXP_S32_RX_IRQ_PACKET_THRESHOLD
 config ETH_NXP_S32_RX_IRQ_TIMER_THRESHOLD
 	int "RX interrupt coalescing timer threshold"
 	default 60000
-	range 1 4294967295
+	range 1 $(UINT32_MAX)
 	help
 	  RX interrupt coalescing timer threshold, in units of NETC clock cycles.
 	  This value determines the maximum amount of time allowed between a first

@@ -33,6 +33,10 @@ static struct k_thread test_thread;
 static struct k_thread test_loprio_thread;
 K_THREAD_STACK_DEFINE(test_stack, STACK_SIZE);
 K_THREAD_STACK_DEFINE(test_loprio_stack, STACK_SIZE);
+K_MSGQ_DEFINE(msgq_high_prio_thread, sizeof(unsigned int), 4, 4);
+static K_THREAD_STACK_DEFINE(high_prio_stack_area, 4096);
+static struct k_thread high_prio_data;
+static volatile bool wake_up_by_poll = true;
 
 /**
  * @brief Test cases to verify poll
@@ -115,10 +119,13 @@ ZTEST_USER(poll_api_1cpu, test_poll_no_wait)
 		      -EINVAL,
 		      NULL);
 
+	/* can't use the initializer to misconstruct this */
 	struct k_poll_event bad_events2[] = {
-		K_POLL_EVENT_INITIALIZER(0xFU,
-					 K_POLL_MODE_NOTIFY_ONLY,
-					 &no_wait_sem),
+		{ .type = 0xFU,
+		  .state = K_POLL_STATE_NOT_READY,
+		  .mode = K_POLL_MODE_NOTIFY_ONLY,
+		  .obj = &no_wait_sem,
+		},
 	};
 	zassert_equal(k_poll(bad_events2, ARRAY_SIZE(bad_events), K_NO_WAIT),
 		      -EINVAL,
@@ -776,6 +783,40 @@ void poll_test_grant_access(void)
 			      &test_stack, &multi_sem, &multi_reply);
 }
 
+
+static void high_prio_main(void *param1, void *param2, void *param3)
+{
+	static struct k_poll_event poll_events[1];
+
+	/* Setup wake-up for message queue */
+	k_poll_event_init(&poll_events[0], K_POLL_TYPE_MSGQ_DATA_AVAILABLE, K_POLL_MODE_NOTIFY_ONLY,
+			  &msgq_high_prio_thread);
+	(void)k_poll(poll_events, 1, K_FOREVER);
+
+	zassert_equal(poll_events[0].state, K_POLL_STATE_MSGQ_DATA_AVAILABLE);
+	zassert_equal(wake_up_by_poll, true);
+}
+
+ZTEST(poll_api_1cpu, test_poll_msgq)
+{
+	int low_prio_thread_priority = 1;
+	int high_prio_thread_priority = -2;
+	unsigned int data_to_high_prio = 0x1234;
+
+	k_thread_priority_set(k_current_get(), low_prio_thread_priority);
+
+	/* Create high priority thread */
+	(void)k_thread_create(&high_prio_data, high_prio_stack_area,
+			      K_THREAD_STACK_SIZEOF(high_prio_stack_area), high_prio_main, NULL,
+			      NULL, NULL, high_prio_thread_priority, 0, K_NO_WAIT);
+	k_sleep(K_MSEC(1));
+	/* Send message to high-priority thread */
+	(void)k_msgq_put(&msgq_high_prio_thread, &data_to_high_prio, K_NO_WAIT);
+
+	/* low priority thread should not execute here before wake up high priority task */
+	wake_up_by_poll = false;
+}
+
 ZTEST(poll_api_1cpu, test_poll_zero_events)
 {
 	struct k_poll_event event;
@@ -786,53 +827,4 @@ ZTEST(poll_api_1cpu, test_poll_zero_events)
 			  K_POLL_MODE_NOTIFY_ONLY, &zero_events_sem);
 
 	zassert_equal(k_poll(&event, 0, K_MSEC(50)), -EAGAIN);
-}
-
-/* subthread entry */
-void polling_event(void *p1, void *p2, void *p3)
-{
-	k_poll(p1, 1, K_FOREVER);
-}
-
-/**
- * @brief Detect is_polling is false in signal_poll_event()
- *
- * @details
- * Define and initialize a signal event, and spawn a thread to
- * poll event, and set dticks as invalid, check if the value
- * of is_polling in function signal_poll_event().
- *
- * @ingroup kernel_poll_tests
- */
-ZTEST(poll_api_1cpu, test_detect_is_polling)
-{
-	k_poll_signal_init(&test_signal);
-
-	struct k_thread *p = &test_thread;
-	struct k_poll_event events[1] = {
-		K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_SIGNAL,
-				K_POLL_MODE_NOTIFY_ONLY,
-				&test_signal),
-	};
-
-	k_tid_t tid = k_thread_create(&test_thread, test_stack,
-		K_THREAD_STACK_SIZEOF(test_stack), polling_event,
-		events, NULL, NULL, K_PRIO_PREEMPT(0),
-		K_INHERIT_PERMS, K_NO_WAIT);
-
-	/* Set up the thread timeout value to check if
-	 * what happened if dticks is invalid.
-	 */
-	p->base.timeout.dticks = _EXPIRED;
-	/* Wait for register event successfully */
-	k_sleep(K_MSEC(50));
-
-	/* Raise a signal */
-	int ret = k_poll_signal_raise(&test_signal, 0x1337);
-
-	zassert_true(ret == -EAGAIN, "thread expired failed\n");
-	zassert_true(events[0].poller->is_polling == false,
-		"the value of is_polling is invalid\n");
-
-	k_thread_abort(tid);
 }

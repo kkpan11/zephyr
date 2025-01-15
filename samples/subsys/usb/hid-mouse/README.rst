@@ -1,7 +1,8 @@
-.. _usb_hid-mouse:
+.. zephyr:code-sample:: usb-hid-mouse
+   :name: USB HID mouse
+   :relevant-api: _usb_device_core_api usb_hid_device_api input_interface
 
-USB HID mouse Sample Application
-################################
+   Implement a basic HID mouse device.
 
 Overview
 ********

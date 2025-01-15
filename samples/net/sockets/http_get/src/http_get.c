@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if !defined(__ZEPHYR__) || defined(CONFIG_POSIX_API)
+#if !defined(__ZEPHYR__)
 
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -24,6 +24,8 @@
 #include <zephyr/net/tls_credentials.h>
 #include "ca_certificate.h"
 #endif
+
+#include "net_sample_common.h"
 
 #endif
 
@@ -60,6 +62,8 @@ int main(void)
 	static struct addrinfo hints;
 	struct addrinfo *res;
 	int st, sock;
+
+	wait_for_network();
 
 #if defined(CONFIG_NET_SOCKETS_SOCKOPT_TLS)
 	tls_credential_add(CA_CERTIFICATE_TAG, TLS_CREDENTIAL_CA_CERTIFICATE,

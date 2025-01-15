@@ -22,7 +22,7 @@ LOG_MODULE_REGISTER(net_ieee802154, CONFIG_NET_L2_IEEE802154_LOG_LEVEL);
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_l2.h>
 #include <zephyr/net/net_linkaddr.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #ifdef CONFIG_NET_6LO
 #include "ieee802154_6lo.h"
@@ -271,11 +271,10 @@ static inline void swap_and_set_pkt_ll_addr(struct net_linkaddr *addr, bool has_
 		addr->addr = NULL;
 	}
 
-	/* The net stack expects link layer addresses to be in
-	 * big endian format for posix compliance so we must swap it.
-	 * This is ok as the L2 address field comes from the header
-	 * part of the packet buffer which will not be directly accessible
-	 * once the packet reaches the upper layers.
+	/* The net stack expects big endian link layer addresses for POSIX compliance
+	 * so we must swap it. This is ok as the L2 address field points into the L2
+	 * header of the frame buffer which will no longer be accessible once the
+	 * packet reaches upper layers.
 	 */
 	if (addr->len > 0) {
 		sys_mem_swap(addr->addr, addr->len);
@@ -287,7 +286,7 @@ static inline void swap_and_set_pkt_ll_addr(struct net_linkaddr *addr, bool has_
  *
  * This is done before deciphering and authenticating encrypted frames.
  */
-static bool ieeee802154_check_dst_addr(struct net_if *iface, struct ieee802154_mhr *mhr)
+static bool ieee802154_check_dst_addr(struct net_if *iface, struct ieee802154_mhr *mhr)
 {
 	struct ieee802154_address_field_plain *dst_plain = &mhr->dst_addr->plain;
 	struct ieee802154_context *ctx = net_if_l2_data(iface);
@@ -317,7 +316,7 @@ static bool ieeee802154_check_dst_addr(struct net_if *iface, struct ieee802154_m
 	if (!(dst_plain->pan_id == IEEE802154_BROADCAST_PAN_ID ||
 	      dst_plain->pan_id == sys_cpu_to_le16(ctx->pan_id))) {
 		LOG_DBG("Frame PAN ID does not match!");
-		return false;
+		goto out;
 	}
 
 	if (mhr->fs->fc.dst_addr_mode == IEEE802154_ADDR_MODE_SHORT) {
@@ -360,7 +359,7 @@ out:
 static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pkt)
 {
 	const struct ieee802154_radio_api *radio = net_if_get_device(iface)->api;
-	enum net_verdict verdict = NET_DROP;
+	enum net_verdict verdict = NET_CONTINUE;
 	struct ieee802154_fcf_seq *fs;
 	struct ieee802154_mpdu mpdu;
 	bool is_broadcast;
@@ -375,7 +374,7 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 
 	/* validate LL destination address (when IEEE802154_HW_FILTER not available) */
 	if (!(radio->get_capabilities(net_if_get_device(iface)) & IEEE802154_HW_FILTER) &&
-	    !ieeee802154_check_dst_addr(iface, &mpdu.mhr)) {
+	    !ieee802154_check_dst_addr(iface, &mpdu.mhr)) {
 		return NET_DROP;
 	}
 
@@ -387,8 +386,9 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 
 	if (fs->fc.frame_type == IEEE802154_FRAME_TYPE_BEACON) {
 		verdict = ieee802154_handle_beacon(iface, &mpdu, net_pkt_ieee802154_lqi(pkt));
-		if (verdict == NET_OK) {
+		if (verdict == NET_CONTINUE) {
 			net_pkt_unref(pkt);
+			return NET_OK;
 		}
 		/* Beacons must not be acknowledged, see section 6.7.4.1. */
 		return verdict;
@@ -400,7 +400,7 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 
 	if (fs->fc.frame_type == IEEE802154_FRAME_TYPE_MAC_COMMAND) {
 		verdict = ieee802154_handle_mac_command(iface, &mpdu);
-		if (verdict != NET_OK) {
+		if (verdict == NET_DROP) {
 			return verdict;
 		}
 	}
@@ -427,16 +427,16 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 
 	if (fs->fc.frame_type == IEEE802154_FRAME_TYPE_MAC_COMMAND) {
 		net_pkt_unref(pkt);
-		return verdict;
+		return NET_OK;
 	}
 
 	if (!ieee802154_decipher_data_frame(iface, pkt, &mpdu)) {
 		return NET_DROP;
 	}
 
-	/* Setting L2 addresses must be done after packet authentication and internal
-	 * packet handling as it will mangle the package header to comply with upper
-	 * network layers' (POSIX) requirement to represent network addresses in big endian.
+	/* Setting LL addresses for upper layers must be done after L2 packet
+	 * handling as it will mangle the L2 frame header to comply with upper
+	 * layers' (POSIX) requirement to represent network addresses in big endian.
 	 */
 	swap_and_set_pkt_ll_addr(net_pkt_lladdr_src(pkt), !fs->fc.pan_id_comp,
 				 fs->fc.src_addr_mode, mpdu.mhr.src_addr);
@@ -453,12 +453,13 @@ static enum net_verdict ieee802154_recv(struct net_if *iface, struct net_pkt *pk
 
 #ifdef CONFIG_NET_6LO
 	verdict = ieee802154_6lo_decode_pkt(iface, pkt);
-
-	pkt_hexdump(RX_PKT_TITLE, pkt, true);
-	return verdict;
-#else
-	return NET_CONTINUE;
 #endif /* CONFIG_NET_6LO */
+
+	if (verdict == NET_CONTINUE) {
+		pkt_hexdump(RX_PKT_TITLE, pkt, true);
+	}
+
+	return verdict;
 
 	/* At this point the call amounts to (part of) an
 	 * MCPS-DATA.indication primitive, see section 8.3.3.
@@ -655,7 +656,8 @@ void ieee802154_init(struct net_if *iface)
 	memcpy(ctx->linkaddr.addr, eui64_be, IEEE802154_EXT_ADDR_LENGTH);
 	net_if_set_link_addr(iface, ctx->linkaddr.addr, ctx->linkaddr.len, ctx->linkaddr.type);
 
-	if (IS_ENABLED(CONFIG_IEEE802154_NET_IF_NO_AUTO_START)) {
+	if (IS_ENABLED(CONFIG_IEEE802154_NET_IF_NO_AUTO_START) ||
+	    IS_ENABLED(CONFIG_NET_CONFIG_SETTINGS)) {
 		LOG_DBG("Interface auto start disabled.");
 		net_if_flag_set(iface, NET_IF_NO_AUTO_START);
 	}

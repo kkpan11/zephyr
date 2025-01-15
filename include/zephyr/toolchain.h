@@ -56,7 +56,7 @@
  * @def __noasan
  * @brief Disable address sanitizer
  *
- * When used in the definiton of a symbol, prevents that symbol (be it
+ * When used in the definition of a symbol, prevents that symbol (be it
  * a function or data) from being instrumented by the address
  * sanitizer feature of the compiler.  Most commonly, this is used to
  * prevent padding around data that will be treated specially by the
@@ -113,6 +113,14 @@
  */
 #ifndef TOOLCHAIN_HAS_C_AUTO_TYPE
 #define TOOLCHAIN_HAS_C_AUTO_TYPE 0
+#endif
+
+/**
+ * @def TOOLCHAIN_HAS_ZLA
+ * @brief Indicate if toolchain supports Zero Length Arrays.
+ */
+#ifndef TOOLCHAIN_HAS_ZLA
+#define TOOLCHAIN_HAS_ZLA 0
 #endif
 
 /**

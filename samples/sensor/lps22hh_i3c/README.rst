@@ -1,7 +1,9 @@
-.. _lps22hh_i3c:
+.. zephyr:code-sample:: lps22hh_i3c
+   :name: LPSS22HH Temperature and Pressure Sensor (I3C)
+   :relevant-api: sensor_interface
 
-LPS22HH: Temperature and Pressure Monitor (I3C)
-###############################################
+   Get pressure and temperature data from an LPS22HH sensor over I3C (polling &
+   trigger mode).
 
 Overview
 ********
@@ -13,12 +15,12 @@ Requirements
 
 This sample uses the LPS22HH sensor controlled using the I3C interface.
 It has been tested using the LPS22HH on the evaluation board
-STEVALMKI192-V1 connected to the I3C header on :ref:`mimxrt685_evk`.
+STEVALMKI192-V1 connected to the I3C header on :zephyr:board:`mimxrt685_evk`.
 
 References
 **********
 
-- LPS22HH: http://www.st.com/en/mems-and-sensors/lps22hh.html
+- LPS22HH: https://www.st.com/en/mems-and-sensors/lps22hh.html
 
 Building and Running
 ********************
@@ -37,23 +39,23 @@ sensor (for example, the one on evaluation board STEVALMKI192-V1).
    resulting in the sample not being able to communicate with
    the sensor.
 
-Building on mimxrt685_evk_cm33 board
+Building on mimxrt685_evk board
 ====================================
 
 .. zephyr-app-commands::
    :zephyr-app: samples/sensor/lps22hh_i3c
    :host-os: unix
-   :board: mimxrt685_evk_cm33
+   :board: mimxrt685_evk/mimxrt685s/cm33
    :goals: build
    :compact:
 
 Board Preparations
 ==================
 
-mimxrt685_evk_cm33
+mimxrt685_evk
 ------------------
 
-On the board :ref:`mimxrt685_evk`, the I3C pins are exposed on the J18
+On the board :zephyr:board:`mimxrt685_evk`, the I3C pins are exposed on the J18
 header, where:
 
   * SCL is on pin 1

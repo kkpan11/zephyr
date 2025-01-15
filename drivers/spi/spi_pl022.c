@@ -8,7 +8,10 @@
 
 #include <errno.h>
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/clock_control.h>
+#include <zephyr/drivers/reset.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/spinlock.h>
 #include <soc.h>
@@ -266,13 +269,20 @@ struct spi_pl022_dma_data {
 /*
  * Max frequency
  */
-#define MAX_FREQ_CONTROLLER_MODE(cfg) (cfg->pclk / 2)
-#define MAX_FREQ_PERIPHERAL_MODE(cfg) (cfg->pclk / 12)
+#define MAX_FREQ_CONTROLLER_MODE(pclk) ((pclk) / 2)
+#define MAX_FREQ_PERIPHERAL_MODE(pclk) ((pclk) / 12)
 
 struct spi_pl022_cfg {
 	const uint32_t reg;
 	const uint32_t pclk;
 	const bool dma_enabled;
+#if defined(CONFIG_CLOCK_CONTROL)
+	const struct device *clk_dev;
+	const clock_control_subsys_t clk_id;
+#endif
+#if defined(CONFIG_RESET)
+	const struct reset_dt_spec reset;
+#endif
 #if defined(CONFIG_PINCTRL)
 	const struct pinctrl_dev_config *pincfg;
 #endif
@@ -336,15 +346,25 @@ static int spi_pl022_configure(const struct device *dev,
 	const uint16_t op = spicfg->operation;
 	uint32_t prescale;
 	uint32_t postdiv;
+	uint32_t pclk = 0;
 	uint32_t cr0;
 	uint32_t cr1;
+	int ret;
 
 	if (spi_context_configured(&data->ctx, spicfg)) {
 		return 0;
 	}
 
-	if (spicfg->frequency > MAX_FREQ_CONTROLLER_MODE(cfg)) {
-		LOG_ERR("Frequency is up to %u in controller mode.", MAX_FREQ_CONTROLLER_MODE(cfg));
+#if defined(CONFIG_CLOCK_CONTROL)
+	ret = clock_control_get_rate(cfg->clk_dev, cfg->clk_id, &pclk);
+	if (ret < 0 || pclk == 0) {
+		return -EINVAL;
+	}
+#endif
+
+	if (spicfg->frequency > MAX_FREQ_CONTROLLER_MODE(pclk)) {
+		LOG_ERR("Frequency is up to %u in controller mode.",
+			MAX_FREQ_CONTROLLER_MODE(pclk));
 		return -ENOTSUP;
 	}
 
@@ -373,8 +393,8 @@ static int spi_pl022_configure(const struct device *dev,
 
 	/* configure registers */
 
-	prescale = spi_pl022_calc_prescale(cfg->pclk, spicfg->frequency);
-	postdiv = spi_pl022_calc_postdiv(cfg->pclk, spicfg->frequency, prescale);
+	prescale = spi_pl022_calc_prescale(pclk, spicfg->frequency);
+	postdiv = spi_pl022_calc_postdiv(pclk, spicfg->frequency, prescale);
 
 	cr0 = 0;
 	cr0 |= (postdiv << SSP_CR0_SCR_LSB);
@@ -675,11 +695,13 @@ static void spi_pl022_start_async_xfer(const struct device *dev)
 	struct spi_pl022_data *data = dev->data;
 
 	/* Ensure writable */
-	while (!SSP_TX_FIFO_EMPTY(cfg->reg))
+	while (!SSP_TX_FIFO_EMPTY(cfg->reg)) {
 		;
+	}
 	/* Drain RX FIFO */
-	while (SSP_RX_FIFO_NOT_EMPTY(cfg->reg))
+	while (SSP_RX_FIFO_NOT_EMPTY(cfg->reg)) {
 		SSP_READ_REG(SSP_DR(cfg->reg));
+	}
 
 	data->tx_count = 0;
 	data->rx_count = 0;
@@ -722,11 +744,13 @@ static void spi_pl022_xfer(const struct device *dev)
 	data->rx_count = 0;
 
 	/* Ensure writable */
-	while (!SSP_TX_FIFO_EMPTY(cfg->reg))
+	while (!SSP_TX_FIFO_EMPTY(cfg->reg)) {
 		;
+	}
 	/* Drain RX FIFO */
-	while (SSP_RX_FIFO_NOT_EMPTY(cfg->reg))
+	while (SSP_RX_FIFO_NOT_EMPTY(cfg->reg)) {
 		SSP_READ_REG(SSP_DR(cfg->reg));
+	}
 
 	while (data->rx_count < chunk_len || data->tx_count < chunk_len) {
 		/* Fill up fifo with available TX data */
@@ -743,8 +767,9 @@ static void spi_pl022_xfer(const struct device *dev)
 			fifo_cnt++;
 		}
 		while (data->rx_count < chunk_len && fifo_cnt > 0) {
-			if (!SSP_RX_FIFO_NOT_EMPTY(cfg->reg))
+			if (!SSP_RX_FIFO_NOT_EMPTY(cfg->reg)) {
 				continue;
+			}
 
 			txrx = SSP_READ_REG(SSP_DR(cfg->reg));
 
@@ -867,10 +892,13 @@ static int spi_pl022_release(const struct device *dev,
 	return 0;
 }
 
-static struct spi_driver_api spi_pl022_api = {
+static DEVICE_API(spi, spi_pl022_api) = {
 	.transceive = spi_pl022_transceive,
 #if defined(CONFIG_SPI_ASYNC)
 	.transceive_async = spi_pl022_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = spi_pl022_release
 };
@@ -887,9 +915,28 @@ static int spi_pl022_init(const struct device *dev)
 	struct spi_pl022_data *data = dev->data;
 	int ret;
 
+#if defined(CONFIG_CLOCK_CONTROL)
+	if (cfg->clk_dev) {
+		ret = clock_control_on(cfg->clk_dev, cfg->clk_id);
+		if (ret < 0) {
+			LOG_ERR("Failed to enable the clock");
+			return ret;
+		}
+	}
+#endif
+
+#if defined(CONFIG_RESET)
+	if (cfg->reset.dev) {
+		ret = reset_line_toggle_dt(&cfg->reset);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+#endif
+
 #if defined(CONFIG_PINCTRL)
 	ret = pinctrl_apply_state(cfg->pincfg, PINCTRL_STATE_DEFAULT);
-	if (ret) {
+	if (ret < 0) {
 		LOG_ERR("Failed to apply pinctrl state");
 		return ret;
 	}
@@ -952,6 +999,11 @@ static int spi_pl022_init(const struct device *dev)
 
 #define DMAS_ENABLED(idx) (DT_INST_DMAS_HAS_NAME(idx, tx) && DT_INST_DMAS_HAS_NAME(idx, rx))
 
+#define CLOCK_ID_DECL(idx)                                                                         \
+	IF_ENABLED(DT_INST_NODE_HAS_PROP(0, clocks),                                               \
+	(static const clock_control_subsys_t pl022_clk_id##idx =                                   \
+		(clock_control_subsys_t)DT_INST_PHA_BY_IDX(idx, clocks, 0, clk_id);))              \
+
 #define SPI_PL022_INIT(idx)                                                                        \
 	IF_ENABLED(CONFIG_PINCTRL, (PINCTRL_DT_INST_DEFINE(idx);))                                 \
 	IF_ENABLED(CONFIG_SPI_PL022_INTERRUPT,                                                     \
@@ -961,20 +1013,25 @@ static int spi_pl022_init(const struct device *dev)
 				       spi_pl022_isr, DEVICE_DT_INST_GET(idx), 0);                 \
 			   irq_enable(DT_INST_IRQN(idx));                                          \
 		    }))                                                                            \
+	IF_ENABLED(CONFIG_CLOCK_CONTROL, (CLOCK_ID_DECL(idx)))                                     \
 	static struct spi_pl022_data spi_pl022_data_##idx = {                                      \
 		SPI_CONTEXT_INIT_LOCK(spi_pl022_data_##idx, ctx),                                  \
 		SPI_CONTEXT_INIT_SYNC(spi_pl022_data_##idx, ctx),                                  \
 		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(idx), ctx)};                           \
 	static struct spi_pl022_cfg spi_pl022_cfg_##idx = {                                        \
 		.reg = DT_INST_REG_ADDR(idx),                                                      \
-		.pclk = DT_INST_PROP_BY_PHANDLE(idx, clocks, clock_frequency),                     \
+		IF_ENABLED(CONFIG_CLOCK_CONTROL, (IF_ENABLED(DT_INST_NODE_HAS_PROP(0, clocks),     \
+			(.clk_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(idx)),                       \
+			 .clk_id = pl022_clk_id##idx,))))                                          \
+		IF_ENABLED(CONFIG_RESET, (IF_ENABLED(DT_INST_NODE_HAS_PROP(0, resets),             \
+			   (.reset = RESET_DT_SPEC_INST_GET(idx),))))                              \
 		IF_ENABLED(CONFIG_PINCTRL, (.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(idx),))       \
 		IF_ENABLED(CONFIG_SPI_PL022_DMA, (.dma = DMAS_DECL(idx),)) COND_CODE_1(            \
 				CONFIG_SPI_PL022_DMA, (.dma_enabled = DMAS_ENABLED(idx),),         \
 				(.dma_enabled = false,))                                           \
 		IF_ENABLED(CONFIG_SPI_PL022_INTERRUPT,                                             \
 					   (.irq_config = spi_pl022_irq_config_##idx,))};          \
-	DEVICE_DT_INST_DEFINE(idx, spi_pl022_init, NULL, &spi_pl022_data_##idx,                    \
+	SPI_DEVICE_DT_INST_DEFINE(idx, spi_pl022_init, NULL, &spi_pl022_data_##idx,                \
 			      &spi_pl022_cfg_##idx, POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,         \
 			      &spi_pl022_api);
 

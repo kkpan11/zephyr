@@ -9,9 +9,6 @@ include(pre_dt)
 find_package(HostTools)
 find_package(Dtc 1.4.6)
 
-# Zephyr code is usually configured using devicetree, but this is
-# still technically optional (see e.g. CONFIG_HAS_DTS).
-#
 # This module makes information from the devicetree available to
 # various build stages, as well as to other arbitrary Python scripts:
 #
@@ -60,25 +57,34 @@ find_package(Dtc 1.4.6)
 #    - ${PROJECT_BINARY_DIR}/zephyr.dts exists
 #    - ${PROJECT_BINARY_DIR}/edt.pickle exists
 #    - ${KCONFIG_BINARY_DIR}/Kconfig.dts exists
-#    - the build system will be regenerated if any devicetree files
-#      used in this build change, including transitive includes
+#    - DTS_INCLUDE_FILES is set to a ;-list of all devicetree files
+#      used in this build, including transitive includes (the build
+#      system will be regenerated if any of those files change)
 #    - the devicetree extensions in the extensions.cmake module
 #      will be ready for use in other CMake list files that run
 #      after this module
 #
 # Required variables:
 # - BINARY_DIR_INCLUDE_GENERATED: where to put generated include files
+# - DTS_ROOT: a deduplicated list of places where devicetree
+#   implementation files (like bindings, vendor prefixes, etc.) are
+#   found
+# - DTS_ROOT_SYSTEM_INCLUDE_DIRS: set to "PATH1 PATH2 ...",
+#   with one path per potential location where C preprocessor #includes
+#   may be found for devicetree files
 # - KCONFIG_BINARY_DIR: where to put generated Kconfig files
 #
 # Optional variables:
 # - BOARD: board name to use when looking for DTS_SOURCE
-# - BOARD_DIR: board directory to use when looking for DTS_SOURCE
+# - BOARD_DIRECTORIES: list of board directories to use when looking for DTS_SOURCE
 # - BOARD_REVISION_STRING: used when looking for a board revision's
-#   devicetree overlay file in BOARD_DIR
+#   devicetree overlay file in one of the BOARD_DIRECTORIES
+# - CMAKE_DTS_PREPROCESSOR: the path to the preprocessor to use
+#   for devicetree files
 # - DTC_OVERLAY_FILE: list of devicetree overlay files which will be
 #   used to modify or extend the base devicetree.
 # - EXTRA_DTC_OVERLAY_FILE: list of extra devicetree overlay files.
-#   This variable is is similar to DTC_OVERLAY_FILE but the files in
+#   This variable is similar to DTC_OVERLAY_FILE but the files in
 #   EXTRA_DTC_OVERLAY_FILE will be applied after DTC_OVERLAY_FILE and
 #   thus files specified by EXTRA_DTC_OVERLAY_FILE have higher precedence.
 # - EXTRA_DTC_FLAGS: list of extra command line options to pass to
@@ -88,7 +94,7 @@ find_package(Dtc 1.4.6)
 #   C preprocessor when generating the devicetree from DTS_SOURCE
 # - DTS_SOURCE: the devicetree source file to use may be pre-set
 #   with this variable; otherwise, it defaults to
-#   ${BOARD_DIR}/${BOARD}.dts
+#   ${BOARD_DIRECTORIES}/<normalized_board_target>.dts
 #
 # Variables set by this module and not mentioned above are for internal
 # use only, and may be removed, renamed, or re-purposed without prior notice.
@@ -96,6 +102,8 @@ find_package(Dtc 1.4.6)
 # The directory containing devicetree related scripts.
 set(DT_SCRIPTS                  ${ZEPHYR_BASE}/scripts/dts)
 
+# This parses and collects the DT information
+set(GEN_EDT_SCRIPT              ${DT_SCRIPTS}/gen_edt.py)
 # This generates DT information needed by the C macro APIs,
 # along with a few other things.
 set(GEN_DEFINES_SCRIPT          ${DT_SCRIPTS}/gen_defines.py)
@@ -125,23 +133,44 @@ set(DTS_CMAKE                   ${PROJECT_BINARY_DIR}/dts.cmake)
 # modules.
 set(VENDOR_PREFIXES             dts/bindings/vendor-prefixes.txt)
 
-#
-# Halt execution early if there is no devicetree.
-#
+if(NOT DEFINED DTS_SOURCE)
+  zephyr_build_string(board_string SHORT shortened_board_string
+                      BOARD ${BOARD} BOARD_QUALIFIERS ${BOARD_QUALIFIERS}
+  )
+  foreach(dir ${BOARD_DIRECTORIES})
+    if(EXISTS ${dir}/${shortened_board_string}.dts AND NOT BOARD_${BOARD}_SINGLE_SOC)
+      message(FATAL_ERROR "Board ${ZFILE_BOARD} defines multiple SoCs.\nShortened file name "
+              "(${shortened_board_string}.dts) not allowed, use '<board>_<soc>.dts' naming"
+      )
+    elseif(EXISTS ${dir}/${board_string}.dts AND EXISTS ${dir}/${shortened_board_string}.dts)
+      message(FATAL_ERROR "Conflicting file names discovered. Cannot use both "
+              "${board_string}.dts and ${shortened_board_string}.dts. "
+              "Please choose one naming style, ${board_string}.dts is recommended."
+      )
+    elseif(EXISTS ${dir}/${board_string}.dts)
+      set(DTS_SOURCE ${dir}/${board_string}.dts)
+    elseif(EXISTS ${dir}/${shortened_board_string}.dts)
+      set(DTS_SOURCE ${dir}/${shortened_board_string}.dts)
+    endif()
+  endforeach()
+endif()
 
-# TODO: What to do about non-posix platforms where NOT CONFIG_HAS_DTS (xtensa)?
-# Drop support for NOT CONFIG_HAS_DTS perhaps?
-set_ifndef(DTS_SOURCE ${BOARD_DIR}/${BOARD}.dts)
 if(EXISTS ${DTS_SOURCE})
-  # We found a devicetree. Check for a board revision overlay.
-  if(BOARD_REVISION AND EXISTS ${BOARD_DIR}/${BOARD}_${BOARD_REVISION_STRING}.overlay)
-    list(APPEND DTS_SOURCE ${BOARD_DIR}/${BOARD}_${BOARD_REVISION_STRING}.overlay)
-  endif()
+  # We found a devicetree. Append all relevant dts overlays we can find...
+  zephyr_file(CONF_FILES ${BOARD_DIRECTORIES} DTS DTS_SOURCE)
+
+  zephyr_file(
+    CONF_FILES ${BOARD_DIRECTORIES}
+    DTS no_rev_suffix_dts_board_overlays
+    BOARD ${BOARD}
+    BOARD_QUALIFIERS ${BOARD_QUALIFIERS}
+  )
+
+  # ...but remove the ones that do not include the revision suffix
+  list(REMOVE_ITEM DTS_SOURCE ${no_rev_suffix_dts_board_overlays})
 else()
-  # If we don't have a devicetree after all, there's not much to do.
-  set(header_template ${ZEPHYR_BASE}/misc/generated/generated_header.template)
-  zephyr_file_copy(${header_template} ${DEVICETREE_GENERATED_H} ONLY_IF_DIFFERENT)
-  return()
+  # If we don't have a devicetree, provide an empty stub
+  set(DTS_SOURCE ${ZEPHYR_BASE}/boards/common/stub.dts)
 endif()
 
 #
@@ -161,6 +190,7 @@ set(dts_files
 if(DTC_OVERLAY_FILE)
   zephyr_list(TRANSFORM DTC_OVERLAY_FILE NORMALIZE_PATHS
               OUTPUT_VARIABLE DTC_OVERLAY_FILE_AS_LIST)
+  build_info(devicetree user-files PATH ${DTC_OVERLAY_FILE_AS_LIST})
   list(APPEND
     dts_files
     ${DTC_OVERLAY_FILE_AS_LIST}
@@ -170,6 +200,7 @@ endif()
 if(EXTRA_DTC_OVERLAY_FILE)
   zephyr_list(TRANSFORM EXTRA_DTC_OVERLAY_FILE NORMALIZE_PATHS
               OUTPUT_VARIABLE EXTRA_DTC_OVERLAY_FILE_AS_LIST)
+  build_info(devicetree extra-user-files PATH ${EXTRA_DTC_OVERLAY_FILE_AS_LIST})
   list(APPEND
     dts_files
     ${EXTRA_DTC_OVERLAY_FILE_AS_LIST}
@@ -199,7 +230,7 @@ foreach(dts_root ${DTS_ROOT})
 
   set(vendor_prefixes ${dts_root}/${VENDOR_PREFIXES})
   if(EXISTS ${vendor_prefixes})
-    list(APPEND EXTRA_GEN_DEFINES_ARGS --vendor-prefixes ${vendor_prefixes})
+    list(APPEND EXTRA_GEN_EDT_ARGS --vendor-prefixes ${vendor_prefixes})
   endif()
 endforeach()
 
@@ -241,49 +272,63 @@ zephyr_dt_preprocess(
 # Parse the generated dependency file to find the DT sources that
 # were included, including any transitive includes.
 toolchain_parse_make_rule(${DTS_DEPS}
-  include_files # Output parameter
+  DTS_INCLUDE_FILES # Output parameter
   )
 
 # Add the results to the list of files that, when change, force the
 # build system to re-run CMake.
 set_property(DIRECTORY APPEND PROPERTY
   CMAKE_CONFIGURE_DEPENDS
-  ${include_files}
+  ${DTS_INCLUDE_FILES}
+  ${GEN_EDT_SCRIPT}
   ${GEN_DEFINES_SCRIPT}
   ${GEN_DRIVER_KCONFIG_SCRIPT}
   ${GEN_DTS_CMAKE_SCRIPT}
   )
 
 #
-# Run GEN_DEFINES_SCRIPT.
+# Run GEN_EDT_SCRIPT.
 #
 
 string(REPLACE ";" " " EXTRA_DTC_FLAGS_RAW "${EXTRA_DTC_FLAGS}")
-set(CMD_GEN_DEFINES ${PYTHON_EXECUTABLE} ${GEN_DEFINES_SCRIPT}
+set(CMD_GEN_EDT ${PYTHON_EXECUTABLE} ${GEN_EDT_SCRIPT}
 --dts ${DTS_POST_CPP}
 --dtc-flags '${EXTRA_DTC_FLAGS_RAW}'
 --bindings-dirs ${DTS_ROOT_BINDINGS}
---header-out ${DEVICETREE_GENERATED_H}.new
 --dts-out ${ZEPHYR_DTS}.new # for debugging and dtc
---edt-pickle-out ${EDT_PICKLE}
+--edt-pickle-out ${EDT_PICKLE}.new
+${EXTRA_GEN_EDT_ARGS}
+)
+
+execute_process(
+  COMMAND ${CMD_GEN_EDT}
+  WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+  COMMAND_ERROR_IS_FATAL ANY
+  )
+zephyr_file_copy(${ZEPHYR_DTS}.new ${ZEPHYR_DTS} ONLY_IF_DIFFERENT)
+zephyr_file_copy(${EDT_PICKLE}.new ${EDT_PICKLE} ONLY_IF_DIFFERENT)
+file(REMOVE ${ZEPHYR_DTS}.new ${EDT_PICKLE}.new)
+message(STATUS "Generated zephyr.dts: ${ZEPHYR_DTS}")
+message(STATUS "Generated pickled edt: ${EDT_PICKLE}")
+
+#
+# Run GEN_DEFINES_SCRIPT.
+#
+
+set(CMD_GEN_DEFINES ${PYTHON_EXECUTABLE} ${GEN_DEFINES_SCRIPT}
+--header-out ${DEVICETREE_GENERATED_H}.new
+--edt-pickle ${EDT_PICKLE}
 ${EXTRA_GEN_DEFINES_ARGS}
 )
 
 execute_process(
   COMMAND ${CMD_GEN_DEFINES}
   WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
-  RESULT_VARIABLE ret
+  COMMAND_ERROR_IS_FATAL ANY
   )
-if(NOT "${ret}" STREQUAL "0")
-  message(STATUS "In: ${PROJECT_BINARY_DIR}, command: ${CMD_GEN_DEFINES}")
-  message(FATAL_ERROR "gen_defines.py failed with return code: ${ret}")
-else()
-  zephyr_file_copy(${ZEPHYR_DTS}.new ${ZEPHYR_DTS} ONLY_IF_DIFFERENT)
-  zephyr_file_copy(${DEVICETREE_GENERATED_H}.new ${DEVICETREE_GENERATED_H} ONLY_IF_DIFFERENT)
-  file(REMOVE ${ZEPHYR_DTS}.new ${DEVICETREE_GENERATED_H}.new)
-  message(STATUS "Generated zephyr.dts: ${ZEPHYR_DTS}")
-  message(STATUS "Generated devicetree_generated.h: ${DEVICETREE_GENERATED_H}")
-endif()
+zephyr_file_copy(${DEVICETREE_GENERATED_H}.new ${DEVICETREE_GENERATED_H} ONLY_IF_DIFFERENT)
+file(REMOVE ${DEVICETREE_GENERATED_H}.new)
+message(STATUS "Generated devicetree_generated.h: ${DEVICETREE_GENERATED_H}")
 
 #
 # Run GEN_DRIVER_KCONFIG_SCRIPT.
@@ -303,17 +348,26 @@ endif()
 #
 # Run GEN_DTS_CMAKE_SCRIPT.
 #
+# A temporary file is copied to the original file if it differs. This prevents issue such as a
+# cycle when sysbuild is used of configuring and building multiple times due to the dts.cmake file
+# of images having a newer modification time than the sysbuild build.ninja file, despite the
+# output having not changed
+#
+set(dts_cmake_tmp ${DTS_CMAKE}.new)
 
 execute_process(
   COMMAND ${PYTHON_EXECUTABLE} ${GEN_DTS_CMAKE_SCRIPT}
   --edt-pickle ${EDT_PICKLE}
-  --cmake-out ${DTS_CMAKE}
+  --cmake-out ${dts_cmake_tmp}
   WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
   RESULT_VARIABLE ret
   )
 if(NOT "${ret}" STREQUAL "0")
   message(FATAL_ERROR "gen_dts_cmake.py failed with return code: ${ret}")
 else()
+  zephyr_file_copy(${dts_cmake_tmp} ${DTS_CMAKE} ONLY_IF_DIFFERENT)
+  file(REMOVE ${dts_cmake_tmp})
+  set(dts_cmake_tmp)
   message(STATUS "Including generated dts.cmake file: ${DTS_CMAKE}")
   include(${DTS_CMAKE})
 endif()
@@ -360,9 +414,18 @@ execute_process(
   OUTPUT_QUIET # Discard stdout
   WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
   RESULT_VARIABLE ret
+  ERROR_VARIABLE stderr
   )
 
 if(NOT "${ret}" STREQUAL "0")
-  message(FATAL_ERROR "command failed with return code: ${ret}")
+  message(FATAL_ERROR "dtc failed with return code: ${ret}")
+elseif(stderr)
+  # dtc printed warnings on stderr but did not fail.
+  # Display them as CMake warnings to draw attention.
+  message(WARNING "dtc raised one or more warnings:\n${stderr}")
 endif()
 endif(DTC)
+
+build_info(devicetree files PATH ${dts_files})
+build_info(devicetree include-dirs PATH ${DTS_ROOT_SYSTEM_INCLUDE_DIRS})
+build_info(devicetree bindings-dirs PATH ${DTS_ROOT_BINDINGS})

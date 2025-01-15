@@ -13,10 +13,11 @@
 #include "lwm2m_rd_client.h"
 
 #include "stubs.h"
-#if defined(CONFIG_NATIVE_POSIX_SLOWDOWN_TO_REAL_TIME)
+#if defined(CONFIG_NATIVE_SIM_SLOWDOWN_TO_REAL_TIME)
 #include "timer_model.h"
 #endif
 
+#define LOG_LEVEL	LOG_LEVEL_DBG
 LOG_MODULE_REGISTER(lwm2m_engine_test);
 
 DEFINE_FFF_GLOBALS;
@@ -31,12 +32,15 @@ static int lwm2m_get_res_buf_custom_fake(const struct lwm2m_obj_path *path, void
 					 uint16_t *buffer_len, uint16_t *data_len,
 					 uint8_t *data_flags)
 {
-	if (buffer_ptr)
+	if (buffer_ptr) {
 		*buffer_ptr = my_buf;
-	if (buffer_len)
+	}
+	if (buffer_len) {
 		*buffer_len = sizeof(my_buf);
-	if (data_len)
+	}
+	if (data_len) {
 		*data_len = my_data_len;
+	}
 
 	return 0;
 }
@@ -67,7 +71,7 @@ static void test_service(struct k_work *work)
 
 static void setup(void *data)
 {
-#if defined(CONFIG_NATIVE_POSIX_SLOWDOWN_TO_REAL_TIME)
+#if defined(CONFIG_NATIVE_SIM_SLOWDOWN_TO_REAL_TIME)
 	/* It is enough that some slow-down is happening on sleeps, it does not have to be
 	 * real time
 	 */
@@ -101,7 +105,6 @@ ZTEST(lwm2m_engine, test_start_stop)
 	ctx.load_credentials = NULL;
 	ctx.desthostname = host_name;
 	ctx.desthostnamelen = strlen(host_name);
-	ctx.hostname_verify = true;
 	ctx.use_dtls = true;
 
 	ret = lwm2m_engine_start(&ctx);
@@ -238,7 +241,7 @@ ZTEST(lwm2m_engine, test_check_notifications)
 	obs.last_timestamp = k_uptime_get();
 	obs.event_timestamp = k_uptime_get() + 1000U;
 	obs.resource_update = false;
-	obs.active_tx_operation = false;
+	obs.active_notify = NULL;
 
 	sys_slist_append(&ctx.observer, &obs.node);
 
@@ -259,11 +262,13 @@ ZTEST(lwm2m_engine, test_push_queued_buffers)
 	int ret;
 	struct lwm2m_ctx ctx;
 	struct lwm2m_message msg;
+	struct coap_pending pending;
 
 	(void)memset(&ctx, 0x0, sizeof(ctx));
 
 	sys_slist_init(&ctx.queued_messages);
 	msg.ctx = &ctx;
+	msg.pending = &pending;
 	sys_slist_append(&ctx.queued_messages, &msg.node);
 	ret = lwm2m_push_queued_buffers(&ctx);
 	zassert_equal(ret, 0);
@@ -390,6 +395,7 @@ ZTEST(lwm2m_engine, test_socket_send)
 	int ret;
 	struct lwm2m_ctx ctx;
 	struct lwm2m_message msg;
+	struct coap_pending pending;
 
 	(void)memset(&ctx, 0x0, sizeof(ctx));
 
@@ -397,6 +403,7 @@ ZTEST(lwm2m_engine, test_socket_send)
 	ctx.sock_fd = -1;
 	sys_slist_init(&ctx.queued_messages);
 	msg.ctx = &ctx;
+	msg.pending = &pending;
 	msg.type = COAP_TYPE_CON;
 	sys_slist_append(&ctx.queued_messages, &msg.node);
 
@@ -428,7 +435,6 @@ ZTEST(lwm2m_engine, test_security)
 	ctx.load_credentials = NULL;
 	ctx.desthostname = host_name;
 	ctx.desthostnamelen = strlen(host_name);
-	ctx.hostname_verify = true;
 	ctx.use_dtls = false;
 
 	lwm2m_security_mode_fake.return_val = LWM2M_SECURITY_NOSEC;
@@ -444,9 +450,8 @@ ZTEST(lwm2m_engine, test_security)
 	lwm2m_security_mode_fake.return_val = LWM2M_SECURITY_PSK;
 	zassert_equal(lwm2m_engine_start(&ctx), 0);
 	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[0], TLS_SEC_TAG_LIST);
-	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[1], TLS_HOSTNAME);
-	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[2], TLS_PEER_VERIFY);
-	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[3], TLS_CIPHERSUITE_LIST);
+	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[1], TLS_PEER_VERIFY);
+	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[2], TLS_CIPHERSUITE_LIST);
 	zassert_true(tls_credential_delete_fake.call_count > 3);
 	zassert_true(tls_credential_add_fake.call_count == 2);
 	zassert_equal(tls_credential_add_fake.arg1_history[0], TLS_CREDENTIAL_PSK_ID);
@@ -456,7 +461,7 @@ ZTEST(lwm2m_engine, test_security)
 	RESET_FAKE(z_impl_zsock_setsockopt);
 	RESET_FAKE(tls_credential_add);
 	lwm2m_security_mode_fake.return_val = LWM2M_SECURITY_CERT;
-	ctx.hostname_verify = false;
+	ctx.desthostname = NULL;
 	zassert_equal(lwm2m_engine_start(&ctx), 0);
 	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[0], TLS_SEC_TAG_LIST);
 	zassert_equal(z_impl_zsock_setsockopt_fake.arg2_history[1], TLS_PEER_VERIFY);
@@ -466,4 +471,71 @@ ZTEST(lwm2m_engine, test_security)
 	zassert_equal(tls_credential_add_fake.arg1_history[1], TLS_CREDENTIAL_PRIVATE_KEY);
 	zassert_equal(tls_credential_add_fake.arg1_history[2], TLS_CREDENTIAL_CA_CERTIFICATE);
 	zassert_equal(lwm2m_engine_stop(&ctx), 0);
+}
+
+static enum lwm2m_socket_states last_state;
+
+static void socket_state(int fd, enum lwm2m_socket_states state)
+{
+	(void) fd;
+	last_state = state;
+}
+
+ZTEST(lwm2m_engine, test_socket_state)
+{
+	int ret;
+	struct lwm2m_ctx ctx = {
+		.remote_addr.sa_family = AF_INET,
+		.sock_fd = -1,
+		.set_socket_state = socket_state,
+	};
+	struct lwm2m_message msg1 = {
+		.ctx = &ctx,
+		.type = COAP_TYPE_CON,
+	};
+	struct lwm2m_message msg2 = msg1;
+	struct lwm2m_message ack = {
+		.ctx = &ctx,
+		.type = COAP_TYPE_ACK,
+	};
+
+	sys_slist_init(&ctx.pending_sends);
+	ret = lwm2m_engine_start(&ctx);
+	zassert_equal(ret, 0);
+
+	/* One confimable in queue, should cause ONE_RESPONSE status */
+	coap_pendings_count_fake.return_val = 1;
+	sys_slist_append(&ctx.pending_sends, &msg1.node);
+	set_socket_events(ZSOCK_POLLOUT);
+	k_sleep(K_MSEC(100));
+	zassert_equal(last_state, LWM2M_SOCKET_STATE_ONE_RESPONSE);
+
+	/* More than one messages in queue, not empty, should cause ONGOING */
+	coap_pendings_count_fake.return_val = 2;
+	sys_slist_append(&ctx.pending_sends, &msg1.node);
+	sys_slist_append(&ctx.pending_sends, &msg2.node);
+	set_socket_events(ZSOCK_POLLOUT);
+	k_sleep(K_MSEC(100));
+	zassert_equal(last_state, LWM2M_SOCKET_STATE_ONGOING);
+
+	/* Last out, while waiting for ACK to both, should still cause ONGOING */
+	coap_pendings_count_fake.return_val = 2;
+	set_socket_events(ZSOCK_POLLOUT);
+	k_sleep(K_MSEC(100));
+	zassert_equal(last_state, LWM2M_SOCKET_STATE_ONGOING);
+
+	/* Only one Ack transmiting, nothing expected back -> LAST */
+	coap_pendings_count_fake.return_val = 0;
+	sys_slist_append(&ctx.pending_sends, &ack.node);
+	set_socket_events(ZSOCK_POLLOUT);
+	k_sleep(K_MSEC(100));
+	zassert_equal(last_state, LWM2M_SOCKET_STATE_LAST);
+
+	/* Socket suspended (as in QUEUE_RX_OFF), should cause NO_DATA */
+	ret = lwm2m_socket_suspend(&ctx);
+	zassert_equal(ret, 0);
+	zassert_equal(last_state, LWM2M_SOCKET_STATE_NO_DATA);
+
+	ret = lwm2m_engine_stop(&ctx);
+	zassert_equal(ret, 0);
 }

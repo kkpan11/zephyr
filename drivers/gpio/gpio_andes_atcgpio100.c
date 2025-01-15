@@ -12,7 +12,6 @@
 #include <stdbool.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <soc.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/dt-bindings/gpio/andestech-atcgpio100.h>
 #include <zephyr/sys/util.h>
@@ -320,7 +319,7 @@ static void gpio_atcgpio100_irq_handler(const struct device *port)
 
 }
 
-static const struct gpio_driver_api gpio_atcgpio100_api = {
+static DEVICE_API(gpio, gpio_atcgpio100_api) = {
 	.pin_configure           = gpio_atcgpio100_config,
 	.port_get_raw            = gpio_atcgpio100_port_get_raw,
 	.port_set_masked_raw     = gpio_atcgpio100_set_masked_raw,

@@ -135,9 +135,9 @@
 			compatible = "snps,creg-gpio";
 			reg = <0xf00014b0 0x4>;
 			ngpios = <12>;
-			bit_per_gpio = <2>;
-			off_val = <0>;
-			on_val = <2>;
+			bit-per-gpio = <2>;
+			off-val = <0>;
+			on-val = <2>;
 
 			gpio-controller;
 			#gpio-cells = <2>;
@@ -185,6 +185,7 @@
 			reg = <0xf0020000 0x1000>;
 			interrupts = <40 1>;
 			fifo-depth = <32>;
+			max-xfer-size = <16>;
 			status = "disabled";
 		};
 
@@ -195,6 +196,7 @@
 			reg = <0xf0021000 0x1000>;
 			interrupts = <41 1>;
 			fifo-depth = <32>;
+			max-xfer-size = <16>;
 			status = "disabled";
 		};
 
@@ -205,6 +207,7 @@
 			reg = <0xf0022000 0x1000>;
 			interrupts = <42 1>;
 			fifo-depth = <32>;
+			max-xfer-size = <16>;
 			status = "disabled";
 		};
 

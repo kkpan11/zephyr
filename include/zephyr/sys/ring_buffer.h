@@ -26,6 +26,16 @@ extern "C" {
 /** @endcond */
 
 /**
+ * @file
+ * @defgroup ring_buffer_apis Ring Buffer APIs
+ * @ingroup datastructure_apis
+ *
+ * @brief Simple ring buffer implementation.
+ *
+ * @{
+ */
+
+/**
  * @brief A structure to represent a ring buffer
  */
 struct ring_buf {
@@ -40,16 +50,6 @@ struct ring_buf {
 	uint32_t size;
 	/** @endcond */
 };
-
-/**
- * @file
- * @defgroup ring_buffer_apis Ring Buffer APIs
- * @ingroup datastructure_apis
- *
- * @brief Simple ring buffer implementation.
- *
- * @{
- */
 
 /**
  * @brief Function to force ring_buf internal states to given value
@@ -170,9 +170,6 @@ static inline void ring_buf_init(struct ring_buf *buf,
  *
  * This routine initializes a ring buffer, prior to its first use. It is only
  * used for ring buffers not defined using RING_BUF_ITEM_DECLARE.
- *
- * Each data item is an array of 32-bit words (from zero to 1020 bytes in
- * length), coupled with a 16-bit type identifier and an 8-bit integer value.
  *
  * Each data item is an array of 32-bit words (from zero to 1020 bytes in
  * length), coupled with a 16-bit type identifier and an 8-bit integer value.

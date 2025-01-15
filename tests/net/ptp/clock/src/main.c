@@ -27,11 +27,11 @@ LOG_MODULE_REGISTER(net_test, NET_LOG_LEVEL);
 #include <zephyr/net/ptp_time.h>
 
 #include <zephyr/net/ethernet.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_l2.h>
 
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #define NET_LOG_ENABLED 1
 #include "net_private.h"
@@ -147,7 +147,7 @@ static void generate_mac(uint8_t *mac_addr)
 	mac_addr[2] = 0x5E;
 	mac_addr[3] = 0x00;
 	mac_addr[4] = 0x53;
-	mac_addr[5] = sys_rand32_get();
+	mac_addr[5] = sys_rand8_get();
 }
 
 static int eth_init(const struct device *dev)
@@ -226,7 +226,7 @@ static int my_ptp_clock_rate_adjust(const struct device *dev, double ratio)
 static struct ptp_context ptp_test_1_context;
 static struct ptp_context ptp_test_2_context;
 
-static const struct ptp_clock_driver_api api = {
+static DEVICE_API(ptp_clock, api) = {
 	.set = my_ptp_clock_set,
 	.get = my_ptp_clock_get,
 	.adjust = my_ptp_clock_adjust,

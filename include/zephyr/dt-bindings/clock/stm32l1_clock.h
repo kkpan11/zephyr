@@ -6,6 +6,8 @@
 #ifndef ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_
 #define ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_
 
+#include "stm32_common_clocks.h"
+
 /** Bus gatting clocks */
 #define STM32_CLOCK_BUS_AHB1    0x01c
 #define STM32_CLOCK_BUS_APB2    0x020
@@ -17,12 +19,12 @@
 /** Domain clocks */
 /* RM0038.pdf, §6.3.14 Control/status register (RCC_CSR) */
 
-/** Fixed clocks  */
-#define STM32_SRC_HSE		0x001
-#define STM32_SRC_LSE		0x002
-#define STM32_SRC_LSI		0x003
 /** System clock */
-#define STM32_SRC_SYSCLK	0x004
+/* defined in stm32_common_clocks.h */
+/** Fixed clocks  */
+/* Low speed clocks defined in stm32_common_clocks.h */
+#define STM32_SRC_HSE		(STM32_SRC_LSI + 1)
+#define STM32_SRC_HSI		(STM32_SRC_HSE + 1)
 
 #define STM32_CLOCK_REG_MASK    0xFFU
 #define STM32_CLOCK_REG_SHIFT   0U
@@ -46,7 +48,7 @@
  * @param mask Mask for the RCC_CCIPRx field.
  * @param val Clock value (0, 1, ... 7).
  */
-#define STM32_CLOCK(val, mask, shift, reg)					\
+#define STM32_DOMAIN_CLOCK(val, mask, shift, reg)					\
 	((((reg) & STM32_CLOCK_REG_MASK) << STM32_CLOCK_REG_SHIFT) |		\
 	 (((shift) & STM32_CLOCK_SHIFT_MASK) << STM32_CLOCK_SHIFT_SHIFT) |	\
 	 (((mask) & STM32_CLOCK_MASK_MASK) << STM32_CLOCK_MASK_SHIFT) |		\
@@ -55,9 +57,6 @@
 /** @brief RCC_CSR register offset */
 #define CSR_REG		0x34
 
-#define RTC_SEL(val)		STM32_CLOCK(val, 3, 16, CSR_REG)
-
-/** Dummy: Add a specificier when no selection is possible */
-#define NO_SEL			0xFF
+#define RTC_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 16, CSR_REG)
 
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L1_CLOCK_H_ */

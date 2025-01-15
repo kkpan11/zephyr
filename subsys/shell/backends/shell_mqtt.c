@@ -719,13 +719,13 @@ static int enable(const struct shell_transport *transport, bool blocking)
 
 	/* Listen for network connection status */
 	net_mgmt_add_event_callback(&sh_mqtt->mgmt_cb);
-	conn_mgr_resend_status();
+	conn_mgr_mon_resend_status();
 
 	return 0;
 }
 
-static int write(const struct shell_transport *transport, const void *data, size_t length,
-		 size_t *cnt)
+static int write_data(const struct shell_transport *transport, const void *data, size_t length,
+		      size_t *cnt)
 {
 	ARG_UNUSED(transport);
 	int rc = 0;
@@ -784,7 +784,8 @@ out:
 	return rc;
 }
 
-static int read(const struct shell_transport *transport, void *data, size_t length, size_t *cnt)
+static int read_data(const struct shell_transport *transport, void *data, size_t length,
+		     size_t *cnt)
 {
 	ARG_UNUSED(transport);
 
@@ -812,8 +813,8 @@ static int read(const struct shell_transport *transport, void *data, size_t leng
 const struct shell_transport_api shell_mqtt_transport_api = { .init = init,
 							      .uninit = uninit,
 							      .enable = enable,
-							      .write = write,
-							      .read = read };
+							      .write = write_data,
+							      .read = read_data };
 
 static int enable_shell_mqtt(void)
 {

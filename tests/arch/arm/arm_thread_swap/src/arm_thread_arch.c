@@ -12,10 +12,6 @@
 #include <offsets_short_arch.h>
 #include <ksched.h>
 
-#if !defined(__GNUC__)
-#error __FILE__ goes only with Cortex-M GCC
-#endif
-
 #if !defined(CONFIG_ARMV6_M_ARMV8_M_BASELINE) && \
 	!defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
 #error "Unsupported architecture"
@@ -221,8 +217,12 @@ static void verify_fp_callee_saved(const struct _preempt_float *src,
 #define ALT_THREAD_OPTIONS 0
 #endif /* CONFIG_FPU && CONFIG_FPU_SHARING */
 
-static void alt_thread_entry(void)
+static void alt_thread_entry(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	int init_flag, post_flag;
 
 	/* Lock interrupts to make sure we get preempted only when
@@ -425,6 +425,13 @@ static void alt_thread_entry(void)
 		"Alternative thread: switch flag not false on thread exit\n");
 }
 
+#if !defined(CONFIG_NO_OPTIMIZATIONS)
+static int __noinline arch_swap_wrapper(void)
+{
+	return arch_swap(BASEPRI_MODIFIED_1);
+}
+#endif
+
 ZTEST(arm_thread_swap, test_arm_thread_swap)
 {
 	int test_flag;
@@ -530,7 +537,7 @@ ZTEST(arm_thread_swap, test_arm_thread_swap)
 	k_thread_create(&alt_thread,
 		alt_thread_stack,
 		K_THREAD_STACK_SIZEOF(alt_thread_stack),
-		(k_thread_entry_t)alt_thread_entry,
+		alt_thread_entry,
 		NULL, NULL, NULL,
 		K_PRIO_COOP(PRIORITY), ALT_THREAD_OPTIONS,
 		K_NO_WAIT);
@@ -605,9 +612,11 @@ ZTEST(arm_thread_swap, test_arm_thread_swap)
 
 	/* Fake a different irq_unlock key when performing swap.
 	 * This will be verified by the alternative test thread.
+	 *
+	 * Force an indirect call to arch_swap() to prevent the compiler from
+	 * changing the saved callee registers as arch_swap() is inlined.
 	 */
-	register int swap_return_val __asm__("r0") =
-		arch_swap(BASEPRI_MODIFIED_1);
+	register int swap_return_val __asm__("r0") = arch_swap_wrapper();
 
 #endif /* CONFIG_NO_OPTIMIZATIONS */
 

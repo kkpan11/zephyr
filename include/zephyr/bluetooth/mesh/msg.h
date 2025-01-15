@@ -18,7 +18,7 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -97,6 +97,9 @@ struct bt_mesh_msg_ctx {
 
 	/** Force sending reliably by using segment acknowledgment */
 	bool  send_rel;
+
+	/** Send message with a random delay according to the Access layer transmitting rules. */
+	bool  rnd_delay;
 
 	/** TTL, or BT_MESH_TTL_DEFAULT for default TTL. */
 	uint8_t  send_ttl;

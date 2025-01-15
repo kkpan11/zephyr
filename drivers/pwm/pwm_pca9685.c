@@ -119,6 +119,7 @@ static int set_pre_scale(const struct device *dev, uint8_t value)
 	struct pca9685_data *data = dev->data;
 	uint8_t mode1;
 	int ret;
+	uint8_t restart = RESTART;
 
 	k_mutex_lock(&data->mutex, K_FOREVER);
 
@@ -134,9 +135,7 @@ static int set_pre_scale(const struct device *dev, uint8_t value)
 	}
 
 	if ((mode1 & RESTART) == 0x00) {
-		LOG_ERR("RESTART bit should be set");
-		ret = -EIO;
-		goto out;
+		restart = 0;
 	}
 
 	ret = set_reg(dev, ADDR_PRE_SCALE, value);
@@ -152,7 +151,7 @@ static int set_pre_scale(const struct device *dev, uint8_t value)
 
 	k_sleep(OSCILLATOR_STABILIZE);
 
-	ret = set_reg(dev, ADDR_MODE1, AUTO_INC | RESTART);
+	ret = set_reg(dev, ADDR_MODE1, AUTO_INC | restart);
 	if (ret != 0) {
 		goto out;
 	}
@@ -230,7 +229,7 @@ static int pca9685_get_cycles_per_sec(const struct device *dev,
 	return 0;
 }
 
-static const struct pwm_driver_api pca9685_api = {
+static DEVICE_API(pwm, pca9685_api) = {
 	.set_cycles = pca9685_set_cycles,
 	.get_cycles_per_sec = pca9685_get_cycles_per_sec,
 };

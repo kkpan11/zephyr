@@ -13,6 +13,7 @@ LOG_MODULE_REGISTER(LOG_DOMAIN);
 #include <zephyr/device.h>
 #include <string.h>
 #include <zephyr/drivers/flash.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/init.h>
 #include <soc.h>
 #include <stm32_ll_system.h>
@@ -74,7 +75,7 @@ static inline void flush_cache(FLASH_TypeDef *regs)
 
 static int write_dword(const struct device *dev, off_t offset, uint64_t val)
 {
-	volatile uint32_t *flash = (uint32_t *)(offset + CONFIG_FLASH_BASE_ADDRESS);
+	volatile uint32_t *flash = (uint32_t *)(offset + FLASH_STM32_BASE_ADDRESS);
 	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
 #if defined(FLASH_STM32_DBANK)
 	bool dcache_enabled = false;
@@ -253,6 +254,80 @@ int flash_stm32_write_range(const struct device *dev, unsigned int offset,
 
 	return rc;
 }
+
+int flash_stm32_option_bytes_write(const struct device *dev, uint32_t mask,
+				   uint32_t value)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+	int rc;
+
+	if (regs->CR & FLASH_CR_OPTLOCK) {
+		return -EIO;
+	}
+
+	if ((regs->OPTR & mask) == value) {
+		return 0;
+	}
+
+	rc = flash_stm32_wait_flash_idle(dev);
+	if (rc < 0) {
+		return rc;
+	}
+
+	regs->OPTR = (regs->OPTR & ~mask) | value;
+	regs->CR |= FLASH_CR_OPTSTRT;
+
+	/* Make sure previous write is completed. */
+	barrier_dsync_fence_full();
+
+	rc = flash_stm32_wait_flash_idle(dev);
+	if (rc < 0) {
+		return rc;
+	}
+
+	/* Force the option byte loading */
+	regs->CR |= FLASH_CR_OBL_LAUNCH;
+
+	return flash_stm32_wait_flash_idle(dev);
+}
+
+uint32_t flash_stm32_option_bytes_read(const struct device *dev)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+
+	return regs->OPTR;
+}
+
+#if defined(CONFIG_FLASH_STM32_WRITE_PROTECT)
+
+/*
+ * Remark for future development implementing Write Protection for the L4 parts:
+ *
+ * STM32L4 allows for 2 write protected memory areas, c.f. FLASH_WEP1AR, FLASH_WRP1BR
+ * which are defined by their start and end pages.
+ *
+ * Other STM32 parts (i.e. F4 series) uses bitmask to select sectors.
+ *
+ * To implement Write Protection for L4 one should thus add a new EX_OP like
+ * FLASH_STM32_EX_OP_SECTOR_WP_RANGED in stm32_flash_api_extensions.h
+ */
+
+#endif /* CONFIG_FLASH_STM32_WRITE_PROTECT */
+
+#if defined(CONFIG_FLASH_STM32_READOUT_PROTECTION)
+uint8_t flash_stm32_get_rdp_level(const struct device *dev)
+{
+	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
+
+	return (regs->OPTR & FLASH_OPTR_RDP_Msk) >> FLASH_OPTR_RDP_Pos;
+}
+
+void flash_stm32_set_rdp_level(const struct device *dev, uint8_t level)
+{
+	flash_stm32_option_bytes_write(dev, FLASH_OPTR_RDP_Msk,
+				       (uint32_t)level << FLASH_OPTR_RDP_Pos);
+}
+#endif /* CONFIG_FLASH_STM32_READOUT_PROTECTION */
 
 void flash_stm32_page_layout(const struct device *dev,
 			     const struct flash_pages_layout **layout,

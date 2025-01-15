@@ -6,6 +6,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/init.h>
 #include <zephyr/ztest.h>
 #include <zephyr/sys/printk.h>
@@ -21,9 +22,22 @@
 #define MY_DRIVER_A     "my_driver_A"
 #define MY_DRIVER_B     "my_driver_B"
 
+#define FAKEDEFERDRIVER0	DEVICE_DT_GET(DT_PATH(fakedeferdriver_e7000000))
+#define FAKEDEFERDRIVER1	DEVICE_DT_GET(DT_PATH(fakedeferdriver_e8000000))
+
 /* A device without init call */
 DEVICE_DEFINE(dummy_noinit, DUMMY_NOINIT, NULL, NULL, NULL, NULL,
 	      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, NULL);
+
+/* To access from userspace, the device needs an API. Use a dummy GPIO one */
+static DEVICE_API(gpio, fakedeferdriverapi);
+
+/* Fake deferred devices */
+DEVICE_DT_DEFINE(DT_INST(0, fakedeferdriver), NULL, NULL, NULL, NULL,
+	      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, NULL);
+DEVICE_DT_DEFINE(DT_INST(1, fakedeferdriver), NULL, NULL, NULL, NULL,
+	      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,
+	      &fakedeferdriverapi);
 
 /**
  * @brief Test cases to verify device objects
@@ -284,9 +298,9 @@ ZTEST(device, test_device_init_level)
 	bool seq_correct = true;
 
 	/* we check if the stored executing sequence for different level is
-	 * correct, and it should be 1, 2, 3, 4
+	 * correct, and it should be 1, 2, 3
 	 */
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 3; i++) {
 		if (init_level_sequence[i] != (i + 1)) {
 			seq_correct = false;
 		}
@@ -370,26 +384,72 @@ ZTEST(device, test_abstraction_driver_common)
 	dev = device_get_binding(MY_DRIVER_A);
 	zassert_false((dev == NULL));
 
-	ret = subsystem_do_this(dev, foo, bar);
+	ret = abstract_do_this(dev, foo, bar);
 	zassert_true(ret == (foo + bar), "common API do_this fail");
 
-	subsystem_do_that(dev, &baz);
+	abstract_do_that(dev, &baz);
 	zassert_true(baz == 1, "common API do_that fail");
 
 	/* verify driver B API has called */
 	dev = device_get_binding(MY_DRIVER_B);
 	zassert_false((dev == NULL));
 
-	ret = subsystem_do_this(dev, foo, bar);
+	ret = abstract_do_this(dev, foo, bar);
 	zassert_true(ret == (foo - bar), "common API do_this fail");
 
-	subsystem_do_that(dev, &baz);
+	abstract_do_that(dev, &baz);
 	zassert_true(baz == 2, "common API do_that fail");
 }
 
+ZTEST(device, test_deferred_init)
+{
+	int ret;
+
+	zassert_false(device_is_ready(FAKEDEFERDRIVER0));
+
+	ret = device_init(FAKEDEFERDRIVER0);
+	zassert_true(ret == 0);
+
+	zassert_true(device_is_ready(FAKEDEFERDRIVER0));
+}
+
+ZTEST(device, test_device_api)
+{
+	const struct device *dev;
+
+	dev = device_get_binding(MY_DRIVER_A);
+	zexpect_true(DEVICE_API_IS(abstract, dev));
+
+	dev = device_get_binding(MY_DRIVER_B);
+	zexpect_true(DEVICE_API_IS(abstract, dev));
+
+	dev = device_get_binding(DUMMY_NOINIT);
+	zexpect_false(DEVICE_API_IS(abstract, dev));
+}
+
+ZTEST_USER(device, test_deferred_init_user)
+{
+	int ret;
+
+	zassert_false(device_is_ready(FAKEDEFERDRIVER1));
+
+	ret = device_init(FAKEDEFERDRIVER1);
+	zassert_true(ret == 0);
+
+	zassert_true(device_is_ready(FAKEDEFERDRIVER1));
+}
+
+void *user_setup(void)
+{
+#ifdef CONFIG_USERSPACE
+	k_object_access_grant(FAKEDEFERDRIVER1, k_current_get());
+#endif
+
+	return NULL;
+}
 
 /**
  * @}
  */
 
-ZTEST_SUITE(device, NULL, NULL, NULL, NULL, NULL);
+ZTEST_SUITE(device, NULL, user_setup, NULL, NULL, NULL);

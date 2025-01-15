@@ -7,10 +7,10 @@
 from pathlib import Path
 from shutil import copy
 
-from runners.core import ZephyrBinaryRunner, RunnerCaps
+from runners.core import RunnerCaps, ZephyrBinaryRunner
 
 try:
-    import psutil  # pylint: disable=unused-import
+    import psutil
     MISSING_PSUTIL = False
 except ImportError:
     # This can happen when building the documentation for the
@@ -49,7 +49,7 @@ class UF2BinaryRunner(ZephyrBinaryRunner):
     @staticmethod
     def is_uf2_partition(part):
         try:
-            return ((part.fstype in ['vfat', 'FAT']) and
+            return ((part.fstype in ['vfat', 'FAT', 'msdos']) and
                     UF2BinaryRunner.get_uf2_info_path(part).is_file())
         except PermissionError:
             return False

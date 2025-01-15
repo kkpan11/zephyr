@@ -6,25 +6,25 @@
  */
 
 /* Set of macros related with Radio packet configuration flags */
-/* PDU type, 1 bit field*/
+/* PDU type, 2 bit field*/
 #define RADIO_PKT_CONF_PDU_TYPE_POS (0U)
-#define RADIO_PKT_CONF_PDU_TYPE_MSK BIT(RADIO_PKT_CONF_PDU_TYPE_POS)
+#define RADIO_PKT_CONF_PDU_TYPE_MSK (BIT_MASK(2U))
 #define RADIO_PKT_CONF_PDU_TYPE_AC  (0U)
 #define RADIO_PKT_CONF_PDU_TYPE_DC  (1U)
-#define RADIO_PKT_CONF_PDU_TYPE_BIS (1U)
-#define RADIO_PKT_CONF_PDU_TYPE_CIS (1U)
+#define RADIO_PKT_CONF_PDU_TYPE_BIS (2U)
+#define RADIO_PKT_CONF_PDU_TYPE_CIS (3U)
 /* PHY type, three bit field */
-#define RADIO_PKT_CONF_PHY_POS (1U)
-#define RADIO_PKT_CONF_PHY_MSK (BIT_MASK(3U))
-#define RADIO_PKT_CONF_PHY_LEGACY (0U)
-#define RADIO_PKT_CONF_PHY_1M (BIT(0U))
-#define RADIO_PKT_CONF_PHY_2M (BIT(1U))
-#define RADIO_PKT_CONF_PHY_CODED (BIT(2U))
+#define RADIO_PKT_CONF_PHY_POS      (2U)
+#define RADIO_PKT_CONF_PHY_MSK      (BIT_MASK(3U))
+#define RADIO_PKT_CONF_PHY_LEGACY   (0U)
+#define RADIO_PKT_CONF_PHY_1M       (BIT(0U))
+#define RADIO_PKT_CONF_PHY_2M       (BIT(1U))
+#define RADIO_PKT_CONF_PHY_CODED    (BIT(2U))
 /* CTE enabled, 1 bit field */
-#define RADIO_PKT_CONF_CTE_POS (4U)
-#define RADIO_PKT_CONF_CTE_MSK BIT(0)
+#define RADIO_PKT_CONF_CTE_POS      (5U)
+#define RADIO_PKT_CONF_CTE_MSK      (BIT_MASK(1U))
 #define RADIO_PKT_CONF_CTE_DISABLED (0U)
-#define RADIO_PKT_CONF_CTE_ENABLED (1U)
+#define RADIO_PKT_CONF_CTE_ENABLED  (1U)
 
 /* Macro to define length of the BLE packet length field in bits */
 #define RADIO_PKT_CONF_LENGTH_8BIT (8U)
@@ -70,7 +70,7 @@ int8_t radio_tx_power_max_get(void);
 int8_t radio_tx_power_floor(int8_t power);
 void radio_freq_chan_set(uint32_t chan);
 void radio_whiten_iv_set(uint32_t iv);
-void radio_aa_set(uint8_t *aa);
+void radio_aa_set(const uint8_t *aa);
 void radio_pkt_configure(uint8_t bits_len, uint8_t max_len, uint8_t flags);
 void radio_pkt_rx_set(void *rx_packet);
 void radio_pkt_tx_set(void *tx_packet);
@@ -84,7 +84,9 @@ void radio_disable(void);
 
 void radio_status_reset(void);
 uint32_t radio_is_ready(void);
+uint32_t radio_is_address(void);
 uint32_t radio_is_done(void);
+uint32_t radio_is_tx_done(void);
 uint32_t radio_has_disabled(void);
 uint32_t radio_is_idle(void);
 
@@ -106,6 +108,8 @@ void radio_switch_complete_and_b2b_tx(uint8_t phy_curr, uint8_t flags_curr,
 				      uint8_t phy_next, uint8_t flags_next);
 void radio_switch_complete_and_b2b_rx(uint8_t phy_curr, uint8_t flags_curr,
 				      uint8_t phy_next, uint8_t flags_next);
+void radio_switch_complete_and_b2b_tx_disable(void);
+void radio_switch_complete_and_b2b_rx_disable(void);
 void radio_switch_complete_and_disable(void);
 
 uint8_t radio_phy_flags_rx_get(void);
@@ -126,6 +130,9 @@ void radio_bc_configure(uint32_t n);
 void radio_bc_status_reset(void);
 uint32_t radio_bc_has_match(void);
 
+void isr_radio_tmr(void);
+uint32_t radio_tmr_isr_set(uint32_t start_us, radio_isr_cb_t cb, void *param);
+
 void radio_tmr_status_reset(void);
 void radio_tmr_tx_status_reset(void);
 void radio_tmr_rx_status_reset(void);
@@ -135,7 +142,7 @@ void radio_tmr_tx_disable(void);
 void radio_tmr_rx_disable(void);
 void radio_tmr_tifs_set(uint32_t tifs);
 uint32_t radio_tmr_start(uint8_t trx, uint32_t ticks_start, uint32_t remainder);
-uint32_t radio_tmr_start_tick(uint8_t trx, uint32_t tick);
+uint32_t radio_tmr_start_tick(uint8_t trx, uint32_t ticks_start);
 uint32_t radio_tmr_start_us(uint8_t trx, uint32_t us);
 uint32_t radio_tmr_start_now(uint8_t trx);
 uint32_t radio_tmr_start_get(void);
@@ -154,17 +161,20 @@ uint32_t radio_tmr_tifs_base_get(void);
 void radio_tmr_sample(void);
 uint32_t radio_tmr_sample_get(void);
 
+int radio_gpio_pa_lna_init(void);
+void radio_gpio_pa_lna_deinit(void);
 void radio_gpio_pa_setup(void);
 void radio_gpio_lna_setup(void);
 void radio_gpio_pdn_setup(void);
-void radio_gpio_csn_setup(void);
 void radio_gpio_lna_on(void);
 void radio_gpio_lna_off(void);
 void radio_gpio_pa_lna_enable(uint32_t trx_us);
 void radio_gpio_pa_lna_disable(void);
 
 void *radio_ccm_rx_pkt_set(struct ccm *ccm, uint8_t phy, void *pkt);
+void *radio_ccm_iso_rx_pkt_set(struct ccm *ccm, uint8_t phy, uint8_t pdu_type, void *pkt);
 void *radio_ccm_tx_pkt_set(struct ccm *ccm, void *pkt);
+void *radio_ccm_iso_tx_pkt_set(struct ccm *ccm, uint8_t pdu_type, void *pkt);
 uint32_t radio_ccm_is_done(void);
 uint32_t radio_ccm_mic_is_valid(void);
 

@@ -16,7 +16,7 @@
 
 		cpu@0 {
 			device_type = "cpu";
-			compatible = "intel,elkhart_lake";
+			compatible = "intel,elkhart-lake", "intel,x86_64";
 			d-cache-line-size = <64>;
 			reg = <0>;
 		};
@@ -29,8 +29,8 @@
 	};
 
 	ibecc: ibecc {
-	       compatible = "intel,ibecc";
-	       status = "okay";
+		compatible = "intel,ibecc";
+		status = "okay";
 	};
 
 	intc: ioapic@fec00000  {
@@ -41,10 +41,19 @@
 		interrupt-controller;
 	};
 
+	intc_loapic: loapic@fee00000  {
+		compatible = "intel,loapic";
+		reg = <0xfee00000 0x1000>;
+		interrupt-controller;
+		#interrupt-cells = <3>;
+		#address-cells = <1>;
+	};
+
 	pcie0: pcie0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "intel,pcie";
+		compatible = "pcie-controller";
+		acpi-hid = "PNP0A08";
 		ranges;
 
 		ptm_root0: ptm_root0 {
@@ -196,7 +205,7 @@
 			#size-cells = <0>;
 			vendor-id = <0x8086>;
 			device-id = <0x4b23>;
-			interrupts = <16 IRQ_TYPE_LOWEST_LEVEL_LOW 3>;
+			interrupts = <PCIE_IRQ_DETECT IRQ_TYPE_LOWEST_LEVEL_LOW 3>;
 			interrupt-parent = <&intc>;
 
 			status = "okay";

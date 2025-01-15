@@ -141,6 +141,7 @@ static void tab_item_print(const struct shell *sh, const char *option,
 
 	columns = (sh->ctx->vt100_ctx.cons.terminal_wid
 			- z_shell_strlen(tab)) / longest_option;
+	__ASSERT_NO_MSG(columns != 0);
 	diff = longest_option - z_shell_strlen(option);
 
 	if (sh->ctx->vt100_ctx.printed_cmd++ % columns == 0U) {
@@ -288,8 +289,8 @@ static bool tab_prepare(const struct shell *sh,
 	/* If last command is not completed (followed by space) it is treated
 	 * as uncompleted one.
 	 */
-	int space = isspace((int)sh->ctx->cmd_buff[
-						sh->ctx->cmd_buff_pos - 1]);
+	int space = (sh->ctx->cmd_buff_pos > 0) ?
+		     isspace((int)sh->ctx->cmd_buff[sh->ctx->cmd_buff_pos - 1]) : 0;
 
 	/* root command completion */
 	if ((*argc == 0) || ((space == 0) && (*argc == 1))) {
@@ -528,8 +529,10 @@ static int exec_cmd(const struct shell *sh, size_t argc, const char **argv,
 			shell_internal_help_print(sh);
 			return SHELL_CMD_HELP_PRINTED;
 		} else {
-			z_shell_fprintf(sh, SHELL_ERROR,
-					SHELL_MSG_SPECIFY_SUBCOMMAND);
+			if (IS_ENABLED(CONFIG_SHELL_MSG_SPECIFY_SUBCOMMAND)) {
+				z_shell_fprintf(sh, SHELL_ERROR,
+						SHELL_MSG_SPECIFY_SUBCOMMAND);
+			}
 			return -ENOEXEC;
 		}
 	}
@@ -692,8 +695,10 @@ static int execute(const struct shell *sh)
 				return SHELL_CMD_HELP_PRINTED;
 			}
 
-			z_shell_fprintf(sh, SHELL_ERROR,
-					SHELL_MSG_SPECIFY_SUBCOMMAND);
+			if (IS_ENABLED(CONFIG_SHELL_MSG_SPECIFY_SUBCOMMAND)) {
+				z_shell_fprintf(sh, SHELL_ERROR,
+						SHELL_MSG_SPECIFY_SUBCOMMAND);
+			}
 			return -ENOEXEC;
 		}
 
@@ -736,7 +741,8 @@ static int execute(const struct shell *sh)
 					  &cmd_with_handler_lvl, &args_left);
 			parent = entry;
 		} else {
-			if (cmd_lvl == 0 &&
+			if (IS_ENABLED(CONFIG_SHELL_MSG_CMD_NOT_FOUND) &&
+				cmd_lvl == 0 &&
 				(!z_shell_in_select_mode(sh) ||
 				 sh->ctx->selected_cmd->handler == NULL)) {
 				z_shell_fprintf(sh, SHELL_ERROR,
@@ -952,7 +958,11 @@ static bool process_nl(const struct shell *sh, uint8_t data)
 #define SHELL_ASCII_MAX_CHAR (127u)
 static inline int ascii_filter(const char data)
 {
-	return (uint8_t) data > SHELL_ASCII_MAX_CHAR ? -EINVAL : 0;
+	if (IS_ENABLED(CONFIG_SHELL_ASCII_FILTER)) {
+		return (uint8_t) data > SHELL_ASCII_MAX_CHAR ? -EINVAL : 0;
+	} else {
+		return 0;
+	}
 }
 
 static void state_collect(const struct shell *sh)
@@ -1199,7 +1209,6 @@ static int instance_init(const struct shell *sh,
 			(sh->shell_flag == SHELL_FLAG_OLF_CRLF));
 
 	memset(sh->ctx, 0, sizeof(*sh->ctx));
-	sh->ctx->prompt = sh->default_prompt;
 	if (CONFIG_SHELL_CMD_ROOT[0]) {
 		sh->ctx->selected_cmd = root_cmd_find(CONFIG_SHELL_CMD_ROOT);
 	}
@@ -1226,7 +1235,13 @@ static int instance_init(const struct shell *sh,
 					CONFIG_SHELL_DEFAULT_TERMINAL_WIDTH;
 	sh->ctx->vt100_ctx.cons.terminal_hei =
 					CONFIG_SHELL_DEFAULT_TERMINAL_HEIGHT;
+
+#if defined(CONFIG_SHELL_PROMPT_CHANGE) && CONFIG_SHELL_PROMPT_CHANGE
+	shell_prompt_change(sh, sh->default_prompt);
+#else
+	sh->ctx->prompt = sh->default_prompt;
 	sh->ctx->vt100_ctx.cons.name_len = z_shell_strlen(sh->ctx->prompt);
+#endif
 
 	/* Configure backend according to enabled shell features and backend
 	 * specific settings.
@@ -1303,25 +1318,22 @@ static void kill_handler(const struct shell *sh)
 
 	sh->ctx->tid = NULL;
 	k_thread_abort(k_current_get());
+
+	CODE_UNREACHABLE;
 }
 
 void shell_thread(void *shell_handle, void *arg_log_backend,
 		  void *arg_log_level)
 {
 	struct shell *sh = shell_handle;
-	bool log_backend = (bool)arg_log_backend;
-	uint32_t log_level = POINTER_TO_UINT(arg_log_level);
 	int err;
+
+	z_flag_handle_log_set(sh, (bool)arg_log_backend);
+	sh->ctx->log_level = POINTER_TO_UINT(arg_log_level);
 
 	err = sh->iface->api->enable(sh->iface, false);
 	if (err != 0) {
 		return;
-	}
-
-	if (IS_ENABLED(CONFIG_SHELL_LOG_BACKEND) && log_backend
-	    && !IS_ENABLED(CONFIG_SHELL_START_OBSCURED)) {
-		z_shell_log_backend_enable(sh->log_backend, (void *)sh,
-					   log_level);
 	}
 
 	if (IS_ENABLED(CONFIG_SHELL_AUTOSTART)) {
@@ -1386,7 +1398,7 @@ int shell_init(const struct shell *sh, const void *transport_config,
 				  SHELL_THREAD_PRIORITY, 0, K_NO_WAIT);
 
 	sh->ctx->tid = tid;
-	k_thread_name_set(tid, sh->thread_name);
+	k_thread_name_set(tid, sh->name);
 
 	return 0;
 }
@@ -1424,16 +1436,30 @@ int shell_start(const struct shell *sh)
 		return -ENOTSUP;
 	}
 
+	if (IS_ENABLED(CONFIG_SHELL_LOG_BACKEND) && z_flag_handle_log_get(sh)
+	    && !z_flag_obscure_get(sh)) {
+		z_shell_log_backend_enable(sh->log_backend, (void *)sh, sh->ctx->log_level);
+	}
+
 	k_mutex_lock(&sh->ctx->wr_mtx, K_FOREVER);
 
 	if (IS_ENABLED(CONFIG_SHELL_VT100_COLORS)) {
 		z_shell_vt100_color_set(sh, SHELL_NORMAL);
 	}
 
-	if (z_shell_strlen(sh->default_prompt) > 0) {
-		z_shell_raw_fprintf(sh->fprintf_ctx, "\n\n");
-	}
+	/* print new line before printing the prompt to clear the line
+	 * vt100 are not used here for compatibility reasons
+	 */
+	z_cursor_next_line_move(sh);
 	state_set(sh, SHELL_STATE_ACTIVE);
+
+	/*
+	 * If the shell is stopped with the shell_stop function, its backend remains active
+	 * and continues to buffer incoming data. As a result, when the shell is resumed,
+	 * all buffered data is processed, which may lead to the execution of commands
+	 * received while the shell was stopped.
+	 */
+	z_shell_backend_rx_buffer_flush(sh);
 
 	k_mutex_unlock(&sh->ctx->wr_mtx);
 
@@ -1453,6 +1479,10 @@ int shell_stop(const struct shell *sh)
 	}
 
 	state_set(sh, SHELL_STATE_INITIALIZED);
+
+	if (IS_ENABLED(CONFIG_SHELL_LOG_BACKEND)) {
+		z_shell_log_backend_disable(sh->log_backend);
+	}
 
 	return 0;
 }
@@ -1480,6 +1510,17 @@ void shell_process(const struct shell *sh)
 
 	/* atomically clear the processing flag */
 	z_flag_processing_set(sh, false);
+}
+
+const struct shell *shell_backend_get_by_name(const char *backend_name)
+{
+	STRUCT_SECTION_FOREACH(shell, backend) {
+		if (strcmp(backend_name, backend->name) == 0) {
+			return backend;
+		}
+	}
+
+	return NULL;
 }
 
 /* This function mustn't be used from shell context to avoid deadlock.
@@ -1514,16 +1555,57 @@ void shell_vfprintf(const struct shell *sh, enum shell_vt100_color color,
 	k_mutex_unlock(&sh->ctx->wr_mtx);
 }
 
-/* This function mustn't be used from shell context to avoid deadlock.
- * However it can be used in shell command handlers.
+/* These functions mustn't be used from shell context to avoid deadlock:
+ * - shell_fprintf_impl
+ * - shell_fprintf_info
+ * - shell_fprintf_normal
+ * - shell_fprintf_warn
+ * - shell_fprintf_error
+ * However, they can be used in shell command handlers.
  */
-void shell_fprintf(const struct shell *sh, enum shell_vt100_color color,
+void shell_fprintf_impl(const struct shell *sh, enum shell_vt100_color color,
 		   const char *fmt, ...)
 {
 	va_list args;
 
 	va_start(args, fmt);
 	shell_vfprintf(sh, color, fmt, args);
+	va_end(args);
+}
+
+void shell_fprintf_info(const struct shell *sh, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	shell_vfprintf(sh, SHELL_INFO, fmt, args);
+	va_end(args);
+}
+
+void shell_fprintf_normal(const struct shell *sh, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	shell_vfprintf(sh, SHELL_NORMAL, fmt, args);
+	va_end(args);
+}
+
+void shell_fprintf_warn(const struct shell *sh, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	shell_vfprintf(sh, SHELL_WARNING, fmt, args);
+	va_end(args);
+}
+
+void shell_fprintf_error(const struct shell *sh, const char *fmt, ...)
+{
+	va_list args;
+
+	va_start(args, fmt);
+	shell_vfprintf(sh, SHELL_ERROR, fmt, args);
 	va_end(args);
 }
 
@@ -1534,35 +1616,35 @@ void shell_hexdump_line(const struct shell *sh, unsigned int offset,
 
 	int i;
 
-	shell_fprintf(sh, SHELL_NORMAL, "%08X: ", offset);
+	shell_fprintf_normal(sh, "%08X: ", offset);
 
 	for (i = 0; i < SHELL_HEXDUMP_BYTES_IN_LINE; i++) {
 		if (i > 0 && !(i % 8)) {
-			shell_fprintf(sh, SHELL_NORMAL, " ");
+			shell_fprintf_normal(sh, " ");
 		}
 
 		if (i < len) {
-			shell_fprintf(sh, SHELL_NORMAL, "%02x ",
-				      data[i] & 0xFF);
+			shell_fprintf_normal(sh, "%02x ",
+					     data[i] & 0xFF);
 		} else {
-			shell_fprintf(sh, SHELL_NORMAL, "   ");
+			shell_fprintf_normal(sh, "   ");
 		}
 	}
 
-	shell_fprintf(sh, SHELL_NORMAL, "|");
+	shell_fprintf_normal(sh, "|");
 
 	for (i = 0; i < SHELL_HEXDUMP_BYTES_IN_LINE; i++) {
 		if (i > 0 && !(i % 8)) {
-			shell_fprintf(sh, SHELL_NORMAL, " ");
+			shell_fprintf_normal(sh, " ");
 		}
 
 		if (i < len) {
 			char c = data[i];
 
-			shell_fprintf(sh, SHELL_NORMAL, "%c",
-				      isprint((int)c) != 0 ? c : '.');
+			shell_fprintf_normal(sh, "%c",
+					     isprint((int)c) != 0 ? c : '.');
 		} else {
-			shell_fprintf(sh, SHELL_NORMAL, " ");
+			shell_fprintf_normal(sh, " ");
 		}
 	}
 
@@ -1588,15 +1670,35 @@ void shell_hexdump(const struct shell *sh, const uint8_t *data, size_t len)
 
 int shell_prompt_change(const struct shell *sh, const char *prompt)
 {
+#if defined(CONFIG_SHELL_PROMPT_CHANGE) && CONFIG_SHELL_PROMPT_CHANGE
 	__ASSERT_NO_MSG(sh);
 
 	if (prompt == NULL) {
 		return -EINVAL;
 	}
-	sh->ctx->prompt = prompt;
-	sh->ctx->vt100_ctx.cons.name_len = z_shell_strlen(prompt);
+
+	static const size_t mtx_timeout_ms = 20;
+	size_t prompt_length = z_shell_strlen(prompt);
+
+	if (k_mutex_lock(&sh->ctx->wr_mtx, K_MSEC(mtx_timeout_ms))) {
+		return -EBUSY;
+	}
+
+	if ((prompt_length + 1 > CONFIG_SHELL_PROMPT_BUFF_SIZE) || (prompt_length == 0)) {
+		k_mutex_unlock(&sh->ctx->wr_mtx);
+		return -EINVAL;
+	}
+
+	strcpy(sh->ctx->prompt, prompt);
+
+	sh->ctx->vt100_ctx.cons.name_len = prompt_length;
+
+	k_mutex_unlock(&sh->ctx->wr_mtx);
 
 	return 0;
+#else
+	return -EPERM;
+#endif
 }
 
 void shell_help(const struct shell *sh)

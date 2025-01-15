@@ -11,9 +11,11 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/sys/sys_io.h>
-
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
+
+#include <soc.h>
+
 LOG_MODULE_REGISTER(uart_neorv32, CONFIG_UART_LOG_LEVEL);
 
 /* NEORV32 UART registers offsets */
@@ -437,7 +439,7 @@ static int neorv32_uart_pm_action(const struct device *dev,
 }
 #endif /* CONFIG_PM_DEVICE */
 
-static const struct uart_driver_api neorv32_uart_driver_api = {
+static DEVICE_API(uart, neorv32_uart_driver_api) = {
 	.poll_in = neorv32_uart_poll_in,
 	.poll_out = neorv32_uart_poll_out,
 #ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE

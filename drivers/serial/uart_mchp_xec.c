@@ -217,9 +217,9 @@ struct uart_xec_dev_data {
 	struct k_work_delayable rx_refresh_timeout_work;
 #endif
 
-static const struct uart_driver_api uart_xec_driver_api;
+static DEVICE_API(uart, uart_xec_driver_api);
 
-#ifdef CONFIG_PM_DEVICE
+#if defined(CONFIG_PM_DEVICE) && defined(CONFIG_UART_CONSOLE_INPUT_EXPIRED)
 static void uart_xec_pm_policy_state_lock_get(enum uart_xec_pm_policy_state_flag flag)
 {
 	if (atomic_test_and_set_bit(pm_policy_state_flag, flag) == 0) {
@@ -644,7 +644,7 @@ static int uart_xec_fifo_fill(const struct device *dev, const uint8_t *tx_data,
 	k_spinlock_key_t key = k_spin_lock(&dev_data->lock);
 
 	for (i = 0; (i < size) && (regs->LSR & LSR_THRE) != 0; i++) {
-#ifdef CONFIG_PM_DEVICE
+#if defined(CONFIG_PM_DEVICE) && defined(CONFIG_UART_CONSOLE_INPUT_EXPIRED)
 		uart_xec_pm_policy_state_lock_get(UART_XEC_PM_POLICY_STATE_TX_FLAG);
 #endif
 		regs->RTXB = tx_data[i];
@@ -747,10 +747,15 @@ static int uart_xec_irq_tx_complete(const struct device *dev)
 	const struct uart_xec_device_config * const dev_cfg = dev->config;
 	struct uart_xec_dev_data *dev_data = dev->data;
 	struct uart_regs *regs = dev_cfg->regs;
+	int ret;
 	k_spinlock_key_t key = k_spin_lock(&dev_data->lock);
 
-	int ret = ((regs->LSR & (LSR_TEMT | LSR_THRE))
-				== (LSR_TEMT | LSR_THRE)) ? 1 : 0;
+	if ((regs->IER & IER_TBE) ||
+	    ((regs->LSR & (LSR_TEMT | LSR_THRE)) != (LSR_TEMT | LSR_THRE))) {
+		ret = 0;
+	} else {
+		ret = 1;
+	}
 
 	k_spin_unlock(&dev_data->lock, key);
 
@@ -933,7 +938,7 @@ static void uart_xec_isr(const struct device *dev)
 		dev_data->cb(dev, dev_data->cb_data);
 	}
 
-#ifdef CONFIG_PM_DEVICE
+#if defined(CONFIG_PM_DEVICE) && defined(CONFIG_UART_CONSOLE_INPUT_EXPIRED)
 	if (uart_xec_irq_tx_complete(dev)) {
 		uart_xec_pm_policy_state_lock_put(UART_XEC_PM_POLICY_STATE_TX_FLAG);
 	}
@@ -996,7 +1001,7 @@ static int uart_xec_line_ctrl_set(const struct device *dev,
 
 #endif /* CONFIG_UART_XEC_LINE_CTRL */
 
-static const struct uart_driver_api uart_xec_driver_api = {
+static DEVICE_API(uart, uart_xec_driver_api) = {
 	.poll_in = uart_xec_poll_in,
 	.poll_out = uart_xec_poll_out,
 	.err_check = uart_xec_err_check,
@@ -1097,7 +1102,7 @@ static const struct uart_driver_api uart_xec_driver_api = {
 		.uart_config.flow_ctrl = DEV_DATA_FLOW_CTRL(n),		\
 	};								\
 	PM_DEVICE_DT_INST_DEFINE(n, uart_xec_pm_action);		\
-	DEVICE_DT_INST_DEFINE(n, &uart_xec_init,			\
+	DEVICE_DT_INST_DEFINE(n, uart_xec_init,				\
 			      PM_DEVICE_DT_INST_GET(n),			\
 			      &uart_xec_dev_data_##n,			\
 			      &uart_xec_dev_cfg_##n,			\

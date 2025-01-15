@@ -1,7 +1,10 @@
-.. _thrift-hello-sample:
+.. zephyr:code-sample:: thrift-hello
+   :name: Apache Thrift Hello World
 
-Thrift sample
-#############
+   Implement a simple Apache Thrift client-server application.
+
+Overview
+********
 
 .. figure:: thrift-layers.png
    :align: center
@@ -48,13 +51,32 @@ layers in thrift can be combined to build an application with desired features.
 Requirements
 ************
 
-- QEMU Networking (described in :ref:`networking_with_qemu`)
-- Thrift dependencies installed for your host OS e.g. in Ubuntu
+- Optional Modules
 
 .. code-block:: console
-   :caption: Install additional dependencies in Ubuntu
+   :caption: Download optional modules with west
 
-   sudo apt install -y libboost-all-dev thrift-compiler libthrift-dev
+   west config manifest.group-filter -- +optional
+   west update
+
+- QEMU Networking (described in :ref:`networking_with_qemu`)
+- Thrift dependencies installed for your host OS
+
+.. tabs::
+
+   .. group-tab:: Ubuntu
+
+      .. code-block:: bash
+        :caption: Install thrift dependencies in Ubuntu
+
+         sudo apt install -y libboost-all-dev thrift-compiler libthrift-dev
+
+   .. group-tab:: macOS
+
+      .. code-block:: bash
+        :caption: Install thrift dependencies in macOS
+
+         brew install boost openssl thrift
 
 Building and Running
 ********************

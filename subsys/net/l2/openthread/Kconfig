@@ -16,10 +16,8 @@ menuconfig NET_L2_OPENTHREAD
 	select OPENTHREAD
 
 	imply FLASH
-	imply FLASH_PAGE_LAYOUT
 	imply FLASH_MAP
 	imply MPU_ALLOW_FLASH_WRITE
-	imply NVS
 
 	select SETTINGS if FLASH
 	select OPENTHREAD_SETTINGS_RAM if !FLASH
@@ -151,7 +149,6 @@ endmenu # "Zephyr optimizations"
 config OPENTHREAD_SHELL
 	bool "OpenThread shell"
 	depends on SHELL
-	default y
 
 config MBEDTLS_PROMPTLESS
 	bool
@@ -183,9 +180,9 @@ config OPENTHREAD_MBEDTLS
 	select MBEDTLS_ENABLE_HEAP
 	select MBEDTLS_CIPHER_AES_ENABLED
 	select MBEDTLS_CIPHER_CCM_ENABLED
-	select MBEDTLS_MAC_SHA256_ENABLED
-	select MBEDTLS_ENTROPY_ENABLED
-	select MBEDTLS_MAC_CMAC_ENABLED
+	select MBEDTLS_SHA256
+	select MBEDTLS_ENTROPY_C
+	select MBEDTLS_CMAC
 	select MBEDTLS_CIPHER
 	select MBEDTLS_MD
 	select MBEDTLS_TLS_VERSION_1_2 if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER
@@ -195,7 +192,6 @@ config OPENTHREAD_MBEDTLS
 	select MBEDTLS_ECP_DP_SECP256R1_ENABLED if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER || \
 	    OPENTHREAD_SRP_CLIENT || OPENTHREAD_SRP_SERVER
 	select MBEDTLS_ECP_NIST_OPTIM if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER
-	select MBEDTLS_SSL_EXPORT_KEYS if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER
 	select MBEDTLS_CTR_DRBG_ENABLED if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER
 	select MBEDTLS_HMAC_DRBG_ENABLED if OPENTHREAD_COMMISSIONER || OPENTHREAD_JOINER || \
 	    OPENTHREAD_SRP_CLIENT || OPENTHREAD_SRP_SERVER
@@ -276,6 +272,11 @@ config OPENTHREAD_MESSAGE_BUFFER_SIZE
 	help
 	  "The size of a message buffer in bytes"
 
+config OPENTHREAD_PLATFORM_MESSAGE_MANAGEMENT
+	bool "Use platform message management"
+	help
+	  The message pool is managed by platform defined logic.
+
 config OPENTHREAD_MAX_STATECHANGE_HANDLERS
 	int "The maximum number of state-changed callback handlers"
 	default 2
@@ -288,6 +289,14 @@ config OPENTHREAD_TMF_ADDRESS_CACHE_ENTRIES
 	default 20
 	help
 	  The number of EID-to-RLOC cache entries.
+
+config OPENTHREAD_TMF_ADDRESS_CACHE_MAX_SNOOP_ENTRIES
+	int "The maximum number of EID-to-RLOC cache entries"
+	default 2
+	help
+	  The maximum number of EID-to-RLOC cache entries that can be used for
+	  "snoop optimization" where an entry is created by inspecting a received
+	  message.
 
 config OPENTHREAD_LOG_PREPEND_LEVEL_ENABLE
 	bool "Prepending the log level to all OpenThread log messages"
@@ -316,22 +325,16 @@ config OPENTHREAD_MAC_SOFTWARE_CSMA_BACKOFF_ENABLE
 
 config OPENTHREAD_CRYPTO_PSA
 	bool "ARM PSA crypto API"
-	depends on MBEDTLS_PSA_CRYPTO_C || BUILD_WITH_TFM
-	select OPENTHREAD_PLATFORM_KEY_REFERENCES_ENABLE
-	select OPENTHREAD_PLATFORM_KEYS_EXPORTABLE_ENABLE
+	depends on MBEDTLS_PSA_CRYPTO_CLIENT
+	select OPENTHREAD_PLATFORM_KEY_REF if !OPENTHREAD_COPROCESSOR_RCP
+	imply OPENTHREAD_PLATFORM_KEYS_EXPORTABLE_ENABLE
 	help
 	  Enable crypto backend library implementation based on ARM PSA crypto
 	  API instead of the default, using mbedTLS.
 
-config OPENTHREAD_PLATFORM_KEY_REFERENCES_ENABLE
-	bool "Cryptographic key reference support"
-	help
-	  Enable usage of cryptographic key references instead of literal keys
-	  This requires a crypto backend library that supports key references.
-
 config OPENTHREAD_PLATFORM_KEYS_EXPORTABLE_ENABLE
 	bool "Make MAC keys exportable"
-	depends on OPENTHREAD_PLATFORM_KEY_REFERENCES_ENABLE
+	depends on OPENTHREAD_PLATFORM_KEY_REF
 	help
 	  Enable the creation of exportable MAC keys in the OpenThread Key Manager.
 

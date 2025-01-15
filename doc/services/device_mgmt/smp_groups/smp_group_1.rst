@@ -3,7 +3,7 @@
 Application/software image management group
 ###########################################
 
-Application/software image management management group defines following commands:
+Application/software image management group defines following commands:
 
 .. table::
     :align: center
@@ -25,6 +25,8 @@ Application/software image management management group defines following command
     |                   | (reserved but not supported by Zephyr)        |
     +-------------------+-----------------------------------------------+
     | ``5``             | Image erase                                   |
+    +-------------------+-----------------------------------------------+
+    | ``6``             | Slot info                                     |
     +-------------------+-----------------------------------------------+
 
 Notion of "slots" and "images" in Zephyr
@@ -75,7 +77,7 @@ Get state of images request header fields:
     | ``0``  | ``1``        |  ``0``         |
     +--------+--------------+----------------+
 
-The command sends sends empty CBOR map as data.
+The command sends an empty CBOR map as data.
 
 .. _mcumgr_smp_protocol_op_1_grp_1_cmd_0:
 
@@ -127,73 +129,85 @@ CBOR data of successful response:
 
 In case of error the CBOR data takes the form:
 
-.. code-block:: none
+.. tabs::
 
-    {
-        (str)"rc"      : (int)
-        (str,opt)"rsn" : (str)
-    }
+   .. group-tab:: SMP version 2
+
+      .. code-block:: none
+
+          {
+              (str)"err" : {
+                  (str)"group"    : (uint)
+                  (str)"rc"       : (uint)
+              }
+          }
+
+   .. group-tab:: SMP version 1 (and non-group SMP version 2)
+
+      .. code-block:: none
+
+          {
+              (str)"rc"       : (int)
+              (str,opt)"rsn"  : (str)
+          }
 
 where:
 
 .. table::
     :align: center
 
-    +-----------------------+---------------------------------------------------+
-    | "image"               | semi-optional image number; the field is not      |
-    |                       | required when only one image is supported by      |
-    |                       | running application                               |
-    +-----------------------+---------------------------------------------------+
-    | "slot"                | slot number within "image"; each image has two    |
-    |                       | slots : primary (running one) = 0 and secondary   |
-    |                       | (for DFU dual-bank purposes) = 1                  |
-    +-----------------------+---------------------------------------------------+
-    | "version"             | string representing image version, as set with    |
-    |                       | ``imgtool``                                       |
-    +-----------------------+---------------------------------------------------+
-    | "hash"                | SHA256 hash of the image header and body. Note    |
-    |                       | that this will not be the same as the SHA256 of   |
-    |                       | the whole file, it is the field in the MCUboot    |
-    |                       | TLV section that contains a hash of the data      |
-    |                       | which is used for signature verification          |
-    |                       | purposes. This field is optional but only         |
-    |                       | optional when using MCUboot's serial recovery     |
-    |                       | feature with one pair of image slots, Kconfig     |
-    |                       | :kconfig:option:`CONFIG_BOOT_SERIAL_IMG_GRP_HASH` |
-    |                       | can be disabled to remove support for hashes in   |
-    |                       | this configuration. MCUmgr in applications must   |
-    |                       | support sending hashes.                           |
-    |                       |                                                   |
-    |                       | .. note::                                         |
-    |                       |    See ``IMAGE_TLV_SHA256`` in the MCUboot image  |
-    |                       |    format documentation link below.               |
-    +-----------------------+---------------------------------------------------+
-    | "bootable"            | true if image has bootable flag set;              |
-    |                       | this field does not have to be present if false   |
-    +-----------------------+---------------------------------------------------+
-    | "pending"             | true if image is set for next swap                |
-    |                       | this field does not have to be present if false   |
-    +-----------------------+---------------------------------------------------+
-    | "confirmed"           | true if image has been confirmed                  |
-    |                       | this field does not have to be present if false   |
-    +-----------------------+---------------------------------------------------+
-    | "active"              | true if image is currently active application     |
-    |                       | this field does not have to be present if false   |
-    +-----------------------+---------------------------------------------------+
-    | "permanent"           | true if image is to stay in primary slot after    |
-    |                       | next boot                                         |
-    |                       | this field does not have to be present if false   |
-    +-----------------------+---------------------------------------------------+
-    | "splitStatus"         | states whether loader of split image is compatible|
-    |                       | with application part; this is unused by Zephyr   |
-    +-----------------------+---------------------------------------------------+
-    | "rc"                  | :c:enum:`mcumgr_err_t`                            |
-    |                       | only appears if non-zero (error condition).       |
-    +-----------------------+---------------------------------------------------+
-    | "rsn"                 | optional string that clarifies reason for an      |
-    |                       | error; specifically useful for error code ``1``,  |
-    |                       | unknown error                                     |
-    +-----------------------+---------------------------------------------------+
+    +------------------+-------------------------------------------------------------------------+
+    | "image"          | semi-optional image number; the field is not required when only one     |
+    |                  | image is supported by the running application.                          |
+    +------------------+-------------------------------------------------------------------------+
+    | "slot"           | slot number within "image"; each image has two slots : primary (running |
+    |                  | one) = 0 and secondary (for DFU dual-bank purposes) = 1.                |
+    +------------------+-------------------------------------------------------------------------+
+    | "version"        | string representing image version, as set with ``imgtool``.             |
+    +------------------+-------------------------------------------------------------------------+
+    | "hash"           | SHA256 hash of the image header and body. Note that this will not be    |
+    |                  | the same as the SHA256 of the whole file, it is the field in the        |
+    |                  | MCUboot TLV section that contains a hash of the data which is used for  |
+    |                  | signature verification purposes. This field is optional but only        |
+    |                  | optional when using MCUboot's serial recovery feature with one pair of  |
+    |                  | image slots, Kconfig :kconfig:option:`CONFIG_BOOT_SERIAL_IMG_GRP_HASH`  |
+    |                  | can be disabled to remove support for hashes in this configuration.     |
+    |                  | MCUmgr in applications must support sending hashes.                     |
+    |                  |                                                                         |
+    |                  | .. note::                                                               |
+    |                  |    See ``IMAGE_TLV_SHA256`` in the MCUboot image format documentation   |
+    |                  |    link below.                                                          |
+    +------------------+-------------------------------------------------------------------------+
+    | "bootable"       | true if image has bootable flag set; this field does not have to be     |
+    |                  | present if false.                                                       |
+    +------------------+-------------------------------------------------------------------------+
+    | "pending"        | true if image is set for next swap; this field does not have to be      |
+    |                  | present if false.                                                       |
+    +------------------+-------------------------------------------------------------------------+
+    | "confirmed"      | true if image has been confirmed; this field does not have to be        |
+    |                  | present if false.                                                       |
+    +------------------+-------------------------------------------------------------------------+
+    | "active"         | true if image is currently active application; this field does not have |
+    |                  | to be present if false.                                                 |
+    +------------------+-------------------------------------------------------------------------+
+    | "permanent"      | true if image is to stay in primary slot after the next boot; this      |
+    |                  | does not have to be present if false.                                   |
+    +------------------+-------------------------------------------------------------------------+
+    | "splitStatus"    | states whether loader of split image is compatible with application     |
+    |                  | part; this is unused by Zephyr.                                         |
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "group" | :c:enum:`mcumgr_group_t` group of the group-based error code. Only      |
+    |                  | appears if an error is returned when using SMP version 2.               |
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "rc"    | contains the index of the group-based error code. Only appears if       |
+    |                  | non-zero (error condition) when using SMP version 2.                    |
+    +------------------+-------------------------------------------------------------------------+
+    | "rc"             | :c:enum:`mcumgr_err_t` only appears if non-zero (error condition) when  |
+    |                  | using SMP version 1 or for SMP errors when using SMP version 2.         |
+    +------------------+-------------------------------------------------------------------------+
+    | "rsn"            | optional string that clarifies reason for an error; specifically useful |
+    |                  | when ``rc`` is :c:enumerator:`MGMT_ERR_EUNKNOWN`.                       |
+    +------------------+-------------------------------------------------------------------------+
 
 .. note::
     For more information on how does image/slots function, please refer to
@@ -351,34 +365,52 @@ CBOR data of successful response:
 
 In case of error the CBOR data takes the form:
 
-.. code-block:: none
+.. tabs::
 
-    {
-        (str)"rc"       : (int)
-        (str,opt)"rsn"  : (str)
-    }
+   .. group-tab:: SMP version 2
+
+      .. code-block:: none
+
+          {
+              (str)"err" : {
+                  (str)"group"    : (uint)
+                  (str)"rc"       : (uint)
+              }
+          }
+
+   .. group-tab:: SMP version 1 (and non-group SMP version 2)
+
+      .. code-block:: none
+
+          {
+              (str)"rc"       : (int)
+              (str,opt)"rsn"  : (str)
+          }
 
 where:
 
 .. table::
     :align: center
 
-    +-----------------------+-----------------------------------------------------+
-    | "off"                 | offset of last successfully written byte of update. |
-    +-----------------------+-----------------------------------------------------+
-    | "match"               | indicates if the uploaded data successfully matches |
-    |                       | the provided SHA256 hash or not, only sent in the   |
-    |                       | final packet if                                     |
-    |                       | :kconfig:option:`CONFIG_IMG_ENABLE_IMAGE_CHECK` is  |
-    |                       | enabled.                                            |
-    +-----------------------+-----------------------------------------------------+
-    | "rc"                  | :c:enum:`mcumgr_err_t` only                         |
-    |                       | appears if non-zero (error condition).              |
-    +-----------------------+-----------------------------------------------------+
-    | "rsn"                 | Optional string that clarifies reason for an error; |
-    |                       | specifically useful for error code ``1``, unknown   |
-    |                       | error.                                              |
-    +-----------------------+-----------------------------------------------------+
+    +------------------+-------------------------------------------------------------------------+
+    | "off"            | offset of last successfully written byte of update.                     |
+    +------------------+-------------------------------------------------------------------------+
+    | "match"          | indicates if the uploaded data successfully matches the provided SHA256 |
+    |                  | hash or not, only sent in the final packet if                           |
+    |                  | :kconfig:option:`CONFIG_IMG_ENABLE_IMAGE_CHECK` is enabled.             |
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "group" | :c:enum:`mcumgr_group_t` group of the group-based error code. Only      |
+    |                  | appears if an error is returned when using SMP version 2.               |
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "rc"    | contains the index of the group-based error code. Only appears if       |
+    |                  | non-zero (error condition) when using SMP version 2.                    |
+    +------------------+-------------------------------------------------------------------------+
+    | "rc"             | :c:enum:`mcumgr_err_t` only appears if non-zero (error condition) when  |
+    |                  | using SMP version 1 or for SMP errors when using SMP version 2.         |
+    +------------------+-------------------------------------------------------------------------+
+    | "rsn"            | optional string that clarifies reason for an error; specifically useful |
+    |                  | when ``rc`` is :c:enumerator:`MGMT_ERR_EUNKNOWN`.                       |
+    +------------------+-------------------------------------------------------------------------+
 
 The "off" field is only included in responses to successfully processed requests;
 if "rc" is negative then "off" may not appear.
@@ -441,28 +473,160 @@ Image erase response header fields:
 The command sends an empty CBOR map as data if successful. In case of error the
 CBOR data takes the form:
 
-.. code-block:: none
+.. tabs::
 
-    {
-        (str)"rc"       : (int)
-        (str,opt)"rsn"  : (str)
-    }
+   .. group-tab:: SMP version 2
+
+      .. code-block:: none
+
+          {
+              (str)"err" : {
+                  (str)"group"    : (uint)
+                  (str)"rc"       : (uint)
+              }
+          }
+
+   .. group-tab:: SMP version 1 (and non-group SMP version 2)
+
+      .. code-block:: none
+
+          {
+              (str)"rc"       : (int)
+              (str,opt)"rsn"  : (str)
+          }
 
 where:
 
 .. table::
     :align: center
 
-    +-----------------------+--------------------------------------------------+
-    | "rc"                  | :c:enum:`mcumgr_err_t`                           |
-    |                       | only appears if non-zero (error condition).      |
-    +-----------------------+--------------------------------------------------+
-    | "rsn"                 | Optional string that clarifies reason for an     |
-    |                       | error; specifically useful when rc value is      |
-    |                       | :c:enum:`MGMT_ERR_EUNKNOWN`                      |
-    +-----------------------+--------------------------------------------------+
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "group" | :c:enum:`mcumgr_group_t` group of the group-based error code. Only      |
+    |                  | appears if an error is returned when using SMP version 2.               |
+    +------------------+-------------------------------------------------------------------------+
+    | "err" -> "rc"    | contains the index of the group-based error code. Only appears if       |
+    |                  | non-zero (error condition) when using SMP version 2.                    |
+    +------------------+-------------------------------------------------------------------------+
+    | "rc"             | :c:enum:`mcumgr_err_t` only appears if non-zero (error condition) when  |
+    |                  | using SMP version 1 or for SMP errors when using SMP version 2.         |
+    +------------------+-------------------------------------------------------------------------+
+    | "rsn"            | optional string that clarifies reason for an error; specifically useful |
+    |                  | when ``rc`` is :c:enumerator:`MGMT_ERR_EUNKNOWN`.                       |
+    +------------------+-------------------------------------------------------------------------+
 
 .. note::
     Response from Zephyr running device may have "rc" value of
-    :c:enum:`MGMT_ERR_EBADSTATE`, which means that the secondary
+    :c:enumerator:`MGMT_ERR_EBADSTATE`, which means that the secondary
     image has been marked for next boot already and may not be erased.
+
+Slot info
+*********
+
+The command is used for fetching information on slots that are available. This command can be
+enabled with :kconfig:option:`CONFIG_MCUMGR_GRP_IMG_SLOT_INFO`.
+
+Slot info request
+=================
+
+Slot info request header fields:
+
+.. table::
+    :align: center
+
+    +--------+--------------+----------------+
+    | ``OP`` | ``Group ID`` | ``Command ID`` |
+    +========+==============+================+
+    | ``0``  | ``1``        |  ``6``         |
+    +--------+--------------+----------------+
+
+The command sends an empty CBOR map as data.
+
+Slot info response
+==================
+
+Slot info response header fields:
+
+.. table::
+    :align: center
+
+    +--------+--------------+----------------+
+    | ``OP`` | ``Group ID`` | ``Command ID`` |
+    +========+==============+================+
+    | ``1``  | ``1``        |  ``6``         |
+    +--------+--------------+----------------+
+
+CBOR data of successful response:
+
+.. code-block:: none
+
+    {
+        (str)"images" : [
+            {
+                (str)"image"                        : (uint)
+                (str)"slots" : [
+                    {
+                        (str)"slot"                 : (uint)
+                        (str)"size"                 : (uint)
+                        (str,opt)"upload_image_id"  : (uint)
+                    }
+                    ...
+                ]
+                (str,opt)"max_image_size"           : (uint)
+            }
+            ...
+        ]
+    }
+
+In case of error the CBOR data takes the form:
+
+.. tabs::
+
+   .. group-tab:: SMP version 2
+
+      .. code-block:: none
+
+          {
+              (str)"err" : {
+                  (str)"group"    : (uint)
+                  (str)"rc"       : (uint)
+              }
+          }
+
+   .. group-tab:: SMP version 1 (and non-group SMP version 2)
+
+      .. code-block:: none
+
+          {
+              (str)"rc"       : (int)
+          }
+
+where:
+
+.. table::
+    :align: center
+
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "image"           | the image number being enumerated.                                                         |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "slot"            | the slot inside the image being enumerated (note: this will be 0 or 1, it is the slot of   |
+    |                   | the image not the physical slot number).                                                   |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "size"            | the size of the slot.                                                                      |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "upload_image_id" | optional field (only present if :kconfig:option:`CONFIG_MCUMGR_GRP_IMG_DIRECT_UPLOAD` is   |
+    |                   | enabled to allow direct image uploads) which specifies the image ID that can be used by    |
+    |                   | external tools to upload an image to that slot.                                            |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "max_image_size"  | optional field (only present if :kconfig:option:`CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_SYSBUILD` |
+    |                   | or :kconfig:option:`CONFIG_MCUMGR_GRP_IMG_TOO_LARGE_BOOTLOADER_INFO` are enabled) which    |
+    |                   | specifies the maximum size of an application that can be uploaded to that image number.    |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "err" -> "group"  | :c:enum:`mcumgr_group_t` group of the group-based error code. Only appears if an error is  |
+    |                   | returned when using SMP version 2.                                                         |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "err" -> "rc"     | contains the index of the group-based error code. Only appears ifnon-zero (error           |
+    |                   | condition) when using SMP version 2.                                                       |
+    +-------------------+--------------------------------------------------------------------------------------------+
+    | "rc"              | :c:enum:`mcumgr_err_t` only appears if non-zero (error condition) when using SMP version 1 |
+    |                   | or for SMP errors when using SMP version 2.                                                |
+    +-------------------+--------------------------------------------------------------------------------------------+

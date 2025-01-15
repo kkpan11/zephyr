@@ -13,7 +13,7 @@
  * 'watchdog0' property, or one of the following watchdog compatibles
  * must have an enabled node.
  */
-#if DT_NODE_HAS_STATUS(DT_ALIAS(watchdog0), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(watchdog0))
 #define WDT_NODE DT_ALIAS(watchdog0)
 #elif DT_HAS_COMPAT_STATUS_OKAY(nxp_s32_swt)
 #define WDT_NODE DT_INST(0, nxp_s32_swt)
@@ -91,7 +91,10 @@ static int test_wdt_callback_reset_none(void)
 			"wdt callback failed");
 
 	err = wdt_disable(wdt);
-	if (err != 0) {
+	if (err == -EPERM) {
+		TC_PRINT("Some of the options are not permitted, skip\n");
+		return TC_SKIP;
+	} else if (err != 0) {
 		TC_PRINT("Disable watchdog error\n");
 		return TC_FAIL;
 	}

@@ -14,7 +14,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/usb/usb_ch9.h>
 #include <zephyr/sys/dlist.h>
 
@@ -22,8 +22,19 @@
  * @brief USB host controller (UHC) driver API
  * @defgroup uhc_api USB host controller driver API
  * @ingroup io_interfaces
+ * @since 3.3
+ * @version 0.1.0
  * @{
  */
+
+/**
+ * @brief USB control transfer stage
+ */
+enum uhc_control_stage {
+	UHC_CONTROL_STAGE_SETUP = 0,
+	UHC_CONTROL_STAGE_DATA,
+	UHC_CONTROL_STAGE_STATUS,
+};
 
 /**
  * UHC endpoint buffer info
@@ -38,10 +49,10 @@
 struct uhc_transfer {
 	/** dlist node */
 	sys_dnode_t node;
-	/** FIFO requests to process */
-	struct k_fifo queue;
-	/** FIFO to keep completed requests */
-	struct k_fifo done;
+	/** Control transfer setup packet */
+	uint8_t setup_pkt[8];
+	/** Transfer data buffer */
+	struct net_buf *buf;
 	/** Device (peripheral) address */
 	uint8_t addr;
 	/** Endpoint to which request is associated */
@@ -52,14 +63,16 @@ struct uhc_transfer {
 	uint16_t mps;
 	/** Timeout in number of frames */
 	uint16_t timeout;
-	/** Flag marks request buffer claimed by the controller */
-	unsigned int claimed : 1;
 	/** Flag marks request buffer is queued */
 	unsigned int queued : 1;
-	/** Flag marks setup stage of transfer */
-	unsigned int setup : 1;
-	/** Transfer owner */
-	void *owner;
+	/** Control stage status, up to the driver to use it or not */
+	unsigned int stage : 2;
+	/** Pointer to USB device (opaque for the UHC) */
+	void *udev;
+	/** Pointer to transfer completion callback (opaque for the UHC) */
+	void *cb;
+	/** Transfer result, 0 on success, other values on error */
+	int err;
 };
 
 /**
@@ -105,13 +118,11 @@ struct uhc_event {
 	/** Event type */
 	enum uhc_event_type type;
 	union {
-		/** Event value */
-		uint32_t value;
+		/** Event status value, if any */
+		int status;
 		/** Pointer to request used only for UHC_EVT_EP_REQUEST */
 		struct uhc_transfer *xfer;
 	};
-	/** Event status, 0 on success, other (transfer) values on error */
-	int status;
 	/** Pointer to controller's device struct */
 	const struct device *dev;
 };
@@ -321,8 +332,8 @@ static inline int uhc_bus_resume(const struct device *dev)
  * @brief Allocate UHC transfer
  *
  * Allocate a new transfer from common transfer pool.
- * Transfer has no buffers after allocation, these can be
- * requested and assigned separately.
+ * Transfer has no buffer after allocation, but can be allocated
+ * and added from different pools.
  *
  * @param[in] dev     Pointer to device struct of the driver instance
  * @param[in] addr    Device (peripheral) address
@@ -330,7 +341,8 @@ static inline int uhc_bus_resume(const struct device *dev)
  * @param[in] attrib  Endpoint attributes
  * @param[in] mps     Maximum packet size of the endpoint
  * @param[in] timeout Timeout in number of frames
- * @param[in] owner   Transfer owner
+ * @param[in] udev    Opaque pointer to USB device
+ * @param[in] cb      Transfer completion callback
  *
  * @return pointer to allocated transfer or NULL on error.
  */
@@ -340,7 +352,35 @@ struct uhc_transfer *uhc_xfer_alloc(const struct device *dev,
 				    const uint8_t attrib,
 				    const uint16_t mps,
 				    const uint16_t timeout,
-				    void *const owner);
+				    void *const udev,
+				    void *const cb);
+
+/**
+ * @brief Allocate UHC transfer with buffer
+ *
+ * Allocate a new transfer from common transfer pool with buffer.
+ *
+ * @param[in] dev     Pointer to device struct of the driver instance
+ * @param[in] addr    Device (peripheral) address
+ * @param[in] ep      Endpoint address
+ * @param[in] attrib  Endpoint attributes
+ * @param[in] mps     Maximum packet size of the endpoint
+ * @param[in] timeout Timeout in number of frames
+ * @param[in] udev    Opaque pointer to USB device
+ * @param[in] cb      Transfer completion callback
+ * @param[in] size    Size of the buffer
+ *
+ * @return pointer to allocated transfer or NULL on error.
+ */
+struct uhc_transfer *uhc_xfer_alloc_with_buf(const struct device *dev,
+					     const uint8_t addr,
+					     const uint8_t ep,
+					     const uint8_t attrib,
+					     const uint16_t mps,
+					     const uint16_t timeout,
+					     void *const udev,
+					     void *const cb,
+					     size_t size);
 
 /**
  * @brief Free UHC transfer and any buffers
@@ -356,19 +396,31 @@ int uhc_xfer_free(const struct device *dev,
 		  struct uhc_transfer *const xfer);
 
 /**
- * @brief Allocate UHC transfer buffer
+ * @brief Add UHC transfer buffer
  *
- * Allocate a new buffer from common request buffer pool and
- * assign it to the transfer.
+ * Add a previously allocated buffer to the transfer.
  *
  * @param[in] dev    Pointer to device struct of the driver instance
  * @param[in] xfer   Pointer to UHC transfer
+ * @param[in] buf    Pointer to UHC request buffer
+ *
+ * @return pointer to allocated request or NULL on error.
+ */
+int uhc_xfer_buf_add(const struct device *dev,
+		     struct uhc_transfer *const xfer,
+		     struct net_buf *buf);
+/**
+ * @brief Allocate UHC transfer buffer
+ *
+ * Allocate a new buffer from common request buffer pool and
+ * assign it to the transfer if the xfer parameter is not NULL.
+ *
+ * @param[in] dev    Pointer to device struct of the driver instance
  * @param[in] size   Size of the request buffer
  *
  * @return pointer to allocated request or NULL on error.
  */
 struct net_buf *uhc_xfer_buf_alloc(const struct device *dev,
-				   struct uhc_transfer *const xfer,
 				   const size_t size);
 
 /**
@@ -378,10 +430,8 @@ struct net_buf *uhc_xfer_buf_alloc(const struct device *dev,
  *
  * @param[in] dev    Pointer to device struct of the driver instance
  * @param[in] buf    Pointer to UHC request buffer
- *
- * @return 0 on success, all other values should be treated as error.
  */
-int uhc_xfer_buf_free(const struct device *dev, struct net_buf *const buf);
+void uhc_xfer_buf_free(const struct device *dev, struct net_buf *const buf);
 
 /**
  * @brief Queue USB host controller transfer

@@ -110,7 +110,8 @@ static void help_item_print(const struct shell *sh, const char *item_name,
 			    uint16_t item_name_width, const char *item_help)
 {
 	static const uint8_t tabulator[] = "  ";
-	const uint16_t offset = 2 * strlen(tabulator) + item_name_width + 1;
+	static const char sub_cmd_sep[] = ": "; /* subcommands separator */
+	const uint16_t offset = 2 * strlen(tabulator) + item_name_width + strlen(sub_cmd_sep);
 
 	if ((item_name == NULL) || (item_name[0] == '\0')) {
 		return;
@@ -139,7 +140,7 @@ static void help_item_print(const struct shell *sh, const char *item_name,
 		z_cursor_next_line_move(sh);
 		return;
 	} else {
-		z_shell_fprintf(sh, SHELL_NORMAL, "%s:", tabulator);
+		z_shell_fprintf(sh, SHELL_NORMAL, "%s: ", tabulator);
 	}
 	/* print option help */
 	formatted_text_print(sh, item_help, offset, false);

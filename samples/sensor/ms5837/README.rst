@@ -1,7 +1,8 @@
-.. _ms5837-sample:
+.. zephyr:code-sample:: ms5837
+   :name: MS5837 Digital Pressure Sensor
+   :relevant-api: sensor_interface
 
-MS5837 Sensor Sample
-####################
+   Get pressure and temperature data from an MS5837 sensor (polling mode).
 
 Overview
 ********
@@ -37,7 +38,7 @@ Build this sample using the following commands:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/sensor/ms5837
-   :board: nrf52840dk_nrf52840
+   :board: nrf52840dk/nrf52840
    :goals: build
    :compact:
 

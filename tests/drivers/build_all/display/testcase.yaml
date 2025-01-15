@@ -1,7 +1,18 @@
 common:
   build_only: true
-  min_ram: 32
-  tags: drivers display
+  tags:
+    - drivers
+    - display
+  depends_on: display
+
 tests:
-  drivers.display.ili9342c.build:
-    extra_args: CONF_FILE=display_ili9342c.conf
+  drivers.display.build.default:
+    integration_platforms:
+      - native_sim
+      - native_sim/native/64
+
+  drivers.display.build.rk055hdmipi4ma0:
+    platform_allow:
+      - mimxrt1170_evk/mimxrt1176/cm7
+    extra_args:
+      - SHIELD=rk055hdmipi4ma0

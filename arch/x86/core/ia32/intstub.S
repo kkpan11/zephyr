@@ -13,6 +13,7 @@
  * exception) stubs are implemented in this module.  The stubs are invoked when
  * entering and exiting a C interrupt handler.
  */
+#define LOAPIC_BASE_ADDRESS DT_REG_ADDR(DT_NODELABEL(intc_loapic))
 
 #include <zephyr/arch/x86/ia32/asm.h>
 #include <offsets_short.h>
@@ -32,7 +33,7 @@
 	GTEXT(arch_swap)
 
 #ifdef CONFIG_PM
-	GTEXT(z_pm_save_idle_exit)
+	GTEXT(pm_system_resume)
 #endif
 
 /**
@@ -111,11 +112,12 @@ SECTION_FUNC(PINNED_TEXT, _interrupt_enter)
 	 * EAX = isr_param, EDX = isr
 	 */
 
-	/* Push EDI as we will use it for scratch space.
+	/* Push EBP as we will use it for scratch space.
+     * Also it helps in stack unwinding
 	 * Rest of the callee-saved regs get saved by invocation of C
 	 * functions (isr handler, arch_swap(), etc)
 	 */
-	pushl	%edi
+	pushl	%ebp
 
 	/* load %ecx with &_kernel */
 
@@ -130,17 +132,17 @@ SECTION_FUNC(PINNED_TEXT, _interrupt_enter)
 	jne	alreadyOnIntStack
 
 	/*
-	 * switch to base of the interrupt stack: save esp in edi, then load
+	 * switch to base of the interrupt stack: save esp in ebp, then load
 	 * irq_stack pointer
 	 */
 
-	movl	%esp, %edi
+	movl	%esp, %ebp
 	movl	_kernel_offset_to_irq_stack(%ecx), %esp
 
 
 	/* save thread's stack pointer onto base of interrupt stack */
 
-	pushl	%edi			/* Save stack pointer */
+	pushl	%ebp			/* Save stack pointer */
 
 #ifdef CONFIG_PM
 	cmpl	$0, _kernel_offset_to_idle(%ecx)
@@ -197,10 +199,10 @@ alreadyOnIntStack:
 	wrmsr
 #else /* xAPIC */
 #ifdef DEVICE_MMIO_IS_IN_RAM
-	movl	z_loapic_regs, %edx
+	movl	Z_TOPLEVEL_RAM_NAME(LOAPIC_REGS_STR), %edx
 	movl	%eax, LOAPIC_EOI(%edx)
 #else
-	movl	%eax, (CONFIG_LOAPIC_BASE_ADDRESS + LOAPIC_EOI)
+	movl	%eax, (LOAPIC_BASE_ADDRESS + LOAPIC_EOI)
 #endif /* DEVICE_MMIO_IS_IN_RAM */
 #endif /* CONFIG_X2APIC */
 
@@ -264,7 +266,7 @@ alreadyOnIntStack:
 #endif /* CONFIG_LAZY_FPU_SHARING */
 
 	/* Restore volatile registers and return to the interrupted thread */
-	popl	%edi
+	popl	%ebp
 	popl	%ecx
 	popl	%edx
 	popl	%eax
@@ -297,7 +299,7 @@ noReschedule:
 	 */
 
 nestedInterrupt:
-	popl	%edi
+	popl	%ebp
 	popl	%ecx		/* pop volatile registers in reverse order */
 	popl	%edx
 	popl	%eax
@@ -313,13 +315,13 @@ handle_idle:
 	movl	$0, _kernel_offset_to_idle(%ecx)
 
 	/*
-	 * Beware that a timer driver's z_pm_save_idle_exit() implementation might
+	 * Beware that a timer driver's pm_system_resume() implementation might
 	 * expect that interrupts are disabled when invoked.  This ensures that
 	 * the calculation and programming of the device for the next timer
 	 * deadline is not interrupted.
 	 */
 
-	call	z_pm_save_idle_exit
+	call	pm_system_resume
 	popl	%edx
 	popl	%eax
 	jmp	alreadyOnIntStack

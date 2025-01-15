@@ -15,6 +15,7 @@
  * The hardware accelerator mechanism is shared by four PS/2 channels.
  */
 
+#include <zephyr/kernel.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/ps2.h>
 #include <zephyr/dt-bindings/clock/npcx_clock.h>
@@ -226,10 +227,12 @@ static int ps2_npcx_ctrl_is_rx_error(const struct device *dev)
 
 	status = inst->PSTAT & (BIT(NPCX_PSTAT_PERR) | BIT(NPCX_PSTAT_RFERR));
 	if (status) {
-		if (status & BIT(NPCX_PSTAT_PERR))
+		if (status & BIT(NPCX_PSTAT_PERR)) {
 			LOG_ERR("RX parity error");
-		if (status & BIT(NPCX_PSTAT_RFERR))
+		}
+		if (status & BIT(NPCX_PSTAT_RFERR)) {
 			LOG_ERR("RX Frame error");
+		}
 		return -EIO;
 	}
 
@@ -358,8 +361,9 @@ static int ps2_npcx_ctrl_init(const struct device *dev)
 	 */
 	inst->PSIEN = BIT(NPCX_PSIEN_SOTIE) | BIT(NPCX_PSIEN_EOTIE) |
 		      BIT(NPCX_PSIEN_PS2_WUE);
-	if (config->clk_cfg.bus == NPCX_CLOCK_BUS_FREERUN)
+	if (config->clk_cfg.bus == NPCX_CLOCK_BUS_FREERUN) {
 		inst->PSIEN |= BIT(NPCX_PSIEN_PS2_CLK_SEL);
+	}
 	/* Enable weak internal pull-up */
 	inst->PSCON |= BIT(NPCX_PSCON_WPUED);
 	/* Enable shift mechanism */

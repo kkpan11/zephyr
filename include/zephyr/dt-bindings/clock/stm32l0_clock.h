@@ -6,6 +6,8 @@
 #ifndef ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L0_CLOCK_H_
 #define ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L0_CLOCK_H_
 
+#include "stm32_common_clocks.h"
+
 /** Bus gatting clocks */
 #define STM32_CLOCK_BUS_IOP     0x02c
 #define STM32_CLOCK_BUS_AHB1    0x030
@@ -18,16 +20,16 @@
 /** Domain clocks */
 /* RM0367, §7.3.20 Clock configuration register (RCC_CCIPR) */
 
-/** Fixed clocks  */
-#define STM32_SRC_HSE		0x001
-#define STM32_SRC_LSE		0x002
-#define STM32_SRC_LSI		0x003
-#define STM32_SRC_HSI		0x004
-#define STM32_SRC_HSI48		0x005
 /** System clock */
-#define STM32_SRC_SYSCLK	0x006
+/* defined in stm32_common_clocks.h */
+
+/** Fixed clocks  */
+/* Low speed clocks defined in stm32_common_clocks.h */
+#define STM32_SRC_HSE		(STM32_SRC_LSI + 1)
+#define STM32_SRC_HSI		(STM32_SRC_HSE + 1)
+#define STM32_SRC_HSI48		(STM32_SRC_HSI + 1)
 /** Bus clock */
-#define STM32_SRC_PCLK		0x007
+#define STM32_SRC_PCLK		(STM32_SRC_HSI48 + 1)
 
 #define STM32_CLOCK_REG_MASK    0xFFU
 #define STM32_CLOCK_REG_SHIFT   0U
@@ -51,7 +53,7 @@
  * @param mask Mask for the RCC_CCIPRx field.
  * @param val Clock value (0, 1, ... 7).
  */
-#define STM32_CLOCK(val, mask, shift, reg)					\
+#define STM32_DOMAIN_CLOCK(val, mask, shift, reg)					\
 	((((reg) & STM32_CLOCK_REG_MASK) << STM32_CLOCK_REG_SHIFT) |		\
 	 (((shift) & STM32_CLOCK_SHIFT_MASK) << STM32_CLOCK_SHIFT_SHIFT) |	\
 	 (((mask) & STM32_CLOCK_MASK_MASK) << STM32_CLOCK_MASK_SHIFT) |		\
@@ -65,16 +67,14 @@
 
 /** @brief Device domain clocks selection helpers */
 /** CCIPR devices */
-#define USART1_SEL(val)		STM32_CLOCK(val, 3, 0, CCIPR_REG)
-#define USART2_SEL(val)		STM32_CLOCK(val, 3, 2, CCIPR_REG)
-#define LPUART1_SEL(val)	STM32_CLOCK(val, 3, 10, CCIPR_REG)
-#define I2C1_SEL(val)		STM32_CLOCK(val, 3, 12, CCIPR_REG)
-#define I2C3_SEL(val)		STM32_CLOCK(val, 3, 16, CCIPR_REG)
-#define LPTIM1_SEL(val)		STM32_CLOCK(val, 3, 18, CCIPR_REG)
-#define HSI48_SEL(val)		STM32_CLOCK(val, 1, 26, CCIPR_REG)
+#define USART1_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 0, CCIPR_REG)
+#define USART2_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 2, CCIPR_REG)
+#define LPUART1_SEL(val)	STM32_DOMAIN_CLOCK(val, 3, 10, CCIPR_REG)
+#define I2C1_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 12, CCIPR_REG)
+#define I2C3_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 16, CCIPR_REG)
+#define LPTIM1_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 18, CCIPR_REG)
+#define HSI48_SEL(val)		STM32_DOMAIN_CLOCK(val, 1, 26, CCIPR_REG)
 /** CSR devices */
-#define RTC_SEL(val)		STM32_CLOCK(val, 3, 16, CSR_REG)
-/** Dummy: Add a specificier when no selection is possible */
-#define NO_SEL			0xFF
+#define RTC_SEL(val)		STM32_DOMAIN_CLOCK(val, 3, 16, CSR_REG)
 
 #endif /* ZEPHYR_INCLUDE_DT_BINDINGS_CLOCK_STM32L0_CLOCK_H_ */

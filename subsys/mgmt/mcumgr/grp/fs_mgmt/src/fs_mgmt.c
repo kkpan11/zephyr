@@ -255,6 +255,7 @@ static int fs_mgmt_file_download(struct smp_streamer *ctxt)
 
 		if (status != MGMT_CB_OK) {
 			if (status == MGMT_CB_ERROR_RC) {
+				k_sem_give(&fs_mgmt_ctxt.lock_sem);
 				return err_rc;
 			}
 
@@ -404,6 +405,7 @@ static int fs_mgmt_file_upload(struct smp_streamer *ctxt)
 
 		if (status != MGMT_CB_OK) {
 			if (status == MGMT_CB_ERROR_RC) {
+				k_sem_give(&fs_mgmt_ctxt.lock_sem);
 				return err_rc;
 			}
 
@@ -425,7 +427,9 @@ static int fs_mgmt_file_upload(struct smp_streamer *ctxt)
 			if (rc == -EINVAL) {
 				rc = FS_MGMT_ERR_FILE_INVALID_NAME;
 			} else if (rc == -ENOENT) {
-				rc = FS_MGMT_ERR_FILE_NOT_FOUND;
+				rc = FS_MGMT_ERR_MOUNT_POINT_NOT_FOUND;
+			} else if (rc == -EROFS) {
+				rc = FS_MGMT_ERR_READ_ONLY_FILESYSTEM;
 			} else {
 				rc = FS_MGMT_ERR_UNKNOWN;
 			}
@@ -730,9 +734,12 @@ static int fs_mgmt_file_hash_checksum(struct smp_streamer *ctxt)
 	}
 
 	if (file_len <= off) {
-		/* Requested offset is larger than target file size */
+		/* Requested offset is larger than target file size or file length is 0, which
+		 * means no hash/checksum can be performed
+		 */
 		ok = smp_add_cmd_err(zse, MGMT_GROUP_ID_FS,
-				     FS_MGMT_ERR_FILE_OFFSET_LARGER_THAN_FILE);
+				     (file_len == 0 ? FS_MGMT_ERR_FILE_EMPTY :
+						      FS_MGMT_ERR_FILE_OFFSET_LARGER_THAN_FILE));
 		goto end;
 	}
 
@@ -778,7 +785,7 @@ static int fs_mgmt_file_hash_checksum(struct smp_streamer *ctxt)
 	}
 
 	ok &= zcbor_tstr_put_lit(zse, "type")	&&
-	      zcbor_tstr_put_term(zse, type_arr);
+	      zcbor_tstr_put_term(zse, type_arr, sizeof(type_arr));
 
 	if (off != 0) {
 		ok &= zcbor_tstr_put_lit(zse, "off")	&&
@@ -909,7 +916,18 @@ static int fs_mgmt_translate_error_code(uint16_t err)
 	int rc;
 
 	switch (err) {
+	case FS_MGMT_ERR_FILE_INVALID_NAME:
+	case FS_MGMT_ERR_CHECKSUM_HASH_NOT_FOUND:
+		rc = MGMT_ERR_EINVAL;
+		break;
+
+	case FS_MGMT_ERR_FILE_NOT_FOUND:
+	case FS_MGMT_ERR_MOUNT_POINT_NOT_FOUND:
+		rc = MGMT_ERR_ENOENT;
+		break;
+
 	case FS_MGMT_ERR_UNKNOWN:
+	case FS_MGMT_ERR_FILE_IS_DIRECTORY:
 	case FS_MGMT_ERR_FILE_OPEN_FAILED:
 	case FS_MGMT_ERR_FILE_SEEK_FAILED:
 	case FS_MGMT_ERR_FILE_READ_FAILED:
@@ -918,6 +936,7 @@ static int fs_mgmt_translate_error_code(uint16_t err)
 	case FS_MGMT_ERR_FILE_WRITE_FAILED:
 	case FS_MGMT_ERR_FILE_OFFSET_NOT_VALID:
 	case FS_MGMT_ERR_FILE_OFFSET_LARGER_THAN_FILE:
+	case FS_MGMT_ERR_READ_ONLY_FILESYSTEM:
 	default:
 		rc = MGMT_ERR_EUNKNOWN;
 	}
@@ -963,6 +982,9 @@ static struct mgmt_group fs_mgmt_group = {
 	.mg_group_id = MGMT_GROUP_ID_FS,
 #ifdef CONFIG_MCUMGR_SMP_SUPPORT_ORIGINAL_PROTOCOL
 	.mg_translate_error = fs_mgmt_translate_error_code,
+#endif
+#ifdef CONFIG_MCUMGR_GRP_ENUM_DETAILS_NAME
+	.mg_group_name = "fs mgmt",
 #endif
 };
 

@@ -22,7 +22,7 @@ CREATE_FLAG(data_received);
 #define DATA_BYTE_VAL  0xBB
 
 /* L2CAP channel buffer pool */
-NET_BUF_POOL_DEFINE(buf_pool, 1, BT_L2CAP_SDU_BUF_SIZE(16), 8, NULL);
+NET_BUF_POOL_DEFINE(buf_pool, 1, BT_L2CAP_SDU_BUF_SIZE(16), CONFIG_BT_CONN_TX_USER_DATA_SIZE, NULL);
 
 static void chan_connected_cb(struct bt_l2cap_chan *l2cap_chan)
 {
@@ -40,7 +40,7 @@ static void chan_connected_cb(struct bt_l2cap_chan *l2cap_chan)
 
 	/* Try to send data */
 	err = bt_l2cap_chan_send(l2cap_chan, buf);
-	if (err) {
+	if (err < 0) {
 		FAIL("Could not send data, error %d\n", err);
 	}
 
@@ -75,7 +75,8 @@ static const struct bt_l2cap_chan_ops l2cap_ops = {
 
 static struct bt_l2cap_le_chan channel;
 
-static int accept(struct bt_conn *conn, struct bt_l2cap_chan **l2cap_chan)
+static int accept(struct bt_conn *conn, struct bt_l2cap_server *server,
+		  struct bt_l2cap_chan **l2cap_chan)
 {
 	channel.chan.ops = &l2cap_ops;
 	*l2cap_chan = &channel.chan;
@@ -186,7 +187,7 @@ static void test_peripheral_main(void)
 
 	register_l2cap_server();
 
-	err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), NULL, 0);
 	if (err != 0) {
 		FAIL("Advertising failed to start (err %d)\n", err);
 		return;
@@ -239,14 +240,14 @@ static const struct bst_test_instance test_def[] = {
 	{
 		.test_id = "peripheral",
 		.test_descr = "Peripheral",
-		.test_post_init_f = test_init,
+		.test_pre_init_f = test_init,
 		.test_tick_f = test_tick,
 		.test_main_f = test_peripheral_main,
 	},
 	{
 		.test_id = "central",
 		.test_descr = "Central",
-		.test_post_init_f = test_init,
+		.test_pre_init_f = test_init,
 		.test_tick_f = test_tick,
 		.test_main_f = test_central_main,
 	},

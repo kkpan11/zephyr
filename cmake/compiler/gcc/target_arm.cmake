@@ -10,6 +10,11 @@ endif()
 
 list(APPEND ARM_C_FLAGS -mabi=aapcs)
 
+if(CONFIG_BIG_ENDIAN)
+  list(APPEND TOOLCHAIN_C_FLAGS -mbig-endian)
+  list(APPEND TOOLCHAIN_LD_FLAGS -mbig-endian)
+endif()
+
 if(CONFIG_FPU)
   list(APPEND ARM_C_FLAGS   -mfpu=${GCC_M_FPU})
 
@@ -34,5 +39,36 @@ if(CONFIG_FP16)
     list(APPEND ARM_C_FLAGS   -mfp16-format=alternative)
   endif()
 endif()
+
+if(CONFIG_THREAD_LOCAL_STORAGE)
+    list(APPEND ARM_C_FLAGS -mtp=soft)
+endif()
+
 list(APPEND TOOLCHAIN_C_FLAGS ${ARM_C_FLAGS})
 list(APPEND TOOLCHAIN_LD_FLAGS NO_SPLIT ${ARM_C_FLAGS})
+
+# Flags not supported by llext linker
+# (regexps are supported and match whole word)
+set(LLEXT_REMOVE_FLAGS
+  -fno-pic
+  -fno-pie
+  -ffunction-sections
+  -fdata-sections
+  -g.*
+  -Os
+)
+
+# Flags to be added to llext code compilation
+set(LLEXT_APPEND_FLAGS
+  -mlong-calls
+  -mthumb
+)
+
+list(APPEND LLEXT_EDK_REMOVE_FLAGS
+    --sysroot=.*
+    -fmacro-prefix-map=.*
+    )
+
+list(APPEND LLEXT_EDK_APPEND_FLAGS
+    -nodefaultlibs
+    )

@@ -1,9 +1,8 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
+ * Copyright (c) 2021-2024 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-#if defined(CONFIG_SOC_NRF5340_CPUNET) || defined(DPPI_PRESENT)
 
 /*******************************************************************************
  * Enable Radio on Event Timer tick:
@@ -38,6 +37,10 @@
  * wire the RTC0 EVENTS_COMPARE[2] event to EVENT_TIMER  TASKS_START task.
  */
 #define HAL_EVENT_TIMER_START_PPI 7
+#define HAL_PPIB_SEND_EVENT_TIMER_START_PPI \
+	_CONCAT(NRF_PPIB_TASK_SEND_, HAL_EVENT_TIMER_START_PPI)
+#define HAL_PPIB_RECEIVE_EVENT_TIMER_START_PPI \
+	_CONCAT(NRF_PPIB_EVENT_RECEIVE_, HAL_EVENT_TIMER_START_PPI)
 
 /*******************************************************************************
  * Capture event timer on Radio ready:
@@ -61,11 +64,15 @@
  */
 #define HAL_TRIGGER_AAR_PPI 12
 
+#if defined(CONFIG_BT_CTLR_PHY_CODED) && \
+	defined(CONFIG_HAS_HW_NRF_RADIO_BLE_CODED)
 /*******************************************************************************
  * Trigger Radio Rate override upon Rateboost event.
  */
 #define HAL_TRIGGER_RATEOVERRIDE_PPI 13
+#endif /* CONFIG_BT_CTLR_PHY_CODED && CONFIG_HAS_HW_NRF_RADIO_BLE_CODED */
 
+#if defined(HAL_RADIO_GPIO_HAVE_PA_PIN) || defined(HAL_RADIO_GPIO_HAVE_LNA_PIN)
 /******************************************************************************/
 #define HAL_ENABLE_PALNA_PPI 5
 
@@ -77,6 +84,8 @@
 
 #define HAL_ENABLE_FEM_PPI 3
 #define HAL_DISABLE_FEM_PPI HAL_DISABLE_PALNA_PPI
+
+#endif /* HAL_RADIO_GPIO_HAVE_PA_PIN || HAL_RADIO_GPIO_HAVE_LNA_PIN */
 
 /******************************************************************************/
 #if !defined(CONFIG_BT_CTLR_TIFS_HW)
@@ -92,13 +101,13 @@
  */
 #if !defined(CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER)
 #define HAL_SW_SWITCH_TIMER_CLEAR_PPI 24
-#else
+#else /* CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER */
 #define HAL_SW_SWITCH_TIMER_CLEAR_PPI HAL_RADIO_END_TIME_CAPTURE_PPI
-#endif /* !CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER */
+#endif /* CONFIG_BT_CTLR_SW_SWITCH_SINGLE_TIMER */
 
 /* Wire a SW SWITCH TIMER EVENTS_COMPARE[<cc_offset>] event
  * to a PPI GROUP TASK DISABLE task (PPI group with index <index>).
- * 2 adjacent PPIs (8 & 9) and 2 adjacent PPI groups are used for this wiring;
+ * 2 adjacent PPIs (14 & 15) and 2 adjacent PPI groups are used for this wiring;
  * <index> must be 0 or 1. <offset> must be a valid TIMER CC register offset.
  */
 #define HAL_SW_SWITCH_GROUP_TASK_DISABLE_PPI_BASE 14
@@ -123,6 +132,9 @@
  */
 #define HAL_SW_SWITCH_RADIO_ENABLE_PPI_BASE 14
 
+#if defined(CONFIG_BT_CTLR_PHY_CODED) && \
+	defined(CONFIG_HAS_HW_NRF_RADIO_BLE_CODED)
+
 #define HAL_SW_SWITCH_RADIO_ENABLE_S2_PPI_BASE \
 	HAL_SW_SWITCH_RADIO_ENABLE_PPI_BASE
 
@@ -132,6 +144,8 @@
  * Note: We already have a PPI where we publish the RATEBOOST event.
  */
 #define HAL_SW_SWITCH_TIMER_S8_DISABLE_PPI HAL_TRIGGER_RATEOVERRIDE_PPI
+
+#endif /* CONFIG_BT_CTLR_PHY_CODED && CONFIG_HAS_HW_NRF_RADIO_BLE_CODED */
 
 #if defined(CONFIG_BT_CTLR_DF_PHYEND_OFFSET_COMPENSATION_ENABLE)
 /* Cancel the SW switch timer running considering PHYEND delay compensation timing:
@@ -156,5 +170,3 @@
  */
 #define SW_SWITCH_TIMER_TASK_GROUP_BASE 0
 #endif /* !CONFIG_BT_CTLR_TIFS_HW */
-
-#endif /* CONFIG_SOC_NRF5340_CPUNET || DPPI_PRESENT */

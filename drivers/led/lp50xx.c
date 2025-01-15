@@ -23,7 +23,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(lp50xx, CONFIG_LED_LOG_LEVEL);
 
-#define LP50XX_MIN_BRIGHTNESS		0U
 #define LP50XX_MAX_BRIGHTNESS		100U
 
 /*
@@ -127,13 +126,9 @@ static int lp50xx_set_brightness(const struct device *dev,
 		return -ENODEV;
 	}
 
-	if (!IN_RANGE(value, LP50XX_MIN_BRIGHTNESS, LP50XX_MAX_BRIGHTNESS)) {
-		LOG_ERR("%s: brightness value out of bounds: "
-			"val=%d, min=%d, max=%d",
-			dev->name,
-			value,
-			LP50XX_MIN_BRIGHTNESS,
-			LP50XX_MAX_BRIGHTNESS);
+	if (value > LP50XX_MAX_BRIGHTNESS) {
+		LOG_ERR("%s: brightness value out of bounds: val=%d, max=%d",
+			dev->name, value, LP50XX_MAX_BRIGHTNESS);
 		return -EINVAL;
 	}
 
@@ -343,7 +338,7 @@ static int lp50xx_pm_action(const struct device *dev,
 }
 #endif /* CONFIG_PM_DEVICE */
 
-static const struct led_driver_api lp50xx_led_api = {
+static DEVICE_API(led, lp50xx_led_api) = {
 	.on		= lp50xx_on,
 	.off		= lp50xx_off,
 	.get_info	= lp50xx_get_info,

@@ -56,7 +56,7 @@ static inline void flush_cache(FLASH_TypeDef *regs)
 
 static int write_dword(const struct device *dev, off_t offset, uint64_t val)
 {
-	volatile uint32_t *flash = (uint32_t *)(offset + CONFIG_FLASH_BASE_ADDRESS);
+	volatile uint32_t *flash = (uint32_t *)(offset + FLASH_STM32_BASE_ADDRESS);
 	FLASH_TypeDef *regs = FLASH_STM32_REGS(dev);
 	uint32_t tmp;
 	int rc;
@@ -231,7 +231,7 @@ int  flash_stm32_check_configuration(void)
 {
 #if defined(STM32G0_DBANK_SUPPORT) && (CONFIG_FLASH_SIZE == 256)
 	/* Single bank mode not supported on dual bank SoCs with 256kiB flash */
-	if ((regs->OPTR & FLASH_OPTR_DUAL_BANK) == 0) {
+	if ((FLASH->OPTR & FLASH_OPTR_DUAL_BANK) == 0) {
 		LOG_ERR("Single bank configuration not supported by the driver");
 		return -ENOTSUP;
 	}

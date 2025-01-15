@@ -253,7 +253,7 @@ Deprecated in this release
 Stable API changes in this release
 ==================================
 
-* Removed `bt_set_oob_data_flag` and replaced it with two new API calls:
+* Removed ``bt_set_oob_data_flag`` and replaced it with two new API calls:
   * :c:func:`bt_le_oob_set_sc_flag` for setting/clearing OOB flag in SC pairing
   * :c:func:`bt_le_oob_set_legacy_flag` for setting/clearing OOB flag in legacy paring
 
@@ -723,7 +723,7 @@ Build system and infrastructure
 * Babblesim is now included in the west manifest. Users can fetch it by enabling
   the ``babblesim`` group with west config.
 
-* `west sign` now uses DT labels, of "fixed-partition" compatible nodes, to identify
+* ``west sign`` now uses DT labels, of "fixed-partition" compatible nodes, to identify
   application image slots, instead of previously used DT node label properties.
   If you have been using custom partition layout for MCUboot, you will have to label
   your MCUboot slot partitions with proper DT node labels; for example partition
@@ -776,7 +776,7 @@ Drivers and Sensors
     channel(s) to link a software channel configuration to.
   * MCUX LPADC driver ``voltage-ref`` and ``power-level`` devicetree properties
     were shifted to match the hardware as described in reference manual instead
-    of matching the NXP SDK enum identifers.
+    of matching the NXP SDK enum identifiers.
   * Added support for STM32C0 and STM32H5.
   * Added DMA support for STM32H7.
   * STM32: Resolutions are now listed in the device tree for each ADC instance
@@ -1143,7 +1143,7 @@ Networking
     which allow to disable ND/MLD respectively on an interface.
   * Reworked network interface mutex protection, to use individual mutex for
     each interface, instead of a global one.
-  * Added new :ref:`aws-iot-mqtt-sample`.
+  * Added new :zephyr:code-sample:`aws-iot-mqtt`.
   * Added a few missing NULL pointer checks in network interface functions.
 
 * OpenThread:
@@ -1406,7 +1406,7 @@ MCUboot
   interactive Kconfig interfaces, the MCUboot options will now be located under
   ``Modules`` instead of under ``Boot Options``.
 
-* Added :kconfig:option:`CONFIG_MCUBOOT_CMAKE_WEST_SIGN_PARAMS` that allows to pass arguments to
+* Added ``CONFIG_MCUBOOT_CMAKE_WEST_SIGN_PARAMS`` that allows to pass arguments to
   west sign when invoked from cmake.
 
 Storage

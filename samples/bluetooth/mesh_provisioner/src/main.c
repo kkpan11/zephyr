@@ -20,7 +20,7 @@ static uint8_t node_uuid[16];
 
 K_SEM_DEFINE(sem_unprov_beacon, 0, 1);
 K_SEM_DEFINE(sem_node_added, 0, 1);
-#if DT_NODE_HAS_STATUS(SW0_NODE, okay)
+#ifdef CONFIG_MESH_PROVISIONER_USE_SW0
 K_SEM_DEFINE(sem_button_pressed, 0, 1);
 #endif
 
@@ -53,13 +53,13 @@ static struct bt_mesh_health_cli health_cli = {
 	.current_status = health_current_status,
 };
 
-static struct bt_mesh_model root_models[] = {
+static const struct bt_mesh_model root_models[] = {
 	BT_MESH_MODEL_CFG_SRV,
 	BT_MESH_MODEL_CFG_CLI(&cfg_cli),
 	BT_MESH_MODEL_HEALTH_CLI(&health_cli),
 };
 
-static struct bt_mesh_elem elements[] = {
+static const struct bt_mesh_elem elements[] = {
 	BT_MESH_ELEM(0, root_models, BT_MESH_MODEL_NONE),
 };
 
@@ -315,7 +315,7 @@ static uint8_t check_unconfigured(struct bt_mesh_cdb_node *node, void *data)
 	return BT_MESH_CDB_ITER_CONTINUE;
 }
 
-#if DT_NODE_HAS_STATUS(SW0_NODE, okay)
+#ifdef CONFIG_MESH_PROVISIONER_USE_SW0
 static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET_OR(SW0_NODE, gpios, {0});
 static struct gpio_callback button_cb_data;
 
@@ -366,7 +366,7 @@ int main(void)
 	printk("Bluetooth initialized\n");
 	bt_ready();
 
-#if DT_NODE_HAS_STATUS(SW0_NODE, okay)
+#ifdef CONFIG_MESH_PROVISIONER_USE_SW0
 	button_init();
 #endif
 
@@ -383,7 +383,7 @@ int main(void)
 
 		bin2hex(node_uuid, 16, uuid_hex_str, sizeof(uuid_hex_str));
 
-#if DT_NODE_HAS_STATUS(SW0_NODE, okay)
+#ifdef CONFIG_MESH_PROVISIONER_USE_SW0
 		k_sem_reset(&sem_button_pressed);
 		printk("Device %s detected, press button 1 to provision.\n", uuid_hex_str);
 		err = k_sem_take(&sem_button_pressed, K_SECONDS(30));

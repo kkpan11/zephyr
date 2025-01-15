@@ -83,7 +83,7 @@ def process_line(line, fp):
         return
 
     # Set the lookup function to static inline so it gets rolled into
-    # z_object_find(), nothing else will use it
+    # k_object_find(), nothing else will use it
     if re.search(args.pattern + " [*]$", line):
         fp.write("static inline " + line)
         return
@@ -125,6 +125,9 @@ def process_line(line, fp):
     # Take the strings with the binary information for the pointer values,
     # and just turn them into pointers
     line = re.sub(r'["].*["]', reformat_str, line)
+
+    # Use a bigger data type for the asso_values table to provide some margin
+    line = re.sub(r'char asso_values', r'short asso_values', line)
 
     fp.write(line)
 

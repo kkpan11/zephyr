@@ -1,7 +1,8 @@
-.. _x-nucleo-iks01a1-sample:
+.. zephyr:code-sample:: x-nucleo-iks01a1
+   :name: X-NUCLEO-IKS01A1 shield
+   :relevant-api: sensor_interface
 
-X-NUCLEO-IKS01A1: MEMS inertial and environmental multi-sensor shield
-#####################################################################
+   Interact with all the sensors of an X-NUCLEO-IKS01A1 shield.
 
 Overview
 ********
@@ -27,13 +28,13 @@ does not yet support sensors multiple instances.
 References
 **********
 
--X-NUCLEO-IKS01A1: http://www.st.com/en/ecosystems/x-nucleo-iks01a1.html
+-X-NUCLEO-IKS01A1: https://www.st.com/en/ecosystems/x-nucleo-iks01a1.html
 
 Building and Running
 ********************
 
 This sample runs with X-NUCLEO-IKS01A1 stacked on any board with a matching
-Arduino connector. For this example, we use a :ref:`nucleo_f429zi_board` board.
+Arduino connector. For this example, we use a :zephyr:board:`nucleo_f429zi` board.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/shields/x_nucleo_iks01a1

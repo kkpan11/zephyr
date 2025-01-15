@@ -17,14 +17,40 @@
          * contains MULTIBOOT_EAX_MAGIC and EBX points to a valid 'struct
          * multiboot_info'; otherwise EBX is just junk. Check EAX early
 	 * before it's clobbered and leave a sentinel (0) in EBX if invalid.
-	 * The valid in EBX will be the argument to z_x86_prep_c(), so the
+	 * The valid in EBX will be the argument to z_prep_c(), so the
 	 * subsequent code must, of course, be sure to preserve it meanwhile.
 	 */
 
 	cmpl $MULTIBOOT_EAX_MAGIC, %eax
+
+#ifndef CONFIG_DYNAMIC_BOOTARGS
 	je 1f
 	xorl %ebx, %ebx
 1:
+#else
+	movl $multiboot_cmdline, %edi
+	je setup_copy_cmdline
+	xorl %ebx, %ebx
+	jmp end_cmdline
+
+setup_copy_cmdline:
+	testl $MULTIBOOT_INFO_FLAGS_CMDLINE, __multiboot_info_t_flags_OFFSET(%ebx)
+	jz end_cmdline
+
+	movl $multiboot_cmdline + CONFIG_BOOTARGS_ARGS_BUFFER_SIZE - 1, %edx
+	movl __multiboot_info_t_cmdline_OFFSET(%ebx), %esi
+copy_cmdline:
+	cmpl %esi, %edx
+	je end_cmdline
+	cmpb $0, (%esi)
+	je end_cmdline
+
+	movsb
+	jmp copy_cmdline
+end_cmdline:
+	movb $0, (%edi)
+#endif
+
 #endif
 
 #ifdef CONFIG_PIC_DISABLE
