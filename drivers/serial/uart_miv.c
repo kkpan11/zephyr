@@ -106,6 +106,8 @@
 #define BAUDVALUE_MSB ((uint16_t)(0xFF00))
 #define BAUDVALUE_SHIFT ((uint8_t)(5))
 
+#define MIV_UART_0_LINECFG 0x1
+
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 static struct k_thread rx_thread;
 static K_KERNEL_STACK_DEFINE(rx_stack, 512);
@@ -359,7 +361,7 @@ static int uart_miv_init(const struct device *dev)
 	return 0;
 }
 
-static const struct uart_driver_api uart_miv_driver_api = {
+static DEVICE_API(uart, uart_miv_driver_api) = {
 	.poll_in          = uart_miv_poll_in,
 	.poll_out         = uart_miv_poll_out,
 	.err_check        = uart_miv_err_check,
@@ -385,7 +387,7 @@ static const struct uart_driver_api uart_miv_driver_api = {
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) <= 1,
 	     "unsupported uart_miv instance");
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0))
 
 static struct uart_miv_data uart_miv_data_0;
 
@@ -422,4 +424,4 @@ static void uart_miv_irq_cfg_func_0(const struct device *dev)
 }
 #endif
 
-#endif /* DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0)) */

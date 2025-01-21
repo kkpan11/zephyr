@@ -11,7 +11,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/irq_offload.h>
-#include <exc.h>
+#include <exception.h>
 
 void arch_irq_offload(irq_offload_routine_t routine, const void *parameter)
 {
@@ -22,4 +22,8 @@ void arch_irq_offload(irq_offload_routine_t routine, const void *parameter)
 			  :
 			  : [svid] "i" (_SVC_CALL_IRQ_OFFLOAD),
 			    "r" (x0), "r" (x1));
+}
+
+void arch_irq_offload_init(void)
+{
 }

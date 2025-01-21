@@ -6,6 +6,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#ifndef ZEPHYR_SUBSYS_BLUETOOTH_HOST_KEYS_H_
+#define ZEPHYR_SUBSYS_BLUETOOTH_HOST_KEYS_H_
+
+#include <zephyr/bluetooth/bluetooth.h>
+
 /** @cond INTERNAL_HIDDEN */
 
 enum bt_keys_type {
@@ -81,6 +86,12 @@ struct bt_keys {
 
 #define BT_KEYS_STORAGE_LEN     (sizeof(struct bt_keys) - \
 				 offsetof(struct bt_keys, storage_start))
+
+/** Clears all keys.
+ *
+ * Keys stored in settings are not cleared.
+ */
+void bt_keys_reset(void);
 
 /**
  * @brief Get a call through the callback for each key with the same type
@@ -215,7 +226,8 @@ struct bt_keys_link_key *bt_keys_find_link_key(const bt_addr_t *addr);
 void bt_keys_link_key_clear(struct bt_keys_link_key *link_key);
 void bt_keys_link_key_clear_addr(const bt_addr_t *addr);
 void bt_keys_link_key_store(struct bt_keys_link_key *link_key);
-
+void bt_foreach_bond_br(void (*func)(const struct bt_bond_info *info, void *user_data),
+			void *user_data);
 
 /* This function is used to signal that the key has been used for paring */
 /* It updates the aging counter and saves it to flash if configuration option */
@@ -226,3 +238,5 @@ void bt_keys_link_key_update_usage(const bt_addr_t *addr);
 void bt_keys_show_sniffer_info(struct bt_keys *keys, void *data);
 
 /** @endcond */
+
+#endif /* ZEPHYR_SUBSYS_BLUETOOTH_HOST_KEYS_H_ */

@@ -7,20 +7,21 @@
 """
 
 import argparse
-from pathlib import Path
-import platform
+import functools
 import os
+import platform
 import shlex
 import shutil
-from typing import List, Optional, ClassVar, Dict
+from pathlib import Path
+from typing import ClassVar
 
-from runners.core import ZephyrBinaryRunner, RunnerCaps, RunnerConfig
+from runners.core import RunnerCaps, RunnerConfig, ZephyrBinaryRunner
 
 
 class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
     """Runner front-end for STM32CubeProgrammer CLI."""
 
-    _RESET_MODES: ClassVar[Dict[str, str]] = {
+    _RESET_MODES: ClassVar[dict[str, str]] = {
         "sw": "SWrst",
         "hw": "HWrst",
         "core": "Crst",
@@ -31,18 +32,21 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         self,
         cfg: RunnerConfig,
         port: str,
-        frequency: Optional[int],
-        reset_mode: Optional[str],
-        conn_modifiers: Optional[str],
-        cli: Optional[Path],
+        frequency: int | None,
+        reset_mode: str | None,
+        start_address: int | None,
+        conn_modifiers: str | None,
+        cli: Path | None,
         use_elf: bool,
         erase: bool,
-        tool_opt: List[str],
+        extload: str | None,
+        tool_opt: list[str],
     ) -> None:
         super().__init__(cfg)
 
         self._port = port
         self._frequency = frequency
+        self._start_address = start_address
         self._reset_mode = reset_mode
         self._conn_modifiers = conn_modifiers
         self._cli = (
@@ -51,7 +55,16 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         self._use_elf = use_elf
         self._erase = erase
 
-        self._tool_opt: List[str] = list()
+        if extload:
+            p = (
+                STM32CubeProgrammerBinaryRunner._get_stm32cubeprogrammer_path().parent.resolve()
+                / 'ExternalLoader'
+            )
+            self._extload = ['-el', str(p / extload)]
+        else:
+            self._extload = []
+
+        self._tool_opt: list[str] = list()
         for opts in [shlex.split(opt) for opt in tool_opt]:
             self._tool_opt += opts
 
@@ -78,6 +91,10 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             )
 
         if platform.system() == "Windows":
+            cmd = shutil.which("STM32_Programmer_CLI")
+            if cmd is not None:
+                return Path(cmd)
+
             cli = (
                 Path("STMicroelectronics")
                 / "STM32Cube"
@@ -112,7 +129,7 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
 
     @classmethod
     def capabilities(cls):
-        return RunnerCaps(commands={"flash"}, erase=True, tool_opt=True)
+        return RunnerCaps(commands={"flash"}, erase=True, extload=True, tool_opt=True)
 
     @classmethod
     def do_add_parser(cls, parser):
@@ -131,6 +148,15 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             required=False,
             choices=["sw", "hw", "core"],
             help="Reset mode",
+        )
+        parser.add_argument(
+            "--start-address",
+            # To accept arguments in hex format, a wrapper lambda around int() must be used.
+            # Wrapping the lambda with functools.wraps() makes it so that 'invalid int value'
+            # is displayed when an invalid value is provided for this argument.
+            type=functools.wraps(int)(lambda s: int(s, base=0)),
+            required=False,
+            help="Address where execution should begin after flashing"
         )
         parser.add_argument(
             "--conn-modifiers",
@@ -152,6 +178,10 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         )
 
     @classmethod
+    def extload_help(cls) -> str:
+        return "External Loader for STM32_Programmer_CLI"
+
+    @classmethod
     def tool_opt_help(cls) -> str:
         return "Additional options for STM32_Programmer_CLI"
 
@@ -164,10 +194,12 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
             port=args.port,
             frequency=args.frequency,
             reset_mode=args.reset_mode,
+            start_address=args.start_address,
             conn_modifiers=args.conn_modifiers,
             cli=args.cli,
             use_elf=args.use_elf,
             erase=args.erase,
+            extload=args.extload,
             tool_opt=args.tool_opt,
         )
 
@@ -192,6 +224,9 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
 
         cmd += ["--connect", connect_opts]
         cmd += self._tool_opt
+        if self._extload:
+            # external loader to come after the tool option in STM32CubeProgrammer
+            cmd += self._extload
 
         # erase first if requested
         if self._erase:
@@ -200,7 +235,17 @@ class STM32CubeProgrammerBinaryRunner(ZephyrBinaryRunner):
         # flash image and run application
         dl_file = self.cfg.elf_file if self._use_elf else self.cfg.hex_file
         if dl_file is None:
-            raise RuntimeError(f'cannot flash; no download file was specified')
+            raise RuntimeError('cannot flash; no download file was specified')
         elif not os.path.isfile(dl_file):
             raise RuntimeError(f'download file {dl_file} does not exist')
-        self.check_call(cmd + ["--download", dl_file, "--start"])
+
+        flash_and_run_args = ["--download", dl_file]
+
+        # '--start' is needed to start execution after flash.
+        # The default start address is the beggining of the flash,
+        # but another value can be explicitly specified if desired.
+        flash_and_run_args.append("--start")
+        if self._start_address is not None:
+            flash_and_run_args.append(f"0x{self._start_address:X}")
+
+        self.check_call(cmd + flash_and_run_args)

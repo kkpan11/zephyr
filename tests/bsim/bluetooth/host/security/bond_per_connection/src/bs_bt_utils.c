@@ -88,6 +88,11 @@ DEFINE_FLAG(flag_pairing_complete);
 DEFINE_FLAG(flag_bonded);
 DEFINE_FLAG(flag_not_bonded);
 
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+	FAIL("Pairing failed (unexpected): reason %u\n", reason);
+}
+
 static void pairing_complete(struct bt_conn *conn, bool bonded)
 {
 	SET_FLAG(flag_pairing_complete);
@@ -100,6 +105,7 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 }
 
 static struct bt_conn_auth_info_cb bt_conn_auth_info_cb = {
+	.pairing_failed = pairing_failed,
 	.pairing_complete = pairing_complete,
 };
 
@@ -178,8 +184,7 @@ void advertise_connectable(int id, bt_addr_le_t *directed_dst)
 	param.id = id;
 	param.interval_min = 0x0020;
 	param.interval_max = 0x4000;
-	param.options |= BT_LE_ADV_OPT_ONE_TIME;
-	param.options |= BT_LE_ADV_OPT_CONNECTABLE;
+	param.options |= BT_LE_ADV_OPT_CONN;
 
 	if (directed_dst) {
 		param.options |= BT_LE_ADV_OPT_DIR_ADDR_RPA;

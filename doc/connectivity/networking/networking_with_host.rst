@@ -7,12 +7,13 @@ Networking with the host system
    :maxdepth: 1
    :hidden:
 
-   native_posix_setup.rst
+   native_sim_setup.rst
    qemu_eth_setup.rst
    qemu_setup.rst
    usbnet_setup.rst
    qemu_user_setup.rst
    networking_with_multiple_instances.rst
+   eth_bridge_native_sim_setup.rst
    qemu_802154_setup.rst
    armfvp_user_networking_setup.rst
 
@@ -53,14 +54,15 @@ possible:
     the host on which the model is running. See :ref:`networking_with_armfvp`
     for details.
 
-* native_posix board.
+* native_sim board.
 
   * The Zephyr instance can be executed as a user space process in the host
     system. This is the most convenient way to debug the Zephyr system as one
     can attach host debugger directly to the running Zephyr instance. This
     requires that there is an adaptation driver in Zephyr for interfacing
-    with the host system. An Ethernet driver exists in Zephyr for this purpose.
-    See :ref:`networking_with_native_posix` for details.
+    with the host system. Two possible network drivers can be used for this
+    purpose, a TAP virtual Ethernet driver and an offloaded sockets driver.
+    See :ref:`networking_with_native_sim` for details.
 
 * USB device networking.
 
@@ -70,7 +72,7 @@ possible:
 
 * Connecting multiple Zephyr instances together.
 
-  * If you have multiple Zephyr instances, either QEMU or native_posix ones,
+  * If you have multiple Zephyr instances, either QEMU or native_sim ones,
     and want to create a connection between them, see
     :ref:`networking_with_multiple_instances` for details.
 
@@ -79,3 +81,11 @@ possible:
   * Here, two Zephyr instances are running and there is IEEE 802.15.4 link layer
     run over an UART between them.
     See :ref:`networking_with_ieee802154_qemu` for details.
+
+* Simulating Ethernet bridge network with native_sim.
+
+  * Here, one Zephyr instance is running with Ethernet bridge enabled
+    via :kconfig:option:`CONFIG_NET_ETHERNET_BRIDGE` Kconfig option. There
+    exists two host network interfaces ``zeth0`` and ``zeth1`` and the network
+    packets are bridged between those two interfaces.
+    See :ref:`networking_with_native_sim_eth_bridge` for details.

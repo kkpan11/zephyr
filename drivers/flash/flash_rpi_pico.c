@@ -61,13 +61,16 @@ enum outover {
 static ssi_hw_t *const ssi = (ssi_hw_t *)SSI_BASE_ADDRESS;
 static uint32_t boot2_copyout[BOOT2_SIZE_WORDS];
 static bool boot2_copyout_valid;
+static uint8_t flash_ram_buffer[PAGE_SIZE];
 
 static void __no_inline_not_in_flash_func(flash_init_boot2_copyout)(void)
 {
-	if (boot2_copyout_valid)
+	if (boot2_copyout_valid) {
 		return;
-	for (int i = 0; i < BOOT2_SIZE_WORDS; ++i)
+	}
+	for (int i = 0; i < BOOT2_SIZE_WORDS; ++i) {
 		boot2_copyout[i] = ((uint32_t *)FLASH_BASE)[i];
+	}
 	__compiler_memory_barrier();
 	boot2_copyout_valid = true;
 }
@@ -117,14 +120,16 @@ void __no_inline_not_in_flash_func(flash_put_get)(const uint8_t *tx, uint8_t *rx
 			if (rx_skip) {
 				--rx_skip;
 			} else {
-				if (rx)
+				if (rx) {
 					*rx++ = rxbyte;
+				}
 				--rx_count;
 			}
 		}
 
-		if (!did_something && __builtin_expect(flash_was_aborted(), 0))
+		if (!did_something && __builtin_expect(flash_was_aborted(), 0)) {
 			break;
+		}
 	}
 	flash_cs_force(OUTOVER_HIGH);
 }
@@ -166,9 +171,9 @@ void __no_inline_not_in_flash_func(flash_write_partial)(uint32_t flash_offs, con
 {
 	rom_connect_internal_flash_fn connect_internal_flash = (rom_connect_internal_flash_fn)
 					rom_func_lookup_inline(ROM_FUNC_CONNECT_INTERNAL_FLASH);
-	rom_flash_exit_xip_fn flash_exit_xip = (rom_flash_exit_xip_fn)
+	rom_flash_exit_xip_fn exit_xip = (rom_flash_exit_xip_fn)
 						rom_func_lookup_inline(ROM_FUNC_FLASH_EXIT_XIP);
-	rom_flash_flush_cache_fn flash_flush_cache = (rom_flash_flush_cache_fn)
+	rom_flash_flush_cache_fn flush_cache = (rom_flash_flush_cache_fn)
 						rom_func_lookup_inline(ROM_FUNC_FLASH_FLUSH_CACHE);
 
 	flash_init_boot2_copyout();
@@ -176,9 +181,9 @@ void __no_inline_not_in_flash_func(flash_write_partial)(uint32_t flash_offs, con
 	__compiler_memory_barrier();
 
 	connect_internal_flash();
-	flash_exit_xip();
+	exit_xip();
 	flash_write_partial_internal(flash_offs, data, count);
-	flash_flush_cache();
+	flush_cache();
 	flash_enable_xip_via_boot2();
 }
 
@@ -223,22 +228,25 @@ static int flash_rpi_write(const struct device *dev, off_t offset, const void *d
 
 	if ((offset & (PAGE_SIZE - 1)) > 0) {
 		bytes_to_write = MIN(PAGE_SIZE - (offset & (PAGE_SIZE - 1)), size);
-		flash_write_partial(offset, data_pointer, bytes_to_write);
+		memcpy(flash_ram_buffer, data_pointer, bytes_to_write);
+		flash_write_partial(offset, flash_ram_buffer, bytes_to_write);
 		data_pointer += bytes_to_write;
 		size -= bytes_to_write;
 		offset += bytes_to_write;
 	}
 
-	if (size >= PAGE_SIZE) {
-		bytes_to_write = size & ~(PAGE_SIZE - 1);
-		flash_range_program(offset, data_pointer, bytes_to_write);
+	while (size >= PAGE_SIZE) {
+		bytes_to_write = PAGE_SIZE;
+		memcpy(flash_ram_buffer, data_pointer, bytes_to_write);
+		flash_range_program(offset, flash_ram_buffer, bytes_to_write);
 		data_pointer += bytes_to_write;
 		size -= bytes_to_write;
 		offset += bytes_to_write;
 	}
 
 	if (size > 0) {
-		flash_write_partial(offset, data_pointer, size);
+		memcpy(flash_ram_buffer, data_pointer, size);
+		flash_write_partial(offset, flash_ram_buffer, size);
 	}
 
 	irq_unlock(key);
@@ -298,7 +306,7 @@ void flash_rpi_page_layout(const struct device *dev, const struct flash_pages_la
 
 #endif /* CONFIG_FLASH_PAGE_LAYOUT */
 
-static const struct flash_driver_api flash_rpi_driver_api = {
+static DEVICE_API(flash, flash_rpi_driver_api) = {
 	.read = flash_rpi_read,
 	.write = flash_rpi_write,
 	.erase = flash_rpi_erase,

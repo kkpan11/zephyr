@@ -29,7 +29,7 @@ be selected by enabling the Kconfig's for the required callbacks (see
 :ref:`mcumgr_cb_events` for further details). A callback function with the
 :c:type:`mgmt_cb` type definition can then be declared and registered by
 calling :c:func:`mgmt_callback_register` for the desired event inside of a
-:c:struct`mgmt_callback` structure. Handlers are called in the order that they
+:c:struct:`mgmt_callback` structure. Handlers are called in the order that they
 were registered.
 
 With the system enabled, a basic handler can be set up and defined in
@@ -153,7 +153,7 @@ An example of selectively denying file access:
         if (event == MGMT_EVT_OP_FS_MGMT_FILE_ACCESS && prev_status == MGMT_CB_OK) {
             struct fs_mgmt_file_access *fs_data = (struct fs_mgmt_file_access *)data;
 
-            /* Check if this is an upload and deny access if it is, otherwise check the
+            /* Check if this is an upload and deny access if it is, otherwise check
              * the path and deny if is matches a name
              */
             if (fs_data->access == FS_MGMT_FILE_ACCESS_WRITE) {
@@ -192,7 +192,7 @@ the file should be allowed or not, note that this requires that
 :kconfig:option:`CONFIG_MCUMGR_GRP_FS_FILE_ACCESS_HOOK` be enabled to receive
 this callback.
 Two types of errors can be returned, the ``rc`` parameter can be set to an
-:c:enumerator:`mcumgr_err_t` error code and :c:enumerator:`MGMT_CB_ERROR_RC`
+:c:enum:`mcumgr_err_t` error code and :c:enumerator:`MGMT_CB_ERROR_RC`
 can be returned, or a group error code (introduced with version 2 of the MCUmgr
 protocol) can be set by setting the ``group`` value to the group and ``rc``
 value to the group error code and returning :c:enumerator:`MGMT_CB_ERROR_ERR`.
@@ -330,4 +330,3 @@ API Reference
 *************
 
 .. doxygengroup:: mcumgr_callback_api
-    :inner:

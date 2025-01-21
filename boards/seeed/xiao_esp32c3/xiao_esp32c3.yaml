@@ -1,0 +1,14 @@
+identifier: xiao_esp32c3
+name: XIAO ESP32C3
+type: mcu
+arch: riscv
+toolchain:
+  - zephyr
+supported:
+  - gpio
+  - i2c
+  - spi
+  - uart
+  - watchdog
+  - can
+vendor: seeed

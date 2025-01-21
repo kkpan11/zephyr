@@ -1,16 +1,19 @@
 /*
- * Copyright (c) 2021 Nordic Semiconductor ASA
+ * Copyright (c) 2021-2024 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
+#include <stddef.h>
+#include <stdint.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/gap.h>
 #include <zephyr/bluetooth/iso.h>
 #include <zephyr/sys/byteorder.h>
 
-#define BUF_ALLOC_TIMEOUT (10) /* milliseconds */
+#define BIG_SDU_INTERVAL_US      (10000)
+#define BUF_ALLOC_TIMEOUT_US     (BIG_SDU_INTERVAL_US * 2U) /* milliseconds */
 #define BIG_TERMINATE_TIMEOUT_US (60 * USEC_PER_SEC) /* microseconds */
-#define BIG_SDU_INTERVAL_US (10000)
 
 #define BIS_ISO_CHAN_COUNT 2
 NET_BUF_POOL_FIXED_DEFINE(bis_tx_pool, BIS_ISO_CHAN_COUNT,
@@ -82,8 +85,26 @@ static struct bt_iso_big_create_param big_create_param = {
 	.framing = 0, /* 0 - unframed, 1 - framed */
 };
 
+static const struct bt_data ad[] = {
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+
 int main(void)
 {
+	/* Some controllers work best while Extended Advertising interval to be a multiple
+	 * of the ISO Interval minus 10 ms (max. advertising random delay). This is
+	 * required to place the AUX_ADV_IND PDUs in a non-overlapping interval with the
+	 * Broadcast ISO radio events.
+	 * For 10ms SDU interval a extended advertising interval of 60 - 10 = 50 is suitable
+	 */
+	const uint16_t adv_interval_ms = 60U;
+	const uint16_t ext_adv_interval_ms = adv_interval_ms - 10U;
+	const struct bt_le_adv_param *ext_adv_param = BT_LE_ADV_PARAM(
+		BT_LE_ADV_OPT_EXT_ADV, BT_GAP_MS_TO_ADV_INTERVAL(ext_adv_interval_ms),
+		BT_GAP_MS_TO_ADV_INTERVAL(ext_adv_interval_ms), NULL);
+	const struct bt_le_per_adv_param *per_adv_param = BT_LE_PER_ADV_PARAM(
+		BT_GAP_MS_TO_PER_ADV_INTERVAL(adv_interval_ms),
+		BT_GAP_MS_TO_PER_ADV_INTERVAL(adv_interval_ms), BT_LE_PER_ADV_OPT_NONE);
 	uint32_t timeout_counter = INITIAL_TIMEOUT_COUNTER;
 	struct bt_le_ext_adv *adv;
 	struct bt_iso_big *big;
@@ -101,15 +122,22 @@ int main(void)
 		return 0;
 	}
 
-	/* Create a non-connectable non-scannable advertising set */
-	err = bt_le_ext_adv_create(BT_LE_EXT_ADV_NCONN_NAME, NULL, &adv);
+	/* Create a non-connectable advertising set */
+	err = bt_le_ext_adv_create(ext_adv_param, NULL, &adv);
 	if (err) {
 		printk("Failed to create advertising set (err %d)\n", err);
 		return 0;
 	}
 
+	/* Set advertising data to have complete local name set */
+	err = bt_le_ext_adv_set_data(adv, ad, ARRAY_SIZE(ad), NULL, 0);
+	if (err) {
+		printk("Failed to set advertising data (err %d)\n", err);
+		return 0;
+	}
+
 	/* Set periodic advertising parameters */
-	err = bt_le_per_adv_set_param(adv, BT_LE_PER_ADV_DEFAULT);
+	err = bt_le_per_adv_set_param(adv, per_adv_param);
 	if (err) {
 		printk("Failed to set periodic advertising parameters"
 		       " (err %d)\n", err);
@@ -152,16 +180,14 @@ int main(void)
 			struct net_buf *buf;
 			int ret;
 
-			buf = net_buf_alloc(&bis_tx_pool,
-					    K_MSEC(BUF_ALLOC_TIMEOUT));
+			buf = net_buf_alloc(&bis_tx_pool, K_USEC(BUF_ALLOC_TIMEOUT_US));
 			if (!buf) {
 				printk("Data buffer allocate timeout on channel"
 				       " %u\n", chan);
 				return 0;
 			}
 
-			ret = k_sem_take(&sem_iso_data,
-					 K_MSEC(BUF_ALLOC_TIMEOUT));
+			ret = k_sem_take(&sem_iso_data, K_USEC(BUF_ALLOC_TIMEOUT_US));
 			if (ret) {
 				printk("k_sem_take for ISO data sent failed\n");
 				net_buf_unref(buf);
@@ -171,8 +197,7 @@ int main(void)
 			net_buf_reserve(buf, BT_ISO_CHAN_SEND_RESERVE);
 			sys_put_le32(iso_send_count, iso_data);
 			net_buf_add_mem(buf, iso_data, sizeof(iso_data));
-			ret = bt_iso_chan_send(&bis_iso_chan[chan], buf,
-					       seq_num, BT_ISO_TIMESTAMP_NONE);
+			ret = bt_iso_chan_send(&bis_iso_chan[chan], buf, seq_num);
 			if (ret < 0) {
 				printk("Unable to broadcast data on channel %u"
 				       " : %d", chan, ret);

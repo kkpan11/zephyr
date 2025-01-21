@@ -80,7 +80,7 @@ static int dummy_sensor_init(const struct device *dev)
 	const struct device *i2c = device_get_binding(config->i2c_name);
 
 	/* Bus and address should be configured. */
-	zassert_equal(strcmp(config->i2c_name, "dummy I2C"), 0);
+	zassert_str_equal(config->i2c_name, "dummy I2C");
 	zassert_equal(config->i2c_address, 123);
 
 	if (i2c != NULL) {
@@ -161,7 +161,7 @@ int dummy_sensor_trigger_set(const struct device *dev,
 	return 0;
 }
 
-static const struct sensor_driver_api dummy_sensor_api = {
+static DEVICE_API(sensor, dummy_sensor_api) = {
 	.sample_fetch = &dummy_sensor_sample_fetch,
 	.channel_get = &dummy_sensor_channel_get,
 	.attr_set = dummy_sensor_attr_set,
@@ -169,7 +169,7 @@ static const struct sensor_driver_api dummy_sensor_api = {
 	.trigger_set = dummy_sensor_trigger_set,
 };
 
-static const struct sensor_driver_api dummy_sensor_no_trig_api = {
+static DEVICE_API(sensor, dummy_sensor_no_trig_api) = {
 	.sample_fetch = &dummy_sensor_sample_fetch,
 	.channel_get = &dummy_sensor_channel_get,
 	.attr_set = NULL,
@@ -178,9 +178,9 @@ static const struct sensor_driver_api dummy_sensor_no_trig_api = {
 };
 
 DEVICE_DEFINE(dummy_sensor, DUMMY_SENSOR_NAME, &dummy_sensor_init,
-		    NULL, &dummy_data, &dummy_config, APPLICATION,
+		    NULL, &dummy_data, &dummy_config, POST_KERNEL,
 		    CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &dummy_sensor_api);
 
 DEVICE_DEFINE(dummy_sensor_no_trig, DUMMY_SENSOR_NAME_NO_TRIG, &dummy_sensor_init,
-		    NULL, &dummy_data, &dummy_config, APPLICATION,
+		    NULL, &dummy_data, &dummy_config, POST_KERNEL,
 		    CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &dummy_sensor_no_trig_api);

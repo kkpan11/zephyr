@@ -8,8 +8,8 @@
  * @brief Public APIs for Digital Signal Processing (DSP) math.
  */
 
-#ifndef INCLUDE_ZEPHYR_DSP_DSP_H_
-#define INCLUDE_ZEPHYR_DSP_DSP_H_
+#ifndef ZEPHYR_INCLUDE_DSP_DSP_H_
+#define ZEPHYR_INCLUDE_DSP_DSP_H_
 
 #ifdef CONFIG_DSP_BACKEND_HAS_STATIC
 #define DSP_FUNC_SCOPE static
@@ -32,12 +32,16 @@
 /**
  * @brief DSP Interface
  * @defgroup math_dsp DSP Interface
+ * @since 3.3
+ * @version 0.1.0
  */
 
 #include <zephyr/dsp/types.h>
 
 #include <zephyr/dsp/basicmath.h>
 
+#include <zephyr/dsp/print_format.h>
+
 #include "zdsp_backend.h"
 
-#endif /* INCLUDE_ZEPHYR_DSP_DSP_H_ */
+#endif /* ZEPHYR_INCLUDE_DSP_DSP_H_ */

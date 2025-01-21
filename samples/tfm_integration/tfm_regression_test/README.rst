@@ -24,17 +24,17 @@ Tests for both the secure and non-secure domain are enabled by default, controll
 On Target
 =========
 
-Refer to :ref:`tfm_ipc` for detailed instructions.
+Refer to :zephyr:code-sample:`tfm_ipc` for detailed instructions.
 
 On QEMU:
 ========
 
-Refer to :ref:`tfm_ipc` for detailed instructions.
+Refer to :zephyr:code-sample:`tfm_ipc` for detailed instructions.
 Following is an example based on ``west build``
 
    .. code-block:: bash
 
-      $ west build samples/tfm_integration/tfm_regression_test/ -p -b mps2_an521_ns -t run
+      $ west build samples/tfm_integration/tfm_regression_test/ -p -b mps2/an521/cpu0/ns -t run
 
 Sample Output
 =============

@@ -9,7 +9,7 @@
 #include <errno.h>
 #include <stdlib.h>
 
-#if !defined(__ZEPHYR__) || defined(CONFIG_POSIX_API)
+#if !defined(__ZEPHYR__)
 
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -24,7 +24,8 @@
 
 #else
 
-#include <fcntl.h>
+#include <zephyr/posix/fcntl.h>
+#include <zephyr/posix/sys/select.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/kernel.h>
 
@@ -35,8 +36,8 @@
 #endif
 
 /* For Zephyr, keep max number of fd's in sync with max poll() capacity */
-#ifdef CONFIG_NET_SOCKETS_POLL_MAX
-#define NUM_FDS CONFIG_NET_SOCKETS_POLL_MAX
+#ifdef CONFIG_ZVFS_POLL_MAX
+#define NUM_FDS CONFIG_ZVFS_POLL_MAX
 #else
 #define NUM_FDS 5
 #endif

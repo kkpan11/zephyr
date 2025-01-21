@@ -7,7 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/hash_map.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 LOG_MODULE_REGISTER(hashmap_sample);
 
@@ -47,7 +47,7 @@ int main(void)
 
 			LOG_DBG("Inserted %zu", i);
 
-			if (k_uptime_get() / MSEC_PER_SEC > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
+			if (k_uptime_seconds() > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
 				goto out;
 			}
 		}
@@ -60,7 +60,7 @@ int main(void)
 
 			LOG_DBG("Replaced %zu", i);
 
-			if (k_uptime_get() / MSEC_PER_SEC > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
+			if (k_uptime_seconds() > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
 				goto out;
 			}
 		}
@@ -72,7 +72,7 @@ int main(void)
 
 			LOG_DBG("Removed %zu", i - 1);
 
-			if (k_uptime_get() / MSEC_PER_SEC > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
+			if (k_uptime_seconds() > CONFIG_TEST_LIB_HASH_MAP_DURATION_S) {
 				goto out;
 			}
 		}

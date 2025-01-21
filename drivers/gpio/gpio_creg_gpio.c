@@ -104,14 +104,6 @@ static int port_toggle_bits(const struct device *dev,
 	return port_write(dev, 0, 0, pins);
 }
 
-static int pin_interrupt_configure(const struct device *dev,
-				   gpio_pin_t pin,
-				   enum gpio_int_mode mode,
-				   enum gpio_int_trig trig)
-{
-	return -ENOTSUP;
-}
-
 static int pin_config(const struct device *dev,
 		       gpio_pin_t pin,
 		       gpio_flags_t flags)
@@ -156,14 +148,13 @@ static int pin_config(const struct device *dev,
 	return -ENOTSUP;
 }
 
-static const struct gpio_driver_api api_table = {
+static DEVICE_API(gpio, api_table) = {
 	.pin_configure = pin_config,
 	.port_get_raw = port_get,
 	.port_set_masked_raw = port_set_masked,
 	.port_set_bits_raw = port_set_bits,
 	.port_clear_bits_raw = port_clear_bits,
 	.port_toggle_bits = port_toggle_bits,
-	.pin_interrupt_configure = pin_interrupt_configure,
 };
 
 static const struct creg_gpio_config creg_gpio_cfg = {

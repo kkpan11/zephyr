@@ -18,6 +18,7 @@
 
 #include "hal/swi.h"
 #include "hal/ccm.h"
+#include "hal/cntr.h"
 #include "hal/radio.h"
 #include "hal/ticker.h"
 
@@ -57,13 +58,20 @@ static struct {
 } event;
 
 /* Entropy device */
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
+/* FIXME: This could probably use a chosen entropy device instead on relying on
+ * the nodelabel being the same as for the old nrf rng.
+ */
 static const struct device *const dev_entropy = DEVICE_DT_GET(DT_NODELABEL(rng));
+#endif /* CONFIG_ENTROPY_HAS_DRIVER */
 
 static int init_reset(void);
 #if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
 static inline void done_inc(void);
 #endif /* CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
-static struct lll_event *resume_enqueue(lll_prepare_cb_t resume_cb);
+static inline bool is_done_sync(void);
+static inline struct lll_event *prepare_dequeue_iter_ready_get(uint8_t *idx);
+static inline struct lll_event *resume_enqueue(lll_prepare_cb_t resume_cb);
 static void isr_race(void *param);
 
 #if !defined(CONFIG_BT_CTLR_LOW_LAT)
@@ -82,7 +90,12 @@ static void ticker_op_job_disable(uint32_t status, void *op_context);
 #endif
 #endif /* CONFIG_BT_CTLR_LOW_LAT */
 
+#if defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS) && \
+	defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+static void radio_nrf5_isr(const void *arg)
+#else /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
 ISR_DIRECT_DECLARE(radio_nrf5_isr)
+#endif /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
 {
 	DEBUG_RADIO_ISR(1);
 
@@ -95,8 +108,39 @@ ISR_DIRECT_DECLARE(radio_nrf5_isr)
 	lll_prof_exit_radio();
 
 	DEBUG_RADIO_ISR(0);
+
+#if !defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS) || \
+	!defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
 	return 1;
+#endif /* !CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
 }
+
+#if defined(CONFIG_BT_CTLR_RADIO_TIMER_ISR)
+#if defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS) && \
+	defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+static void timer_nrf5_isr(const void *arg)
+#else /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
+ISR_DIRECT_DECLARE(timer_nrf5_isr)
+#endif /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
+{
+	DEBUG_RADIO_ISR(1);
+
+	lll_prof_enter_radio();
+
+	isr_radio_tmr();
+
+	ISR_DIRECT_PM();
+
+	lll_prof_exit_radio();
+
+	DEBUG_RADIO_ISR(0);
+
+#if !defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS) || \
+	!defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+	return 1;
+#endif /* !CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
+}
+#endif /* CONFIG_BT_CTLR_RADIO_TIMER_ISR */
 
 static void rtc0_nrf5_isr(const void *arg)
 {
@@ -105,8 +149,13 @@ static void rtc0_nrf5_isr(const void *arg)
 	lll_prof_enter_ull_high();
 
 	/* On compare0 run ticker worker instance0 */
-	if (NRF_RTC0->EVENTS_COMPARE[0]) {
-		NRF_RTC0->EVENTS_COMPARE[0] = 0;
+#if defined(CONFIG_BT_CTLR_NRF_GRTC)
+	if (NRF_GRTC->EVENTS_COMPARE[HAL_CNTR_GRTC_CC_IDX_TICKER]) {
+		nrf_grtc_event_clear(NRF_GRTC, HAL_CNTR_GRTC_EVENT_COMPARE_TICKER);
+#else /* !CONFIG_BT_CTLR_NRF_GRTC */
+	if (NRF_RTC->EVENTS_COMPARE[0]) {
+		nrf_rtc_event_clear(NRF_RTC, NRF_RTC_EVENT_COMPARE_0);
+#endif  /* !CONFIG_BT_CTLR_NRF_GRTC */
 
 		ticker_trigger(0);
 	}
@@ -160,10 +209,12 @@ int lll_init(void)
 {
 	int err;
 
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
 	/* Get reference to entropy device */
 	if (!device_is_ready(dev_entropy)) {
 		return -ENODEV;
 	}
+#endif /* CONFIG_ENTROPY_HAS_DRIVER */
 
 	/* Initialise LLL internals */
 	event.curr.abort_cb = NULL;
@@ -179,25 +230,74 @@ int lll_init(void)
 		return err;
 	}
 
+	if (IS_ENABLED(HAL_RADIO_GPIO_HAVE_PA_PIN) ||
+	    IS_ENABLED(HAL_RADIO_GPIO_HAVE_LNA_PIN)) {
+		err = radio_gpio_pa_lna_init();
+		if (err) {
+			return err;
+		}
+	}
+
 	/* Initialize SW IRQ structure */
 	hal_swi_init();
 
 	/* Connect ISRs */
-	IRQ_DIRECT_CONNECT(RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+#if defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS)
+#if defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+	ARM_IRQ_DIRECT_DYNAMIC_CONNECT(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+				       IRQ_CONNECT_FLAGS, no_reschedule);
+	irq_connect_dynamic(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			    radio_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_RADIO_TIMER_ISR)
+	ARM_IRQ_DIRECT_DYNAMIC_CONNECT(TIMER0_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+				       IRQ_CONNECT_FLAGS, no_reschedule);
+	irq_connect_dynamic(TIMER0_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			    timer_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#endif /* CONFIG_BT_CTLR_RADIO_TIMER_ISR */
+#else /* !CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
+	IRQ_DIRECT_CONNECT(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
 			   radio_nrf5_isr, IRQ_CONNECT_FLAGS);
-	IRQ_CONNECT(RTC0_IRQn, CONFIG_BT_CTLR_ULL_HIGH_PRIO,
+#if defined(CONFIG_BT_CTLR_RADIO_TIMER_ISR)
+	IRQ_DIRECT_CONNECT(TIMER0_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			   timer_nrf5_isr, IRQ_CONNECT_FLAGS);
+#endif /* CONFIG_BT_CTLR_RADIO_TIMER_ISR */
+#endif /* !CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
+	irq_connect_dynamic(HAL_RTC_IRQn, CONFIG_BT_CTLR_ULL_HIGH_PRIO,
+			    rtc0_nrf5_isr, NULL, 0U);
+	irq_connect_dynamic(HAL_SWI_RADIO_IRQ, CONFIG_BT_CTLR_LLL_PRIO,
+			    swi_lll_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_LOW_LAT) || \
+	(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)
+	irq_connect_dynamic(HAL_SWI_JOB_IRQ, CONFIG_BT_CTLR_ULL_LOW_PRIO,
+			    swi_ull_low_nrf5_isr, NULL, 0U);
+#endif
+
+#else /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
+	IRQ_DIRECT_CONNECT(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			   radio_nrf5_isr, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_RADIO_TIMER_ISR)
+	IRQ_DIRECT_CONNECT(TIMER0_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			   timer_nrf5_isr, IRQ_CONNECT_FLAGS);
+#endif /* CONFIG_BT_CTLR_RADIO_TIMER_ISR */
+	IRQ_CONNECT(HAL_RTC_IRQn, CONFIG_BT_CTLR_ULL_HIGH_PRIO,
 		    rtc0_nrf5_isr, NULL, 0);
+#if defined(CONFIG_BT_CTLR_ZLI)
+	IRQ_DIRECT_CONNECT(HAL_SWI_RADIO_IRQ, CONFIG_BT_CTLR_LLL_PRIO,
+			   swi_lll_nrf5_isr, IRQ_CONNECT_FLAGS);
+#else
 	IRQ_CONNECT(HAL_SWI_RADIO_IRQ, CONFIG_BT_CTLR_LLL_PRIO,
 		    swi_lll_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#endif
 #if defined(CONFIG_BT_CTLR_LOW_LAT) || \
 	(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)
 	IRQ_CONNECT(HAL_SWI_JOB_IRQ, CONFIG_BT_CTLR_ULL_LOW_PRIO,
 		    swi_ull_low_nrf5_isr, NULL, 0);
 #endif
+#endif /* !CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
 
 	/* Enable IRQs */
-	irq_enable(RADIO_IRQn);
-	irq_enable(RTC0_IRQn);
+	irq_enable(HAL_RADIO_IRQn);
+	irq_enable(HAL_RTC_IRQn);
 	irq_enable(HAL_SWI_RADIO_IRQ);
 	if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) ||
 		(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)) {
@@ -219,36 +319,110 @@ int lll_deinit(void)
 		return err;
 	}
 
+	if (IS_ENABLED(HAL_RADIO_GPIO_HAVE_PA_PIN) ||
+	    IS_ENABLED(HAL_RADIO_GPIO_HAVE_LNA_PIN)) {
+		radio_gpio_pa_lna_deinit();
+	}
+
 	/* Disable IRQs */
-	irq_disable(RADIO_IRQn);
-	irq_disable(RTC0_IRQn);
+	irq_disable(HAL_RADIO_IRQn);
+	irq_disable(HAL_RTC_IRQn);
 	irq_disable(HAL_SWI_RADIO_IRQ);
 	if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) ||
 		(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)) {
 		irq_disable(HAL_SWI_JOB_IRQ);
 	}
 
+	/* Disconnect dynamic ISRs used */
+#if defined(CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS)
+#if defined(CONFIG_SHARED_INTERRUPTS)
+#if defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+	irq_disconnect_dynamic(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			       radio_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_RADIO_TIMER_ISR)
+	irq_disconnect_dynamic(TIMER0_IRQn, CONFIG_BT_CTLR_LLL_PRIO,
+			       timer_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#endif /* CONFIG_BT_CTLR_RADIO_TIMER_ISR */
+#endif /* CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
+	irq_disconnect_dynamic(HAL_RTC_IRQn, CONFIG_BT_CTLR_ULL_HIGH_PRIO,
+			       rtc0_nrf5_isr, NULL, 0U);
+	irq_disconnect_dynamic(HAL_SWI_RADIO_IRQ, CONFIG_BT_CTLR_LLL_PRIO,
+			       swi_lll_nrf5_isr, NULL, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_LOW_LAT) || \
+	(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)
+	irq_disconnect_dynamic(HAL_SWI_JOB_IRQ, CONFIG_BT_CTLR_ULL_LOW_PRIO,
+			       swi_ull_low_nrf5_isr, NULL, 0U);
+#endif
+#else /* !CONFIG_SHARED_INTERRUPTS */
+#if defined(CONFIG_DYNAMIC_DIRECT_INTERRUPTS)
+	irq_connect_dynamic(HAL_RADIO_IRQn, CONFIG_BT_CTLR_LLL_PRIO, NULL, NULL,
+			    IRQ_CONNECT_FLAGS);
+#endif /* CONFIG_DYNAMIC_DIRECT_INTERRUPTS */
+	irq_connect_dynamic(HAL_RTC_IRQn, CONFIG_BT_CTLR_ULL_HIGH_PRIO, NULL, NULL,
+			    0U);
+	irq_connect_dynamic(HAL_SWI_RADIO_IRQ, CONFIG_BT_CTLR_LLL_PRIO, NULL,
+			    NULL, IRQ_CONNECT_FLAGS);
+#if defined(CONFIG_BT_CTLR_LOW_LAT) || \
+	(CONFIG_BT_CTLR_ULL_HIGH_PRIO != CONFIG_BT_CTLR_ULL_LOW_PRIO)
+	irq_connect_dynamic(HAL_SWI_JOB_IRQ, CONFIG_BT_CTLR_ULL_LOW_PRIO, NULL,
+			    NULL, 0U);
+#endif
+#endif /* !CONFIG_SHARED_INTERRUPTS */
+#endif /* CONFIG_BT_CTLR_DYNAMIC_INTERRUPTS */
+
 	return 0;
 }
 
 int lll_csrand_get(void *buf, size_t len)
 {
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
 	return entropy_get_entropy(dev_entropy, buf, len);
+#else /* !CONFIG_ENTROPY_HAS_DRIVER */
+	/* FIXME: No suitable entropy device available yet.
+	 *        It is required by Controller to use random numbers.
+	 *        Hence, return uninitialized buf contents, for now.
+	 */
+	return 0;
+#endif /* !CONFIG_ENTROPY_HAS_DRIVER */
 }
 
 int lll_csrand_isr_get(void *buf, size_t len)
 {
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
 	return entropy_get_entropy_isr(dev_entropy, buf, len, 0);
+#else /* !CONFIG_ENTROPY_HAS_DRIVER */
+	/* FIXME: No suitable entropy device available yet.
+	 *        It is required by Controller to use random numbers.
+	 *        Hence, return uninitialized buf contents, for now.
+	 */
+	return 0;
+#endif /* !CONFIG_ENTROPY_HAS_DRIVER */
 }
 
 int lll_rand_get(void *buf, size_t len)
 {
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
 	return entropy_get_entropy(dev_entropy, buf, len);
+#else /* !CONFIG_ENTROPY_HAS_DRIVER */
+	/* FIXME: No suitable entropy device available yet.
+	 *        It is required by Controller to use random numbers.
+	 *        Hence, return uninitialized buf contents, for now.
+	 */
+	return 0;
+#endif /* !CONFIG_ENTROPY_HAS_DRIVER */
 }
 
 int lll_rand_isr_get(void *buf, size_t len)
 {
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
 	return entropy_get_entropy_isr(dev_entropy, buf, len, 0);
+#else /* !CONFIG_ENTROPY_HAS_DRIVER */
+	/* FIXME: No suitable entropy device available yet.
+	 *        It is required by Controller to use random numbers.
+	 *        Hence, return uninitialized buf contents, for now.
+	 */
+	return 0;
+#endif /* !CONFIG_ENTROPY_HAS_DRIVER */
 }
 
 int lll_reset(void)
@@ -641,52 +815,70 @@ void lll_isr_early_abort(void *param)
 	lll_done(NULL);
 }
 
-static int init_reset(void)
-{
-	return 0;
-}
-
-#if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
-static inline void done_inc(void)
-{
-	event.done.lll_count++;
-	LL_ASSERT(event.done.lll_count != event.done.ull_count);
-}
-#endif /* CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
-
-static inline bool is_done_sync(void)
-{
-#if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
-	return event.done.lll_count == event.done.ull_count;
-#else /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
-	return true;
-#endif /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
-}
-
 int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 			lll_prepare_cb_t prepare_cb,
 			struct lll_prepare_param *prepare_param,
 			uint8_t is_resume, uint8_t is_dequeue)
 {
-	struct lll_event *p;
+	struct lll_event *ready_short = NULL;
+	struct lll_event *ready;
+	struct lll_event *next;
 	uint8_t idx;
 	int err;
 
 	/* Find the ready prepare in the pipeline */
 	idx = UINT8_MAX;
-	p = ull_prepare_dequeue_iter(&idx);
-	while (p && (p->is_aborted || p->is_resume)) {
-		p = ull_prepare_dequeue_iter(&idx);
+	ready = prepare_dequeue_iter_ready_get(&idx);
+
+	/* Find any short prepare */
+	if (ready) {
+		uint32_t ticks_at_preempt_min = prepare_param->ticks_at_expire;
+		uint32_t ticks_at_preempt_next;
+		uint8_t idx_backup = idx;
+		uint32_t diff;
+
+		ticks_at_preempt_next = ready->prepare_param.ticks_at_expire;
+		diff = ticker_ticks_diff_get(ticks_at_preempt_min,
+					     ticks_at_preempt_next);
+		if (is_resume || ((diff & BIT(HAL_TICKER_CNTR_MSBIT)) == 0U)) {
+			ticks_at_preempt_min = ticks_at_preempt_next;
+			if (&ready->prepare_param != prepare_param) {
+				ready_short = ready;
+			}
+		} else {
+			ready = NULL;
+			idx_backup = UINT8_MAX;
+		}
+
+		do {
+			struct lll_event *ready_next;
+
+			ready_next = prepare_dequeue_iter_ready_get(&idx);
+			if (!ready_next) {
+				break;
+			}
+
+			ticks_at_preempt_next = ready_next->prepare_param.ticks_at_expire;
+			diff = ticker_ticks_diff_get(ticks_at_preempt_next,
+						     ticks_at_preempt_min);
+			if ((diff & BIT(HAL_TICKER_CNTR_MSBIT)) == 0U) {
+				continue;
+			}
+
+			ready_short = ready_next;
+			ticks_at_preempt_min = ticks_at_preempt_next;
+		} while (true);
+
+		idx = idx_backup;
 	}
 
 	/* Current event active or another prepare is ready in the pipeline */
 	if ((!is_dequeue && !is_done_sync()) ||
-	    event.curr.abort_cb ||
-	    (p && is_resume)) {
+	    event.curr.abort_cb || ready_short ||
+	    (ready && is_resume)) {
 #if defined(CONFIG_BT_CTLR_LOW_LAT)
 		lll_prepare_cb_t resume_cb;
 #endif /* CONFIG_BT_CTLR_LOW_LAT */
-		struct lll_event *next;
 
 		if (IS_ENABLED(CONFIG_BT_CTLR_LOW_LAT) && event.curr.param) {
 			/* early abort */
@@ -703,30 +895,34 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 			return -EINPROGRESS;
 		}
 
+		/* Find any short prepare */
+		if (ready_short) {
+			ready = ready_short;
+		}
+
 		/* Always start preempt timeout for first prepare in pipeline */
-		struct lll_event *first = p ? p : next;
+		struct lll_event *first = ready ? ready : next;
 		uint32_t ret;
 
 		/* Start the preempt timeout */
-		ret  = preempt_ticker_start(first, p, next);
+		ret  = preempt_ticker_start(first, ready, next);
 		LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
 			  (ret == TICKER_STATUS_BUSY));
 
 #else /* CONFIG_BT_CTLR_LOW_LAT */
 		next = NULL;
-		while (p) {
-			if (!p->is_aborted) {
-				if (event.curr.param ==
-				    p->prepare_param.param) {
-					p->is_aborted = 1;
-					p->abort_cb(&p->prepare_param,
-						    p->prepare_param.param);
+		while (ready) {
+			if (!ready->is_aborted) {
+				if (event.curr.param == ready->prepare_param.param) {
+					ready->is_aborted = 1;
+					ready->abort_cb(&ready->prepare_param,
+							ready->prepare_param.param);
 				} else {
-					next = p;
+					next = ready;
 				}
 			}
 
-			p = ull_prepare_dequeue_iter(&idx);
+			ready = ull_prepare_dequeue_iter(&idx);
 		}
 
 		if (next) {
@@ -747,7 +943,7 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 		return -EINPROGRESS;
 	}
 
-	LL_ASSERT(!p || &p->prepare_param == prepare_param);
+	LL_ASSERT(!ready || &ready->prepare_param == prepare_param);
 
 	event.curr.param = prepare_param->param;
 	event.curr.is_abort_cb = is_abort_cb;
@@ -772,15 +968,13 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 	 */
 
 	/* Find next prepare needing preempt timeout to be setup */
-	do {
-		p = ull_prepare_dequeue_iter(&idx);
-		if (!p) {
-			return err;
-		}
-	} while (p->is_aborted || p->is_resume);
+	next = prepare_dequeue_iter_ready_get(&idx);
+	if (!next) {
+		return err;
+	}
 
 	/* Start the preempt timeout */
-	ret = preempt_ticker_start(p, NULL, p);
+	ret = preempt_ticker_start(next, NULL, next);
 	LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
 		  (ret == TICKER_STATUS_BUSY));
 #endif /* !CONFIG_BT_CTLR_LOW_LAT */
@@ -788,7 +982,40 @@ int lll_prepare_resolve(lll_is_abort_cb_t is_abort_cb, lll_abort_cb_t abort_cb,
 	return err;
 }
 
-static struct lll_event *resume_enqueue(lll_prepare_cb_t resume_cb)
+static int init_reset(void)
+{
+	return 0;
+}
+
+#if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
+static inline void done_inc(void)
+{
+	event.done.lll_count++;
+	LL_ASSERT(event.done.lll_count != event.done.ull_count);
+}
+#endif /* CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
+
+static inline bool is_done_sync(void)
+{
+#if defined(CONFIG_BT_CTLR_LOW_LAT_ULL_DONE)
+	return event.done.lll_count == event.done.ull_count;
+#else /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
+	return true;
+#endif /* !CONFIG_BT_CTLR_LOW_LAT_ULL_DONE */
+}
+
+static inline struct lll_event *prepare_dequeue_iter_ready_get(uint8_t *idx)
+{
+	struct lll_event *ready;
+
+	do {
+		ready = ull_prepare_dequeue_iter(idx);
+	} while (ready && (ready->is_aborted || ready->is_resume));
+
+	return ready;
+}
+
+static inline struct lll_event *resume_enqueue(lll_prepare_cb_t resume_cb)
 {
 	struct lll_prepare_param prepare_param = {0};
 
@@ -820,10 +1047,20 @@ static uint8_t volatile preempt_ack;
 static void ticker_stop_op_cb(uint32_t status, void *param)
 {
 	ARG_UNUSED(param);
-	ARG_UNUSED(status);
 
 	LL_ASSERT(preempt_stop_req != preempt_stop_ack);
-	preempt_stop_ack++;
+	preempt_stop_ack = preempt_stop_req;
+
+	/* We do not fail on status not being success because under scenarios
+	 * where there is ticker_start then ticker_stop and then ticker_start,
+	 * the call to ticker_stop will fail and this is acceptable.
+	 * Also, the preempt_req and preempt_ack would not be update as the
+	 * ticker_start was not processed before ticker_stop. Hence, it is
+	 * safe to reset preempt_req and preempt_ack here.
+	 */
+	if (status == TICKER_STATUS_SUCCESS) {
+		LL_ASSERT(preempt_req != preempt_ack);
+	}
 
 	preempt_req = preempt_ack;
 }
@@ -833,11 +1070,17 @@ static void ticker_start_op_cb(uint32_t status, void *param)
 	ARG_UNUSED(param);
 	LL_ASSERT(status == TICKER_STATUS_SUCCESS);
 
-	LL_ASSERT(preempt_start_req != preempt_start_ack);
-	preempt_start_ack++;
-
+	/* Increase preempt requested count before acknowledging that the
+	 * ticker start operation for the preempt timeout has been handled.
+	 */
 	LL_ASSERT(preempt_req == preempt_ack);
 	preempt_req++;
+
+	/* Increase preempt start ack count, to acknowledge that the ticker
+	 * start operation has been handled.
+	 */
+	LL_ASSERT(preempt_start_req != preempt_start_ack);
+	preempt_start_ack = preempt_start_req;
 }
 
 static uint32_t preempt_ticker_start(struct lll_event *first,
@@ -852,7 +1095,11 @@ static uint32_t preempt_ticker_start(struct lll_event *first,
 	uint32_t preempt_to;
 	uint32_t ret;
 
-	/* Do not request to start preempt timeout if already requested */
+	/* Do not request to start preempt timeout if already requested.
+	 *
+	 * Check if there is pending preempt timeout start requested or if
+	 * preempt timeout ticker has already been scheduled.
+	 */
 	if ((preempt_start_req != preempt_start_ack) ||
 	    (preempt_req != preempt_ack)) {
 		uint32_t diff;
@@ -869,9 +1116,9 @@ static uint32_t preempt_ticker_start(struct lll_event *first,
 		ticks_at_preempt_new &= HAL_TICKER_CNTR_MASK;
 
 		/* Check for short preempt timeouts */
-		diff = ticks_at_preempt_new - ticks_at_preempt;
-		if (!prev || prev->is_aborted ||
-		    ((diff & BIT(HAL_TICKER_CNTR_MSBIT)) == 0U)) {
+		diff = ticker_ticks_diff_get(ticks_at_preempt_new,
+					     ticks_at_preempt);
+		if ((diff & BIT(HAL_TICKER_CNTR_MSBIT)) == 0U) {
 			return TICKER_STATUS_SUCCESS;
 		}
 
@@ -879,15 +1126,6 @@ static uint32_t preempt_ticker_start(struct lll_event *first,
 		ret = preempt_ticker_stop();
 		LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
 			  (ret == TICKER_STATUS_BUSY));
-
-		/* Set early as we get called again through the call to
-		 * abort_cb().
-		 */
-		ticks_at_preempt = ticks_at_preempt_new;
-
-		/* Abort previous prepare that set the preempt timeout */
-		prev->is_aborted = 1U;
-		prev->abort_cb(&prev->prepare_param, prev->prepare_param.param);
 
 		/* Schedule short preempt timeout */
 		first = next;
@@ -957,7 +1195,7 @@ static void preempt_ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 	uint32_t ret;
 
 	LL_ASSERT(preempt_ack != preempt_req);
-	preempt_ack++;
+	preempt_ack = preempt_req;
 
 	mfy.param = param;
 	ret = mayfly_enqueue(TICKER_USER_ID_ULL_HIGH, TICKER_USER_ID_LLL,
@@ -968,7 +1206,7 @@ static void preempt_ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 static void preempt(void *param)
 {
 	lll_prepare_cb_t resume_cb;
-	struct lll_event *next;
+	struct lll_event *ready;
 	uint8_t idx;
 	int err;
 
@@ -977,43 +1215,111 @@ static void preempt(void *param)
 		return;
 	}
 
-	/* Check if any prepare in pipeline */
-	idx = UINT8_MAX;
-	next = ull_prepare_dequeue_iter(&idx);
-	if (!next) {
-		return;
-	}
-
+preempt_find_preemptor:
 	/* Find a prepare that is ready and not a resume */
-	while (next && (next->is_aborted || next->is_resume)) {
-		next = ull_prepare_dequeue_iter(&idx);
-	}
-
-	/* No ready prepare */
-	if (!next) {
+	idx = UINT8_MAX;
+	ready = prepare_dequeue_iter_ready_get(&idx);
+	if (!ready) {
+		/* No ready prepare */
 		return;
 	}
 
 	/* Preemptor not in pipeline */
-	if (next->prepare_param.param != param) {
-		uint32_t ret;
+	if (ready->prepare_param.param != param) {
+		uint32_t ticks_at_preempt_min = ready->prepare_param.ticks_at_expire;
+		struct lll_event *ready_short = NULL;
+		struct lll_event *ready_next = NULL;
+		struct lll_event *preemptor;
 
-		/* Start the preempt timeout */
-		ret = preempt_ticker_start(next, NULL, next);
-		LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
-			  (ret == TICKER_STATUS_BUSY));
+		/* Find if the short prepare request in the pipeline */
+		do {
+			uint32_t ticks_at_preempt_next;
+			uint32_t diff;
 
-		return;
+			preemptor = prepare_dequeue_iter_ready_get(&idx);
+			if (!preemptor) {
+				break;
+			}
+
+			if (!ready_next) {
+				ready_next = preemptor;
+			}
+
+			if (preemptor->prepare_param.param == param) {
+				break;
+			}
+
+			ticks_at_preempt_next = preemptor->prepare_param.ticks_at_expire;
+			diff = ticker_ticks_diff_get(ticks_at_preempt_next,
+						     ticks_at_preempt_min);
+			if ((diff & BIT(HAL_TICKER_CNTR_MSBIT)) == 0U) {
+				continue;
+			}
+
+			ready_short = preemptor;
+			ticks_at_preempt_min = ticks_at_preempt_next;
+		} while (true);
+
+		/* "The" short prepare we were looking for is not in pipeline */
+		if (!preemptor) {
+			uint32_t ret;
+
+			/* Find any short prepare */
+			if (ready_short) {
+				ready = ready_short;
+			}
+
+			/* Start the preempt timeout for (short) ready event */
+			ret = preempt_ticker_start(ready, NULL, ready);
+			LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
+				  (ret == TICKER_STATUS_BUSY));
+
+			return;
+		}
+
+		/* FIXME: Prepare pipeline is not a ordered list implementation,
+		 *        and for short prepare being enqueued, ideally the
+		 *        pipeline has to be implemented as ordered list.
+		 *        Until then a workaround to abort a prepare present
+		 *        before the short prepare being enqueued is implemented
+		 *        below.
+		 *        A proper solution will be to re-design the pipeline
+		 *        as a ordered list, instead of the current FIFO.
+		 */
+
+		/* Abort the prepare that is present before the short prepare */
+		ready->is_aborted = 1;
+		ready->abort_cb(&ready->prepare_param, ready->prepare_param.param);
+
+		/* Abort all events in pipeline before the short prepare */
+		if (preemptor != ready_next) {
+			goto preempt_find_preemptor;
+		}
+
+		/* As the prepare queue has been refreshed due to the call of
+		 * abort_cb which invokes the lll_done, find the latest prepare
+		 */
+		idx = UINT8_MAX;
+		ready = prepare_dequeue_iter_ready_get(&idx);
+		if (!ready) {
+			/* No ready prepare */
+			return;
+		}
+
+		LL_ASSERT(ready->prepare_param.param == param);
 	}
 
 	/* Check if current event want to continue */
-	err = event.curr.is_abort_cb(next->prepare_param.param,
-				     event.curr.param,
-				     &resume_cb);
-	if (!err) {
-		/* Let preemptor LLL know about the cancelled prepare */
-		next->is_aborted = 1;
-		next->abort_cb(&next->prepare_param, next->prepare_param.param);
+	err = event.curr.is_abort_cb(ready->prepare_param.param, event.curr.param, &resume_cb);
+	if (!err || (err == -EBUSY)) {
+		/* Returns -EBUSY when same curr and next state/role, do not
+		 * abort same curr and next event.
+		 */
+		if (err != -EBUSY) {
+			/* Let preemptor LLL know about the cancelled prepare */
+			ready->is_aborted = 1;
+			ready->abort_cb(&ready->prepare_param, ready->prepare_param.param);
+		}
 
 		return;
 	}
@@ -1023,14 +1329,17 @@ static void preempt(void *param)
 
 	/* Check if resume requested */
 	if (err == -EAGAIN) {
+		uint8_t is_resume_abort = 0U;
 		struct lll_event *iter;
 		uint8_t iter_idx;
 
-		/* Abort any duplicates so that they get dequeued */
+preempt_abort_resume:
+		/* Abort any duplicate non-resume, that they get dequeued */
 		iter_idx = UINT8_MAX;
 		iter = ull_prepare_dequeue_iter(&iter_idx);
 		while (iter) {
 			if (!iter->is_aborted &&
+			    (is_resume_abort || !iter->is_resume) &&
 			    event.curr.param == iter->prepare_param.param) {
 				iter->is_aborted = 1;
 				iter->abort_cb(&iter->prepare_param,
@@ -1046,6 +1355,12 @@ static void preempt(void *param)
 			}
 
 			iter = ull_prepare_dequeue_iter(&iter_idx);
+		}
+
+		if (!is_resume_abort) {
+			is_resume_abort = 1U;
+
+			goto preempt_abort_resume;
 		}
 
 		/* Enqueue as resume event */

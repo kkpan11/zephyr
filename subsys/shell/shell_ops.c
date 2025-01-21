@@ -43,8 +43,13 @@ void z_shell_op_cursor_horiz_move(const struct shell *sh, int32_t delta)
  */
 static inline bool full_line_cmd(const struct shell *sh)
 {
-	return ((sh->ctx->cmd_buff_len + z_shell_strlen(sh->ctx->prompt))
-			% sh->ctx->vt100_ctx.cons.terminal_wid == 0U);
+	size_t line_length = sh->ctx->cmd_buff_len + z_shell_strlen(sh->ctx->prompt);
+
+	if (line_length == 0) {
+		return false;
+	}
+
+	return (line_length % sh->ctx->vt100_ctx.cons.terminal_wid == 0U);
 }
 
 /* Function returns true if cursor is at beginning of an empty line. */
@@ -367,7 +372,29 @@ static void print_prompt(const struct shell *sh)
 
 void z_shell_print_cmd(const struct shell *sh)
 {
-	z_shell_raw_fprintf(sh->fprintf_ctx, "%s", sh->ctx->cmd_buff);
+	int beg_offset = 0;
+	int end_offset = 0;
+	int cmd_width = z_shell_strlen(sh->ctx->cmd_buff);
+	int adjust = sh->ctx->vt100_ctx.cons.name_len;
+	char ch;
+
+	while (cmd_width > sh->ctx->vt100_ctx.cons.terminal_wid - adjust) {
+		end_offset += sh->ctx->vt100_ctx.cons.terminal_wid - adjust;
+		ch = sh->ctx->cmd_buff[end_offset];
+		sh->ctx->cmd_buff[end_offset] = '\0';
+
+		z_shell_raw_fprintf(sh->fprintf_ctx, "%s\n",
+				&sh->ctx->cmd_buff[beg_offset]);
+
+		sh->ctx->cmd_buff[end_offset] = ch;
+		cmd_width -= (sh->ctx->vt100_ctx.cons.terminal_wid - adjust);
+		beg_offset = end_offset;
+		adjust = 0;
+	}
+	if (cmd_width > 0) {
+		z_shell_raw_fprintf(sh->fprintf_ctx, "%s",
+				&sh->ctx->cmd_buff[beg_offset]);
+	}
 }
 
 void z_shell_print_prompt_and_cmd(const struct shell *sh)
@@ -520,4 +547,18 @@ void z_shell_fprintf(const struct shell *sh,
 	va_start(args, fmt);
 	z_shell_vfprintf(sh, color, fmt, args);
 	va_end(args);
+}
+
+void z_shell_backend_rx_buffer_flush(const struct shell *sh)
+{
+	__ASSERT_NO_MSG(sh);
+
+	int32_t max_iterations = 1000;
+	uint8_t buf[64];
+	size_t count = 0;
+	int err;
+
+	do {
+		err = sh->iface->api->read(sh->iface, buf, sizeof(buf), &count);
+	} while (count != 0 && err == 0 && --max_iterations > 0);
 }

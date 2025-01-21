@@ -9,15 +9,17 @@
 
 /**
  * @brief I3C Target Device API
- * @defgroup i3c_target_device Target Device API
+ * @defgroup i3c_target_device I3C Target Device API
  * @ingroup i3c_interface
  * @{
  */
 
+#include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <zephyr/device.h>
-#include <zephyr/kernel.h>
-#include <zephyr/types.h>
-#include <zephyr/sys/util.h>
+#include <zephyr/sys/slist.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,7 +41,15 @@ struct i3c_config_target {
 	bool enable;
 
 	/**
-	 * I3C target address.
+	 * I3C target dynamic address.
+	 *
+	 * Used when operates as secondary controller
+	 * or as a target device.
+	 */
+	uint8_t dynamic_addr;
+
+	/**
+	 * I3C target static address.
 	 *
 	 * Used used when operates as secondary controller
 	 * or as a target device.
@@ -90,7 +100,6 @@ struct i3c_config_target {
  * reference to i3c_target_register().
  */
 struct i3c_target_config {
-	/** Private, do not modify */
 	sys_snode_t node;
 
 	/**
@@ -193,6 +202,49 @@ struct i3c_target_callbacks {
 	int (*read_processed_cb)(struct i3c_target_config *config,
 				 uint8_t *val);
 
+#ifdef CONFIG_I3C_TARGET_BUFFER_MODE
+	/** @brief Function called when a write to the device is completed.
+	 *
+	 * This function is invoked by the controller when it completes
+	 * reception of data from the source buffer to the destination
+	 * buffer in an ongoing write operation to the device.
+	 *
+	 * @param config Configuration structure associated with the
+	 *               device to which the operation is addressed.
+	 *
+	 * @param ptr pointer to the buffer that contains the data to be transferred.
+	 *
+	 * @param len the length of the data to be transferred.
+	 */
+	void (*buf_write_received_cb)(struct i3c_target_config *config, uint8_t *ptr, uint32_t len);
+
+	/** @brief Function called when a read from the device is initiated.
+	 *
+	 * This function is invoked by the controller when the bus is ready to
+	 * provide additional data by buffer for a read operation from the address
+	 * associated with the device.
+	 *
+	 * The value returned in @p **ptr and @p *len will be transmitted. A success
+	 * return shall cause the controller to react to additional read operations.
+	 * An error return shall cause the controller to ignore bus operations until
+	 * a new start condition is received.
+	 *
+	 * @param config the configuration structure associated with the
+	 * device to which the operation is addressed.
+	 *
+	 * @param ptr pointer to storage for the address of data buffer to return
+	 * for the read request.
+	 *
+	 * @param len pointer to storage for the length of the data to be transferred
+	 * for the read request.
+	 *
+	 * @param hdr_mode HDR mode
+	 *
+	 * @return 0 if data has been provided, or a negative error code.
+	 */
+	int (*buf_read_requested_cb)(struct i3c_target_config *config, uint8_t **ptr, uint32_t *len,
+				     uint8_t *hdr_mode);
+#endif
 	/**
 	 * @brief Function called when a stop condition is observed after a
 	 * start condition addressed to a particular device.
@@ -211,13 +263,13 @@ struct i3c_target_callbacks {
 	int (*stop_cb)(struct i3c_target_config *config);
 };
 
-struct i3c_target_driver_api {
+__subsystem struct i3c_target_driver_api {
 	int (*driver_register)(const struct device *dev);
 	int (*driver_unregister)(const struct device *dev);
 };
 
 /**
- * @brief Writes to the Target's TX FIFO
+ * @brief Writes to the target's TX FIFO
  *
  * Write to the TX FIFO @p dev I3C bus driver using the provided
  * buffer and length. Some I3C targets will NACK read requests until data
@@ -233,14 +285,15 @@ struct i3c_target_driver_api {
  *            driver configured in target mode.
  * @param buf Pointer to the buffer
  * @param len Length of the buffer
+ * @param hdr_mode HDR mode see @c I3C_MSG_HDR_MODE*
  *
  * @retval Total number of bytes written
- * @retval -ENOTSUP Not in Target Mode
+ * @retval -ENOTSUP Not in Target Mode or HDR Mode not supported
  * @retval -ENOSPC No space in Tx FIFO
  * @retval -ENOSYS If target mode is not implemented
  */
 static inline int i3c_target_tx_write(const struct device *dev,
-				      uint8_t *buf, uint16_t len)
+				      uint8_t *buf, uint16_t len, uint8_t hdr_mode)
 {
 	const struct i3c_driver_api *api =
 		(const struct i3c_driver_api *)dev->api;
@@ -249,7 +302,7 @@ static inline int i3c_target_tx_write(const struct device *dev,
 		return -ENOSYS;
 	}
 
-	return api->target_tx_write(dev, buf, len);
+	return api->target_tx_write(dev, buf, len, hdr_mode);
 }
 
 /**

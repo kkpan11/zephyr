@@ -178,16 +178,16 @@ static void run_tests_on_eeprom(const struct device *dev)
 
 	printk("Running tests on device \"%s\"\n", eeprom->name);
 	k_object_access_grant(eeprom, k_current_get());
-	ztest_run_all(NULL);
+	ztest_run_all(NULL, false, 1, 1);
 }
 
 void test_main(void)
 {
 	run_tests_on_eeprom(DEVICE_DT_GET(DT_ALIAS(eeprom_0)));
 
-#if DT_NODE_HAS_STATUS(DT_ALIAS(eeprom_1), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(eeprom_1))
 	run_tests_on_eeprom(DEVICE_DT_GET(DT_ALIAS(eeprom_1)));
-#endif /* DT_NODE_HAS_STATUS(DT_ALIAS(eeprom_1), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_ALIAS(eeprom_1)) */
 
 	ztest_verify_all_test_suites_ran();
 }

@@ -13,7 +13,7 @@ Zephyr. This page describes how to set up a way to capture network traffic so
 that user is able to use Wireshark or similar tool in remote host to see the
 network packets sent or received by a Zephyr device.
 
-See also the :ref:`net-capture-sample` sample application from the Zephyr
+See also the :zephyr:code-sample:`net-capture` sample application from the Zephyr
 source distribution for configuration options that need to be enabled.
 
 Host Configuration
@@ -22,8 +22,10 @@ Host Configuration
 The instructions here describe how to setup a Linux host to capture Zephyr
 network RX and TX traffic. Similar instructions should work also in other
 operating systems.
-On the Linux Host, fetch the Zephyr ``net-tools`` project, which is located
-in a separate Git repository:
+
+On the Linux Host, find the Zephyr `net-tools`_ project, which can either be
+found in a Zephyr standard installation under the ``tools/net-tools`` directory
+or installed stand alone from its own git repository:
 
 .. code-block:: console
 
@@ -101,10 +103,12 @@ it depends on how the Zephyr is configured. Zephyr will send UDP packets
 containing the captured network packets to the configured IP tunnel, so we
 need to terminate the network connection like this.
 
+.. _`net-tools`: https://github.com/zephyrproject-rtos/net-tools
+
 Zephyr Configuration
 ********************
 
-In this example, we use ``native_posix`` board. You can also use any other board
+In this example, we use the ``native_sim`` board. You can also use any other board
 that supports networking.
 
 In terminal #3, type:
@@ -112,7 +116,7 @@ In terminal #3, type:
 .. zephyr-app-commands::
    :zephyr-app: samples/net/capture
    :host-os: unix
-   :board: native_posix
+   :board: native_sim
    :gen-args: -DCONFIG_NATIVE_UART_AUTOATTACH_DEFAULT_CMD=\""gnome-terminal -- screen %s"\"
    :goals: build
    :compact:
@@ -189,7 +193,7 @@ Then we need to enable the network packet monitoring like this:
    net capture enable 2
 
 The ``2`` tells the network interface which traffic we want to capture. In
-this example, the ``2`` is the ``native_posix`` board Ethernet interface.
+this example, the ``2`` is the ``native_sim`` board Ethernet interface.
 Note that we send the network traffic to the same interface that we are
 monitoring in this example. The monitoring system avoids to capture already
 captured network traffic as that would lead to recursion.

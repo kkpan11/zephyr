@@ -31,6 +31,8 @@ K_MUTEX_DEFINE(canopen_send_mutex);
 K_MUTEX_DEFINE(canopen_emcy_mutex);
 K_MUTEX_DEFINE(canopen_co_mutex);
 
+static canopen_rxmsg_callback_t rxmsg_callback;
+
 inline void canopen_send_lock(void)
 {
 	k_mutex_lock(&canopen_send_mutex, K_FOREVER);
@@ -61,6 +63,11 @@ inline void canopen_od_unlock(void)
 	k_mutex_unlock(&canopen_co_mutex);
 }
 
+void canopen_set_rxmsg_callback(canopen_rxmsg_callback_t callback)
+{
+	rxmsg_callback = callback;
+}
+
 static void canopen_detach_all_rx_filters(CO_CANmodule_t *CANmodule)
 {
 	uint16_t i;
@@ -83,6 +90,7 @@ static void canopen_rx_callback(const struct device *dev, struct can_frame *fram
 	CO_CANmodule_t *CANmodule = (CO_CANmodule_t *)user_data;
 	CO_CANrxMsg_t rxMsg;
 	CO_CANrx_t *buffer;
+	canopen_rxmsg_callback_t callback = rxmsg_callback;
 	int i;
 
 	ARG_UNUSED(dev);
@@ -96,10 +104,18 @@ static void canopen_rx_callback(const struct device *dev, struct can_frame *fram
 		}
 
 		if (((frame->id ^ buffer->ident) & buffer->mask) == 0U) {
+#ifdef CONFIG_CAN_ACCEPT_RTR
+			if (buffer->rtr && ((frame->flags & CAN_FRAME_RTR) == 0U)) {
+				continue;
+			}
+#endif /* CONFIG_CAN_ACCEPT_RTR */
 			rxMsg.ident = frame->id;
 			rxMsg.DLC = frame->dlc;
 			memcpy(rxMsg.data, frame->data, frame->dlc);
 			buffer->pFunct(buffer->object, &rxMsg);
+			if (callback != NULL) {
+				callback();
+			}
 			break;
 		}
 	}
@@ -310,7 +326,18 @@ CO_ReturnError_t CO_CANrxBufferInit(CO_CANmodule_t *CANmodule, uint16_t index,
 	buffer->ident = ident;
 	buffer->mask = mask;
 
-	filter.flags = (rtr ? CAN_FILTER_RTR : CAN_FILTER_DATA);
+#ifndef CONFIG_CAN_ACCEPT_RTR
+	if (rtr) {
+		LOG_ERR("request for RTR frames, but RTR frames are rejected");
+		CO_errorReport(CANmodule->em, CO_EM_GENERIC_SOFTWARE_ERROR,
+			       CO_EMC_SOFTWARE_INTERNAL, 0);
+		return CO_ERROR_ILLEGAL_ARGUMENT;
+	}
+#else /* !CONFIG_CAN_ACCEPT_RTR */
+	buffer->rtr = rtr;
+#endif /* CONFIG_CAN_ACCEPT_RTR */
+
+	filter.flags = 0U;
 	filter.id = ident;
 	filter.mask = mask;
 

@@ -1,7 +1,8 @@
-.. _lps22hb:
+.. zephyr:code-sample:: lps22hb
+   :name: LPS22HB Temperature and Pressure Sensor
+   :relevant-api: sensor_interface
 
-LPS22HB: Temperature and Humidity Monitor
-#########################################
+   Get pressure and temperature data from an LPS22HB sensor (polling mode).
 
 Overview
 ********
@@ -17,7 +18,7 @@ This sample uses the LPS22HB sensor controlled using the I2C interface.
 References
 **********
 
-- LPS22HB: http://www.st.com/en/mems-and-sensors/lps22hb.html
+- LPS22HB: https://www.st.com/en/mems-and-sensors/lps22hb.html
 
 Building and Running
 ********************

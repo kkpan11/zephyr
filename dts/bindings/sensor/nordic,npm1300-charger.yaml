@@ -36,10 +36,12 @@ properties:
   dischg-limit-microamp:
     type: int
     required: true
+    enum:
+      - 200000
+      - 1000000
     description: |
       Discharge current limit in uA.
-      Available range is 270 mA to 1340 mA in 3.23 mA steps.
-      The value specified will be rounded down to the closest implemented value.
+      Available values are 200 mA and 1000 mA.
 
   vbus-limit-microamp:
     type: int
@@ -52,6 +54,7 @@ properties:
     type: int
     required: true
     enum:
+      - 0
       - 10000
       - 47000
       - 100000
@@ -114,3 +117,15 @@ properties:
     type: boolean
     description: |
       Disable automatic recharge.
+
+  dietemp-stop-millidegrees:
+    type: int
+    description: |
+      Die temperature halt threshold in milli-degrees.
+      When die temperature exceeds this threshold, charging will be inhibited.
+
+  dietemp-resume-millidegrees:
+    type: int
+    description: |
+      Die temperature resume threshold in milli-degrees.
+      When die temperature falls below this threshold, charging will be permitted.

@@ -12,6 +12,7 @@
 #include "shell_vt100.h"
 
 #define SHELL_MSG_CMD_NOT_SUPPORTED	"Command not supported.\n"
+#define SHELL_HELP_COMMENT		"Ignore lines beginning with 'rem '"
 #define SHELL_HELP_RETVAL		"Print return value of most recent command"
 #define SHELL_HELP_CLEAR		"Clear screen."
 #define SHELL_HELP_BACKENDS		"List active shell backends.\n"
@@ -67,9 +68,6 @@
 
 /* 10 == {esc, [, 2, 5, 0, ;, 2, 5, 0, '\0'} */
 #define SHELL_CURSOR_POSITION_BUFFER	(10u)
-
-#define SHELL_DEFAULT_TERMINAL_WIDTH 80
-#define SHELL_DEFAULT_TERMINAL_HEIGHT 24
 
 /* Function reads cursor position from terminal. */
 static int cursor_position_get(const struct shell *sh, uint16_t *x, uint16_t *y)
@@ -202,6 +200,15 @@ static int terminal_size_get(const struct shell *sh)
 	return ret_val;
 }
 
+static int cmd_comment(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(sh);
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	return 0;
+}
+
 static int cmd_clear(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argv);
@@ -221,7 +228,7 @@ static int cmd_backends(const struct shell *sh, size_t argc, char **argv)
 
 	shell_print(sh, "Active shell backends:");
 	STRUCT_SECTION_FOREACH(shell, obj) {
-		shell_print(sh, "  %2d. :%s", cnt++, obj->ctx->prompt);
+		shell_print(sh, "  %2d. :%s (%s)", cnt++, obj->ctx->prompt, obj->name);
 	}
 
 	return 0;
@@ -398,8 +405,8 @@ static int cmd_resize_default(const struct shell *sh,
 	ARG_UNUSED(argv);
 
 	Z_SHELL_VT100_CMD(sh, SHELL_VT100_SETCOL_80);
-	sh->ctx->vt100_ctx.cons.terminal_wid = SHELL_DEFAULT_TERMINAL_WIDTH;
-	sh->ctx->vt100_ctx.cons.terminal_hei = SHELL_DEFAULT_TERMINAL_HEIGHT;
+	sh->ctx->vt100_ctx.cons.terminal_wid = CONFIG_SHELL_DEFAULT_TERMINAL_WIDTH;
+	sh->ctx->vt100_ctx.cons.terminal_hei = CONFIG_SHELL_DEFAULT_TERMINAL_HEIGHT;
 
 	return 0;
 }
@@ -530,6 +537,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(m_sub_resize,
 	SHELL_SUBCMD_SET_END
 );
 
+SHELL_COND_CMD_REGISTER(CONFIG_SHELL_VT100_COMMANDS, rem, NULL,
+				SHELL_HELP_COMMENT, cmd_comment);
 SHELL_COND_CMD_ARG_REGISTER(CONFIG_SHELL_VT100_COMMANDS, clear, NULL,
 			    SHELL_HELP_CLEAR, cmd_clear, 1, 0);
 SHELL_CMD_REGISTER(shell, &m_sub_shell, SHELL_HELP_SHELL, NULL);

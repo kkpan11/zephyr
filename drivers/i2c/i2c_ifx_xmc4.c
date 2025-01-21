@@ -194,7 +194,7 @@ static int ifx_xmc4_i2c_transfer(const struct device *dev, struct i2c_msg *msg, 
 		XMC_I2C_CH_ClearStatusFlag(config->i2c, 0xFFFFFFFF);
 
 		if ((msg_index == 0) || (msg[msg_index].flags & I2C_MSG_RESTART)) {
-			/* Send START conditon */
+			/* Send START condition */
 			cmd_type = ((msg[msg_index].flags & I2C_MSG_RW_MASK) == I2C_MSG_READ) ?
 				XMC_I2C_CH_CMD_READ : XMC_I2C_CH_CMD_WRITE;
 
@@ -272,7 +272,7 @@ static int ifx_xmc4_i2c_transfer(const struct device *dev, struct i2c_msg *msg, 
 			}
 		}
 
-		/* Send STOP conditon */
+		/* Send STOP condition */
 		if (msg[msg_index].flags & I2C_MSG_STOP) {
 			XMC_I2C_CH_MasterStop(config->i2c);
 		}
@@ -425,12 +425,16 @@ static void i2c_xmc4_isr(const struct device *dev)
 
 
 /* I2C API structure */
-static const struct i2c_driver_api i2c_xmc4_driver_api = {
+static DEVICE_API(i2c, i2c_xmc4_driver_api) = {
 	.configure = ifx_xmc4_i2c_configure,
 	.transfer = ifx_xmc4_i2c_transfer,
 	.get_config = ifx_xmc4_i2c_get_config,
 	.target_register = ifx_xmc4_i2c_target_register,
-	.target_unregister = ifx_xmc4_i2c_target_unregister};
+	.target_unregister = ifx_xmc4_i2c_target_unregister,
+#ifdef CONFIG_I2C_RTIO
+	.iodev_submit = i2c_iodev_submit_fallback,
+#endif
+};
 
 /* Macros for I2C instance declaration */
 #define XMC4_IRQ_HANDLER_INIT(index)                                                               \

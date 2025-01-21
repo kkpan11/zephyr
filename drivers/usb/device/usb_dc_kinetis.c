@@ -14,7 +14,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/usb/usb_device.h>
-#include <zephyr/device.h>
+#include <zephyr/init.h>
 
 #define LOG_LEVEL CONFIG_USB_DRIVER_LOG_LEVEL
 #include <zephyr/logging/log.h>
@@ -147,8 +147,10 @@ static inline uint8_t get_bdt_idx(uint8_t ep, uint8_t odd)
 
 static int kinetis_usb_init(void)
 {
+#if !DT_INST_PROP(0, no_voltage_regulator)
 	/* enable USB voltage regulator */
 	SIM->SOPT1 |= SIM_SOPT1_USBREGEN_MASK;
+#endif
 
 	USB0->USBTRC0 |= USB_USBTRC0_USBRESET_MASK;
 	k_busy_wait(2000);
@@ -354,7 +356,7 @@ int usb_dc_ep_configure(const struct usb_dc_ep_cfg_data * const cfg)
 	(void)memset(&bdt[idx_even], 0, sizeof(struct buf_descriptor));
 	(void)memset(&bdt[idx_odd], 0, sizeof(struct buf_descriptor));
 
-	block->data = k_heap_alloc(&ep_buf_pool, cfg->ep_mps * 2U, K_MSEC(10));
+	block->data = k_heap_alloc(&ep_buf_pool, cfg->ep_mps * 2U, K_NO_WAIT);
 	if (block->data != NULL) {
 		(void)memset(block->data, 0, cfg->ep_mps * 2U);
 	} else {

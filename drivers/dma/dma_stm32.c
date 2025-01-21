@@ -29,7 +29,7 @@ LOG_MODULE_REGISTER(dma_stm32, CONFIG_DMA_LOG_LEVEL);
 #define DT_DRV_COMPAT st_stm32_dma_v2bis
 #endif
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0))
 #if DT_INST_IRQ_HAS_IDX(0, 7)
 #define DMA_STM32_0_STREAM_COUNT 8
 #elif DT_INST_IRQ_HAS_IDX(0, 6)
@@ -41,9 +41,9 @@ LOG_MODULE_REGISTER(dma_stm32, CONFIG_DMA_LOG_LEVEL);
 #else
 #define DMA_STM32_0_STREAM_COUNT 3
 #endif
-#endif /* DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0)) */
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(1), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(1))
 #if DT_INST_IRQ_HAS_IDX(1, 7)
 #define DMA_STM32_1_STREAM_COUNT 8
 #elif DT_INST_IRQ_HAS_IDX(1, 6)
@@ -53,7 +53,7 @@ LOG_MODULE_REGISTER(dma_stm32, CONFIG_DMA_LOG_LEVEL);
 #else
 #define DMA_STM32_1_STREAM_COUNT 5
 #endif
-#endif /* DT_NODE_HAS_STATUS(DT_DRV_INST(1), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(1)) */
 
 static const uint32_t table_m_size[] = {
 	LL_DMA_MDATAALIGN_BYTE,
@@ -110,9 +110,6 @@ static void dma_stm32_irq_handler(const struct device *dev, uint32_t id)
 #else
 	callback_arg = id + STM32_DMA_STREAM_OFFSET;
 #endif /* CONFIG_DMAMUX_STM32 */
-	if (!IS_ENABLED(CONFIG_DMAMUX_STM32)) {
-		stream->busy = false;
-	}
 
 	/* The dma stream id is in range from STM32_DMA_STREAM_OFFSET..<dma-requests> */
 	if (stm32_dma_is_ht_irq_active(dma, id)) {
@@ -122,9 +119,10 @@ static void dma_stm32_irq_handler(const struct device *dev, uint32_t id)
 		}
 		stream->dma_callback(dev, stream->user_data, callback_arg, DMA_STATUS_BLOCK);
 	} else if (stm32_dma_is_tc_irq_active(dma, id)) {
-#ifdef CONFIG_DMAMUX_STM32
-		stream->busy = false;
-#endif
+		/* Circular buffer never stops receiving as long as peripheral is enabled */
+		if (!stream->cyclic) {
+			stream->busy = false;
+		}
 		/* Let HAL DMA handle flags on its own */
 		if (!stream->hal_override) {
 			dma_stm32_clear_tc(dma, id);
@@ -136,6 +134,7 @@ static void dma_stm32_irq_handler(const struct device *dev, uint32_t id)
 				     callback_arg, -EIO);
 	} else {
 		LOG_ERR("Transfer Error.");
+		stream->busy = false;
 		dma_stm32_dump_stream_irq(dev, id);
 		dma_stm32_clear_stream_irq(dev, id);
 		stream->dma_callback(dev, stream->user_data,
@@ -312,6 +311,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 		stream->hal_override = true;
 		stream->dma_callback = config->dma_callback;
 		stream->user_data = config->user_data;
+		stream->cyclic = false;
 		return 0;
 	}
 
@@ -361,6 +361,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	stream->user_data       = config->user_data;
 	stream->src_size	= config->source_data_size;
 	stream->dst_size	= config->dest_data_size;
+	stream->cyclic		= config->head_block->source_reload_en;
 
 	/* Check dest or source memory address, warn if 0 */
 	if (config->head_block->source_address == 0) {
@@ -432,7 +433,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	LOG_DBG("Channel (%d) peripheral inc (%x).",
 				id, DMA_InitStruct.PeriphOrM2MSrcIncMode);
 
-	if (config->head_block->source_reload_en) {
+	if (stream->cyclic) {
 		DMA_InitStruct.Mode = LL_DMA_MODE_CIRCULAR;
 	} else {
 		DMA_InitStruct.Mode = LL_DMA_MODE_NORMAL;
@@ -494,7 +495,7 @@ DMA_STM32_EXPORT_API int dma_stm32_configure(const struct device *dev,
 	LL_DMA_EnableIT_TC(dma, dma_stm32_id_to_stream(id));
 
 	/* Enable Half-Transfer irq if circular mode is enabled */
-	if (config->head_block->source_reload_en) {
+	if (stream->cyclic) {
 		LL_DMA_EnableIT_HT(dma, dma_stm32_id_to_stream(id));
 	}
 
@@ -603,6 +604,11 @@ DMA_STM32_EXPORT_API int dma_stm32_stop(const struct device *dev, uint32_t id)
 		return -EINVAL;
 	}
 
+	if (stream->hal_override) {
+		stream->busy = false;
+		return 0;
+	}
+
 	/* Repeated stop : return now if channel is already stopped */
 	if (!stm32_dma_is_enabled_stream(dma, id)) {
 		return 0;
@@ -680,27 +686,13 @@ DMA_STM32_EXPORT_API int dma_stm32_get_status(const struct device *dev,
 	return 0;
 }
 
-static const struct dma_driver_api dma_funcs = {
+static DEVICE_API(dma, dma_funcs) = {
 	.reload		 = dma_stm32_reload,
 	.config		 = dma_stm32_configure,
 	.start		 = dma_stm32_start,
 	.stop		 = dma_stm32_stop,
 	.get_status	 = dma_stm32_get_status,
 };
-
-#ifdef CONFIG_DMAMUX_STM32
-#define DMA_STM32_OFFSET_INIT(index)			\
-	.offset = DT_INST_PROP(index, dma_offset),
-#else
-#define DMA_STM32_OFFSET_INIT(index)
-#endif /* CONFIG_DMAMUX_STM32 */
-
-#ifdef CONFIG_DMA_STM32_V1
-#define DMA_STM32_MEM2MEM_INIT(index)					\
-	.support_m2m = DT_INST_PROP(index, st_mem2mem),
-#else
-#define DMA_STM32_MEM2MEM_INIT(index)
-#endif /* CONFIG_DMA_STM32_V1 */					\
 
 #define DMA_STM32_INIT_DEV(index)					\
 static struct dma_stm32_stream						\
@@ -711,10 +703,12 @@ const struct dma_stm32_config dma_stm32_config_##index = {		\
 		    .enr = DT_INST_CLOCKS_CELL(index, bits) },		\
 	.config_irq = dma_stm32_config_irq_##index,			\
 	.base = DT_INST_REG_ADDR(index),				\
-	DMA_STM32_MEM2MEM_INIT(index)					\
+	IF_ENABLED(CONFIG_DMA_STM32_V1,					\
+		(.support_m2m = DT_INST_PROP(index, st_mem2mem),))	\
 	.max_streams = DMA_STM32_##index##_STREAM_COUNT,		\
 	.streams = dma_stm32_streams_##index,				\
-	DMA_STM32_OFFSET_INIT(index)					\
+	IF_ENABLED(CONFIG_DMAMUX_STM32,					\
+		(.offset = DT_INST_PROP(index, dma_offset),))		\
 };									\
 									\
 static struct dma_stm32_data dma_stm32_data_##index = {			\
@@ -731,6 +725,7 @@ DEVICE_DT_INST_DEFINE(index,						\
 
 #define DMA_STM32_DEFINE_IRQ_HANDLER(dma, chan) /* nothing */
 
+/** Connect and enable IRQ @p chan of DMA instance @p dma */
 #define DMA_STM32_IRQ_CONNECT(dma, chan)				\
 	do {								\
 		IRQ_CONNECT(DT_INST_IRQ_BY_IDX(dma, chan, irq),		\
@@ -749,8 +744,12 @@ static void dma_stm32_irq_##dma##_##chan(const struct device *dev)	\
 	dma_stm32_irq_handler(dev, chan);				\
 }
 
-
-#define DMA_STM32_IRQ_CONNECT(dma, chan)				\
+/**
+ * Connect and enable IRQ @p chan of DMA instance @p dma
+ *
+ * @note Arguments order is reversed for compatibility with LISTIFY!
+ */
+#define DMA_STM32_IRQ_CONNECT(chan, dma)				\
 	do {								\
 		IRQ_CONNECT(DT_INST_IRQ_BY_IDX(dma, chan, irq),		\
 			    DT_INST_IRQ_BY_IDX(dma, chan, priority),	\
@@ -762,7 +761,7 @@ static void dma_stm32_irq_##dma##_##chan(const struct device *dev)	\
 #endif /* CONFIG_DMA_STM32_SHARED_IRQS */
 
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0))
 
 DMA_STM32_DEFINE_IRQ_HANDLER(0, 0);
 DMA_STM32_DEFINE_IRQ_HANDLER(0, 1);
@@ -785,35 +784,45 @@ static void dma_stm32_config_irq_0(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
+#if !defined(CONFIG_DMA_STM32_SHARED_IRQS)
+	/* No shared IRQs: call IRQ_CONNECT for each IRQn in DTS */
+	LISTIFY(
+		DT_INST_NUM_IRQS(0),
+		DMA_STM32_IRQ_CONNECT,
+		(;), /* instance: */ 0
+	);
+#else
+	/* All DMAs have at least one IRQ line */
 	DMA_STM32_IRQ_CONNECT(0, 0);
+
+	/* On STM32WB0 series, there is a single IRQ line for all channels */
+#if !defined(CONFIG_SOC_SERIES_STM32WB0X)
+	/* On other series, the sharing follows a pattern:
+	 *	IRQn (X+0) is not shared (assigned to DMA1 channel 1)
+	 *	IRQn (X+1) is shared by DMA1 channels 2 and 3
+	 *	IRQn (X+2) is shared by DMA1 channels >= 4
+	 *
+	 * If present, DMA2 channels may also share IRQn (X+1) and (X+2);
+	 * this works fine because shared ISR checks all channels of all DMAs.
+	 */
+
+	/* Connect IRQ line shared by CH2 and CH3 */
 	DMA_STM32_IRQ_CONNECT(0, 1);
-#ifndef CONFIG_DMA_STM32_SHARED_IRQS
-	DMA_STM32_IRQ_CONNECT(0, 2);
-#endif /* CONFIG_DMA_STM32_SHARED_IRQS */
+
+	/* If DMA has more than 3 channels, connect IRQ line shared by CH4+ */
 #if DT_INST_IRQ_HAS_IDX(0, 3)
 	DMA_STM32_IRQ_CONNECT(0, 3);
-#ifndef CONFIG_DMA_STM32_SHARED_IRQS
-	DMA_STM32_IRQ_CONNECT(0, 4);
-#if DT_INST_IRQ_HAS_IDX(0, 5)
-	DMA_STM32_IRQ_CONNECT(0, 5);
-#if DT_INST_IRQ_HAS_IDX(0, 6)
-	DMA_STM32_IRQ_CONNECT(0, 6);
-#if DT_INST_IRQ_HAS_IDX(0, 7)
-	DMA_STM32_IRQ_CONNECT(0, 7);
 #endif /* DT_INST_IRQ_HAS_IDX(0, 3) */
-#endif /* DT_INST_IRQ_HAS_IDX(0, 5) */
-#endif /* DT_INST_IRQ_HAS_IDX(0, 6) */
-#endif /* DT_INST_IRQ_HAS_IDX(0, 7) */
-#endif /* CONFIG_DMA_STM32_SHARED_IRQS */
-/* Either 3 or 5 or 6 or 7 or 8 channels for DMA across all stm32 series. */
+#endif /* !CONFIG_SOC_SERIES_STM32WB0X */
+#endif /* !CONFIG_DMA_STM32_SHARED_IRQS */
 }
 
 DMA_STM32_INIT_DEV(0);
 
-#endif /* DT_NODE_HAS_STATUS(DT_DRV_INST(0), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0)) */
 
 
-#if DT_NODE_HAS_STATUS(DT_DRV_INST(1), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(1))
 
 DMA_STM32_DEFINE_IRQ_HANDLER(1, 0);
 DMA_STM32_DEFINE_IRQ_HANDLER(1, 1);
@@ -837,29 +846,21 @@ static void dma_stm32_config_irq_1(const struct device *dev)
 	ARG_UNUSED(dev);
 
 #ifndef CONFIG_DMA_STM32_SHARED_IRQS
-	DMA_STM32_IRQ_CONNECT(1, 0);
-	DMA_STM32_IRQ_CONNECT(1, 1);
-	DMA_STM32_IRQ_CONNECT(1, 2);
-	DMA_STM32_IRQ_CONNECT(1, 3);
-#if DT_INST_IRQ_HAS_IDX(1, 4)
-	DMA_STM32_IRQ_CONNECT(1, 4);
-#if DT_INST_IRQ_HAS_IDX(1, 5)
-	DMA_STM32_IRQ_CONNECT(1, 5);
-#if DT_INST_IRQ_HAS_IDX(1, 6)
-	DMA_STM32_IRQ_CONNECT(1, 6);
-#if DT_INST_IRQ_HAS_IDX(1, 7)
-	DMA_STM32_IRQ_CONNECT(1, 7);
-#endif /* DT_INST_IRQ_HAS_IDX(1, 4) */
-#endif /* DT_INST_IRQ_HAS_IDX(1, 5) */
-#endif /* DT_INST_IRQ_HAS_IDX(1, 6) */
-#endif /* DT_INST_IRQ_HAS_IDX(1, 7) */
-#endif /* CONFIG_DMA_STM32_SHARED_IRQS */
-/*
- * Either 5 or 6 or 7 or 8 channels for DMA across all stm32 series.
- * STM32F0 and STM32G0: if dma2 exits, the channel interrupts overlap with dma1
- */
+	/* No shared IRQs: call IRQ_CONNECT for each IRQn in DTS */
+	LISTIFY(
+		DT_INST_NUM_IRQS(1),
+		DMA_STM32_IRQ_CONNECT,
+		(;), /* instance: */ 1
+	);
+#else
+	/**
+	 * Series with 2 DMAs and SHARED_IRQS are STM32F0 and STM32G0.
+	 * On both of these series, the DMA2 interrupt lines are shared with DMA1,
+	 * so they have already been IRQ_CONNECT()'ed and there's nothing to do here.
+	 */
+#endif /* !CONFIG_DMA_STM32_SHARED_IRQS */
 }
 
 DMA_STM32_INIT_DEV(1);
 
-#endif /* DT_NODE_HAS_STATUS(DT_DRV_INST(1), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(1)) */

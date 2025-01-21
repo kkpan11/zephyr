@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Broadcom
+ * Copyright 2025 Arm Limited and/or its affiliates <open-source-office@arm.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -25,13 +26,6 @@
 #define GIC_BASER_SHARE_INNER		0x1UL /* Inner Shareable */
 #define GIC_BASER_SHARE_OUTER		0x2UL /* Outer Shareable */
 
-/*
- * GIC Register Interface Base Addresses
- */
-
-#define GIC_RDIST_BASE	DT_REG_ADDR_BY_IDX(DT_INST(0, arm_gic), 1)
-#define GIC_RDIST_SIZE	DT_REG_SIZE_BY_IDX(DT_INST(0, arm_gic), 1)
-
 /* SGI base is at 64K offset from Redistributor */
 #define GICR_SGI_BASE_OFF		0x10000
 
@@ -41,6 +35,7 @@
 #define GICR_TYPER			0x0008
 #define GICR_STATUSR			0x0010
 #define GICR_WAKER			0x0014
+#define GICR_PWRR			0x0024
 #define GICR_PROPBASER			0x0070
 #define GICR_PENDBASER			0x0078
 
@@ -62,6 +57,11 @@
 #define GICR_CTLR_ENABLE_LPIS		BIT(0)
 #define GICR_CTLR_RWP			3
 
+/* GICR_IIDR */
+#define GICR_IIDR_PRODUCT_ID_SHIFT		24
+#define GICR_IIDR_PRODUCT_ID_MASK		0xFFUL
+#define GICR_IIDR_PRODUCT_ID_GET(_val)		MASK_GET(_val, GICR_IIDR_PRODUCT_ID)
+
 /* GICR_TYPER */
 #define GICR_TYPER_AFFINITY_VALUE_SHIFT		32
 #define GICR_TYPER_AFFINITY_VALUE_MASK		0xFFFFFFFFUL
@@ -76,6 +76,11 @@
 /* GICR_WAKER */
 #define GICR_WAKER_PS			1
 #define GICR_WAKER_CA			2
+
+/* GICR_PWRR */
+#define GICR_PWRR_RDPD			0
+#define GICR_PWRR_RDAG			1
+#define GICR_PWRR_RDGPO			3
 
 /* GICR_PROPBASER */
 #define GITR_PROPBASER_ID_BITS_MASK		0x1fUL

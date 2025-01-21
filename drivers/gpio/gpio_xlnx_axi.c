@@ -198,6 +198,7 @@ static int gpio_xlnx_axi_port_toggle_bits(const struct device *dev, gpio_port_pi
 	return 0;
 }
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 /**
  * Enables interrupts for the given pins on the channel
  * The axi gpio can only enable interrupts for an entire port, so we need to track
@@ -206,7 +207,6 @@ static int gpio_xlnx_axi_port_toggle_bits(const struct device *dev, gpio_port_pi
 static int gpio_xlnx_axi_pin_interrupt_configure(const struct device *dev, gpio_pin_t pin,
 						 enum gpio_int_mode mode, enum gpio_int_trig trig)
 {
-#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 	const struct gpio_xlnx_axi_config *config = dev->config;
 	struct gpio_xlnx_axi_data *data = dev->data;
 	const uint32_t pin_mask = BIT(pin);
@@ -260,39 +260,26 @@ static int gpio_xlnx_axi_pin_interrupt_configure(const struct device *dev, gpio_
 
 	irq_unlock(key);
 	return 0;
-#else
-	ARG_UNUSED(dev);
-	ARG_UNUSED(pin);
-	ARG_UNUSED(mode);
-	ARG_UNUSED(trig);
-
-	return -ENOTSUP;
-#endif
 }
+#endif
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 static int gpio_xlnx_axi_manage_callback(const struct device *dev, struct gpio_callback *callback,
 					 bool set)
 {
-#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 	struct gpio_xlnx_axi_data *data = dev->data;
 
 	return gpio_manage_callback(&data->callbacks, callback, set);
-#else
-	ARG_UNUSED(dev);
-	ARG_UNUSED(callback);
-	ARG_UNUSED(set);
-
-	return -ENOTSUP;
-#endif
 }
+#endif
 
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 /**
  * Returns the pins on this devices channel which changed and also have an interrupt enabled on that
  * pin. Also clears the pending interrupt for that channel.
  */
 static uint32_t gpio_xlnx_axi_get_pending_int(const struct device *dev)
 {
-#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 	const struct gpio_xlnx_axi_config *config = dev->config;
 	struct gpio_xlnx_axi_data *data = dev->data;
 	const uint32_t chan_mask = BIT(config->channel);
@@ -328,12 +315,8 @@ static uint32_t gpio_xlnx_axi_get_pending_int(const struct device *dev)
 
 	irq_unlock(key);
 	return interrupts;
-#else
-	ARG_UNUSED(dev);
-
-	return 0;
-#endif
 }
+#endif
 
 #if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 static void gpio_xlnx_axi_isr(const struct device *dev)
@@ -383,21 +366,23 @@ static int gpio_xlnx_axi_init(const struct device *dev)
 	return 0;
 }
 
-static const struct gpio_driver_api gpio_xlnx_axi_driver_api = {
+static DEVICE_API(gpio, gpio_xlnx_axi_driver_api) = {
 	.pin_configure = gpio_xlnx_axi_pin_configure,
 	.port_get_raw = gpio_xlnx_axi_port_get_raw,
 	.port_set_masked_raw = gpio_xlnx_axi_port_set_masked_raw,
 	.port_set_bits_raw = gpio_xlnx_axi_port_set_bits_raw,
 	.port_clear_bits_raw = gpio_xlnx_axi_port_clear_bits_raw,
 	.port_toggle_bits = gpio_xlnx_axi_port_toggle_bits,
+#if DT_ANY_INST_HAS_PROP_STATUS_OKAY(interrupts)
 	.pin_interrupt_configure = gpio_xlnx_axi_pin_interrupt_configure,
 	.manage_callback = gpio_xlnx_axi_manage_callback,
 	.get_pending_int = gpio_xlnx_axi_get_pending_int,
+#endif
 };
 
 #define GPIO_XLNX_AXI_GPIO2_HAS_COMPAT_STATUS_OKAY(n)                                              \
 	UTIL_AND(DT_NODE_HAS_COMPAT(DT_INST_CHILD(n, gpio2), xlnx_xps_gpio_1_00_a_gpio2),          \
-		 DT_NODE_HAS_STATUS(DT_INST_CHILD(n, gpio2), okay))
+		 DT_NODE_HAS_STATUS_OKAY(DT_INST_CHILD(n, gpio2)))
 
 #define GPIO_XLNX_AXI_GPIO2_COND_INIT(n)                                                           \
 	IF_ENABLED(UTIL_AND(DT_INST_PROP_OR(n, xlnx_is_dual, 1),                                   \
@@ -465,7 +450,7 @@ static const struct gpio_driver_api gpio_xlnx_axi_driver_api = {
 			   irq_enable(DT_INST_IRQN(n));                                            \
 		   }))                                                                             \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, &gpio_xlnx_axi_init, NULL, &gpio_xlnx_axi_##n##_data,             \
+	DEVICE_DT_INST_DEFINE(n, gpio_xlnx_axi_init, NULL, &gpio_xlnx_axi_##n##_data,              \
 			      &gpio_xlnx_axi_##n##_config, PRE_KERNEL_1,                           \
 			      CONFIG_GPIO_INIT_PRIORITY, &gpio_xlnx_axi_driver_api);
 

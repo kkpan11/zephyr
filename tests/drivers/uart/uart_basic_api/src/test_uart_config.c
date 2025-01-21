@@ -25,9 +25,8 @@
  */
 
 #include "test_uart.h"
-struct uart_config uart_cfg_check;
 const struct uart_config uart_cfg = {
-		.baudrate = 115200,
+		.baudrate = DT_PROP_OR(DT_CHOSEN(zephyr_console), current_speed, 115200),
 		.parity = UART_CFG_PARITY_NONE,
 		.stop_bits = UART_CFG_STOP_BITS_1,
 		.data_bits = UART_CFG_DATA_BITS_8,
@@ -58,6 +57,7 @@ static int test_configure(void)
 /* test UART configure get (retrieve configuration) */
 static int test_config_get(void)
 {
+	struct uart_config uart_cfg_check;
 	const struct device *const uart_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
 	if (!device_is_ready(uart_dev)) {

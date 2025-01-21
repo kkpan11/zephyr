@@ -41,12 +41,13 @@ DEFINE_XEN_GUEST_HANDLE(char);
 __DEFINE_XEN_GUEST_HANDLE(uchar, unsigned char);
 DEFINE_XEN_GUEST_HANDLE(int);
 __DEFINE_XEN_GUEST_HANDLE(uint,  unsigned int);
-#if __XEN_INTERFACE_VERSION__ < 0x00040300
+#if CONFIG_XEN_INTERFACE_VERSION < 0x00040300
 DEFINE_XEN_GUEST_HANDLE(long);
 __DEFINE_XEN_GUEST_HANDLE(ulong, unsigned long);
 #endif
 DEFINE_XEN_GUEST_HANDLE(void);
 
+DEFINE_XEN_GUEST_HANDLE(uint8_t);
 DEFINE_XEN_GUEST_HANDLE(uint64_t);
 DEFINE_XEN_GUEST_HANDLE(xen_pfn_t);
 DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
@@ -215,7 +216,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);
 
 typedef uint16_t domid_t;
 
-#if __XEN_INTERFACE_VERSION__ < 0x00040400
+#if CONFIG_XEN_INTERFACE_VERSION < 0x00040400
 /*
  * Event channel endpoints per domain (when using the 2-level ABI):
  *  1024 if a long is 32 bits; 4096 if a long is 64 bits.
@@ -247,7 +248,7 @@ struct vcpu_time_info {
 	 */
 	uint32_t	tsc_to_system_mul;
 	int8_t		tsc_shift;
-#if __XEN_INTERFACE_VERSION__ > 0x040600
+#if CONFIG_XEN_INTERFACE_VERSION > 0x040600
 	uint8_t		flags;
 	uint8_t		pad1[2];
 #else
@@ -369,6 +370,26 @@ struct shared_info {
 };
 #ifndef __XEN__
 typedef struct shared_info shared_info_t;
+#endif
+
+typedef uint8_t xen_domain_handle_t[16];
+
+#ifndef int64_aligned_t
+#define int64_aligned_t int64_t
+#endif
+#ifndef uint64_aligned_t
+#define uint64_aligned_t uint64_t
+#endif
+#ifndef XEN_GUEST_HANDLE_64
+#define XEN_GUEST_HANDLE_64(name) XEN_GUEST_HANDLE(name)
+#endif
+
+#ifndef __ASSEMBLY__
+struct xenctl_bitmap {
+	XEN_GUEST_HANDLE_64(uint8_t) bitmap;
+	uint32_t nr_bits;
+};
+typedef struct xenctl_bitmap xenctl_bitmap_t;
 #endif
 
 #endif /* !__ASSEMBLY__ */

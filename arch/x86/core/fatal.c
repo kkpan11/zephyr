@@ -7,7 +7,7 @@
 #include <ksched.h>
 #include <zephyr/kernel_structs.h>
 #include <kernel_internal.h>
-#include <zephyr/exc_handle.h>
+#include <zephyr/arch/common/exc_handle.h>
 #include <zephyr/logging/log.h>
 #include <x86_mmu.h>
 #include <mmu.h>
@@ -35,7 +35,7 @@ FUNC_NORETURN void arch_system_halt(unsigned int reason)
 
 #ifdef CONFIG_THREAD_STACK_INFO
 
-static inline uintptr_t esf_get_sp(const z_arch_esf_t *esf)
+static inline uintptr_t esf_get_sp(const struct arch_esf *esf)
 {
 #ifdef CONFIG_X86_64
 	return esf->rsp;
@@ -59,7 +59,7 @@ bool z_x86_check_stack_bounds(uintptr_t addr, size_t size, uint16_t cs)
 #else
 		cpu_id = 0;
 #endif
-		start = (uintptr_t)Z_KERNEL_STACK_BUFFER(
+		start = (uintptr_t)K_KERNEL_STACK_BUFFER(
 		    z_interrupt_stacks[cpu_id]);
 		end = start + CONFIG_ISR_STACK_SIZE;
 #ifdef CONFIG_USERSPACE
@@ -72,7 +72,7 @@ bool z_x86_check_stack_bounds(uintptr_t addr, size_t size, uint16_t cs)
 		 * If we get here, we must have been doing a syscall, check
 		 * privilege elevation stack bounds
 		 */
-		start = _current->stack_info.start - CONFIG_MMU_PAGE_SIZE;
+		start = _current->stack_info.start - CONFIG_PRIVILEGED_STACK_SIZE;
 		end = _current->stack_info.start;
 #endif /* CONFIG_USERSPACE */
 	} else {
@@ -84,42 +84,73 @@ bool z_x86_check_stack_bounds(uintptr_t addr, size_t size, uint16_t cs)
 
 	return (addr <= start) || (addr + size > end);
 }
-#endif
+#endif /* CONFIG_THREAD_STACK_INFO */
 
-#ifdef CONFIG_EXCEPTION_DEBUG
-
-static inline uintptr_t esf_get_code(const z_arch_esf_t *esf)
+#ifdef CONFIG_THREAD_STACK_MEM_MAPPED
+/**
+ * Check if the fault is in the guard pages.
+ *
+ * @param addr Address to be tested.
+ *
+ * @return True Address is in guard pages, false otherwise.
+ */
+__pinned_func
+bool z_x86_check_guard_page(uintptr_t addr)
 {
-#ifdef CONFIG_X86_64
-	return esf->code;
-#else
-	return esf->errorCode;
-#endif
-}
+	struct k_thread *thread = _current;
+	uintptr_t start, end;
 
-#if defined(CONFIG_X86_EXCEPTION_STACK_TRACE)
+	/* Front guard size - before thread stack area */
+	start = (uintptr_t)thread->stack_info.mapped.addr - CONFIG_MMU_PAGE_SIZE;
+	end = (uintptr_t)thread->stack_info.mapped.addr;
+
+	if ((addr >= start) && (addr < end)) {
+		return true;
+	}
+
+	/* Rear guard size - after thread stack area */
+	start = (uintptr_t)thread->stack_info.mapped.addr + thread->stack_info.mapped.sz;
+	end = start + CONFIG_MMU_PAGE_SIZE;
+
+	if ((addr >= start) && (addr < end)) {
+		return true;
+	}
+
+	return false;
+}
+#endif /* CONFIG_THREAD_STACK_MEM_MAPPED */
+
+#if defined(CONFIG_ARCH_STACKWALK)
 struct stack_frame {
 	uintptr_t next;
 	uintptr_t ret_addr;
-#ifndef CONFIG_X86_64
-	uintptr_t args;
-#endif
 };
 
-#define MAX_STACK_FRAMES 8
-
-__pinned_func
-static void unwind_stack(uintptr_t base_ptr, uint16_t cs)
+__pinned_func static void walk_stackframe(stack_trace_callback_fn cb, void *cookie,
+					  const struct arch_esf *esf, int max_frames)
 {
+	uintptr_t base_ptr;
+	uint16_t cs;
 	struct stack_frame *frame;
 	int i;
+
+	if (esf != NULL) {
+#ifdef CONFIG_X86_64
+		base_ptr = esf->rbp;
+#else /* x86 32-bit */
+		base_ptr = esf->ebp;
+#endif /* CONFIG_X86_64 */
+		cs = esf->cs;
+	} else {
+		return;
+	}
 
 	if (base_ptr == 0U) {
 		LOG_ERR("NULL base ptr");
 		return;
 	}
 
-	for (i = 0; i < MAX_STACK_FRAMES; i++) {
+	for (i = 0; i < max_frames; i++) {
 		if (base_ptr % sizeof(base_ptr) != 0U) {
 			LOG_ERR("unaligned frame ptr");
 			return;
@@ -144,17 +175,58 @@ static void unwind_stack(uintptr_t base_ptr, uint16_t cs)
 		if (frame->ret_addr == 0U) {
 			break;
 		}
-#ifdef CONFIG_X86_64
-		LOG_ERR("     0x%016lx", frame->ret_addr);
-#else
-		LOG_ERR("     0x%08lx (0x%lx)", frame->ret_addr, frame->args);
-#endif
+
+		if (!cb(cookie, frame->ret_addr)) {
+			break;
+		}
+
 		base_ptr = frame->next;
 	}
 }
-#endif /* CONFIG_X86_EXCEPTION_STACK_TRACE */
 
-static inline uintptr_t get_cr3(const z_arch_esf_t *esf)
+void arch_stack_walk(stack_trace_callback_fn callback_fn, void *cookie,
+		     const struct k_thread *thread, const struct arch_esf *esf)
+{
+	ARG_UNUSED(thread);
+
+	walk_stackframe(callback_fn, cookie, esf,
+			CONFIG_ARCH_STACKWALK_MAX_FRAMES);
+}
+#endif /* CONFIG_ARCH_STACKWALK */
+
+#if defined(CONFIG_EXCEPTION_STACK_TRACE)
+static bool print_trace_address(void *arg, unsigned long addr)
+{
+	int *i = arg;
+
+#ifdef CONFIG_X86_64
+	LOG_ERR("     %d: 0x%016lx", (*i)++, addr);
+#else
+	LOG_ERR("     %d: 0x%08lx", (*i)++, addr);
+#endif
+
+	return true;
+}
+
+static ALWAYS_INLINE void unwind_stack(const struct arch_esf *esf)
+{
+	int i = 0;
+
+	walk_stackframe(print_trace_address, &i, esf, CONFIG_ARCH_STACKWALK_MAX_FRAMES);
+}
+#endif /* CONFIG_EXCEPTION_STACK_TRACE */
+
+#ifdef CONFIG_EXCEPTION_DEBUG
+static inline uintptr_t esf_get_code(const struct arch_esf *esf)
+{
+#ifdef CONFIG_X86_64
+	return esf->code;
+#else
+	return esf->errorCode;
+#endif
+}
+
+static inline uintptr_t get_cr3(const struct arch_esf *esf)
 {
 #if defined(CONFIG_USERSPACE) && defined(CONFIG_X86_KPTI)
 	/* If the interrupted thread was in user mode, we did a page table
@@ -172,14 +244,14 @@ static inline uintptr_t get_cr3(const z_arch_esf_t *esf)
 	return z_x86_cr3_get();
 }
 
-static inline pentry_t *get_ptables(const z_arch_esf_t *esf)
+static inline pentry_t *get_ptables(const struct arch_esf *esf)
 {
-	return z_mem_virt_addr(get_cr3(esf));
+	return k_mem_virt_addr(get_cr3(esf));
 }
 
 #ifdef CONFIG_X86_64
 __pinned_func
-static void dump_regs(const z_arch_esf_t *esf)
+static void dump_regs(const struct arch_esf *esf)
 {
 	LOG_ERR("RAX: 0x%016lx RBX: 0x%016lx RCX: 0x%016lx RDX: 0x%016lx",
 		esf->rax, esf->rbx, esf->rcx, esf->rdx);
@@ -192,17 +264,11 @@ static void dump_regs(const z_arch_esf_t *esf)
 	LOG_ERR("RSP: 0x%016lx RFLAGS: 0x%016lx CS: 0x%04lx CR3: 0x%016lx",
 		esf->rsp, esf->rflags, esf->cs & 0xFFFFU, get_cr3(esf));
 
-#ifdef CONFIG_X86_EXCEPTION_STACK_TRACE
-	LOG_ERR("call trace:");
-#endif
 	LOG_ERR("RIP: 0x%016lx", esf->rip);
-#ifdef CONFIG_X86_EXCEPTION_STACK_TRACE
-	unwind_stack(esf->rbp, esf->cs);
-#endif
 }
 #else /* 32-bit */
 __pinned_func
-static void dump_regs(const z_arch_esf_t *esf)
+static void dump_regs(const struct arch_esf *esf)
 {
 	LOG_ERR("EAX: 0x%08x, EBX: 0x%08x, ECX: 0x%08x, EDX: 0x%08x",
 		esf->eax, esf->ebx, esf->ecx, esf->edx);
@@ -211,13 +277,7 @@ static void dump_regs(const z_arch_esf_t *esf)
 	LOG_ERR("EFLAGS: 0x%08x CS: 0x%04x CR3: 0x%08lx", esf->eflags,
 		esf->cs & 0xFFFFU, get_cr3(esf));
 
-#ifdef CONFIG_X86_EXCEPTION_STACK_TRACE
-	LOG_ERR("call trace:");
-#endif
 	LOG_ERR("EIP: 0x%08x", esf->eip);
-#ifdef CONFIG_X86_EXCEPTION_STACK_TRACE
-	unwind_stack(esf->ebp, esf->cs);
-#endif
 }
 #endif /* CONFIG_X86_64 */
 
@@ -293,7 +353,7 @@ static void log_exception(uintptr_t vector, uintptr_t code)
 }
 
 __pinned_func
-static void dump_page_fault(z_arch_esf_t *esf)
+static void dump_page_fault(struct arch_esf *esf)
 {
 	uintptr_t err;
 	void *cr2;
@@ -328,12 +388,16 @@ static void dump_page_fault(z_arch_esf_t *esf)
 
 __pinned_func
 FUNC_NORETURN void z_x86_fatal_error(unsigned int reason,
-				     const z_arch_esf_t *esf)
+				     const struct arch_esf *esf)
 {
 	if (esf != NULL) {
 #ifdef CONFIG_EXCEPTION_DEBUG
 		dump_regs(esf);
 #endif
+#ifdef CONFIG_EXCEPTION_STACK_TRACE
+		LOG_ERR("call trace:");
+		unwind_stack(esf);
+#endif /* CONFIG_EXCEPTION_STACK_TRACE */
 #if defined(CONFIG_ASSERT) && defined(CONFIG_X86_64)
 		if (esf->rip == 0xb9) {
 			/* See implementation of __resume in locore.S. This is
@@ -351,7 +415,7 @@ FUNC_NORETURN void z_x86_fatal_error(unsigned int reason,
 
 __pinned_func
 FUNC_NORETURN void z_x86_unhandled_cpu_exception(uintptr_t vector,
-						 const z_arch_esf_t *esf)
+						 const struct arch_esf *esf)
 {
 #ifdef CONFIG_EXCEPTION_DEBUG
 	log_exception(vector, esf_get_code(esf));
@@ -370,7 +434,7 @@ static const struct z_exc_handle exceptions[] = {
 #endif
 
 __pinned_func
-void z_x86_page_fault_handler(z_arch_esf_t *esf)
+void z_x86_page_fault_handler(struct arch_esf *esf)
 {
 #ifdef CONFIG_DEMAND_PAGING
 	if ((esf->errorCode & PF_P) == 0) {
@@ -400,7 +464,7 @@ void z_x86_page_fault_handler(z_arch_esf_t *esf)
 		} else
 #else
 		{
-			was_valid_access = z_page_fault(virt);
+			was_valid_access = k_mem_page_fault(virt);
 		}
 #endif /* CONFIG_X86_KPTI */
 		if (was_valid_access) {
@@ -441,12 +505,20 @@ void z_x86_page_fault_handler(z_arch_esf_t *esf)
 		z_x86_fatal_error(K_ERR_STACK_CHK_FAIL, esf);
 	}
 #endif
+#ifdef CONFIG_THREAD_STACK_MEM_MAPPED
+	void *fault_addr = z_x86_cr2_get();
+
+	if (z_x86_check_guard_page((uintptr_t)fault_addr)) {
+		z_x86_fatal_error(K_ERR_STACK_CHK_FAIL, esf);
+	}
+#endif
+
 	z_x86_fatal_error(K_ERR_CPU_EXCEPTION, esf);
 	CODE_UNREACHABLE;
 }
 
 __pinned_func
-void z_x86_do_kernel_oops(const z_arch_esf_t *esf)
+void z_x86_do_kernel_oops(const struct arch_esf *esf)
 {
 	uintptr_t reason;
 

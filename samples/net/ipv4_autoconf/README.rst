@@ -1,7 +1,8 @@
-.. _ipv4-autoconf-sample:
+.. zephyr:code-sample:: ipv4-autoconf
+   :name: IPv4 autoconf client
+   :relevant-api: networking net_if net_context net_mgmt
 
-IPv4 autoconf client application
-################################
+   Perform IPv4 autoconfiguration and self-assign a random IPv4 address
 
 Overview
 ********
@@ -20,10 +21,10 @@ Building and Running
 ********************
 
 These are instructions for how to use this sample application running
-on a :ref:`frdm_k64f` board to configure a link local IPv4 address and
+on a :zephyr:board:`frdm_k64f` board to configure a link local IPv4 address and
 connect to a Linux host.
 
-Connect ethernet cable from a :ref:`Freedom-K64F board <frdm_k64f>` to a Linux
+Connect ethernet cable from a :zephyr:board:`Freedom-K64F board <frdm_k64f>` to a Linux
 host machine and check for new interfaces.
 
 Running Avahi client in Linux Host
@@ -68,3 +69,9 @@ type:
 .. code-block:: console
 
    $ ping -I eth1 169.254.218.128
+
+Wi-Fi
+=====
+
+The IPv4 Wi-Fi support can be enabled in the sample with
+:ref:`Wi-Fi snippet <snippet-wifi-ipv4>`.

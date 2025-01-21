@@ -1,7 +1,8 @@
-.. _usb-c-sink-sample:
+.. zephyr:code-sample:: usb-c-sink
+   :name: Basic USB-C Sink
+   :relevant-api: _usbc_device_api
 
-Basic USB-C SINK
-################
+   Implement a USB-C Power Delivery application in the form of a USB-C Sink.
 
 Overview
 ********
@@ -20,8 +21,8 @@ Requirements
 ************
 The TCPC device used by the sample is specified in the devicetree
 node that's compatible with ``usb-c-connector``.
-The sample has been tested on :ref:`b_g474e_dpow1_board` and
-:ref:`stm32g081b_eval_board`. Overlay files for the two boards
+The sample has been tested on :zephyr:board:`b_g474e_dpow1` and
+:zephyr:board:`stm32g081b_eval`. Overlay files for the two boards
 are provided.
 
 Building and Running

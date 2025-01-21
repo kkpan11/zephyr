@@ -5,7 +5,6 @@
 import argparse
 import os
 
-from west import log
 from west.commands import WestCommand
 
 # Relative to the folder where this script lives
@@ -30,6 +29,12 @@ to stdout. Using the completion scripts:
     source <(west completion zsh)
     # permanent (might require sudo)
     west completion zsh > "${fpath[1]}/_west"
+
+  fish:
+    # one-time
+    west completion fish | source
+    # permanent
+    west completion fish > $HOME/.config/fish/completions/west.fish
 
 positional arguments:
   source_dir            application source directory
@@ -57,7 +62,7 @@ class Completion(WestCommand):
 
         # Remember to update west-completion.bash if you add or remove
         # flags
-        parser.add_argument('shell', nargs=1, choices=['bash', 'zsh'],
+        parser.add_argument('shell', nargs=1, choices=['bash', 'zsh', 'fish'],
                             help='''Shell that which the completion
                             script is intended for.''')
         return parser
@@ -72,4 +77,4 @@ class Completion(WestCommand):
             with open(cf, 'r') as f:
                 print(f.read())
         except FileNotFoundError as e:
-            log.die('Unable to find completion file: {}'.format(e))
+            self.die('Unable to find completion file: {}'.format(e))

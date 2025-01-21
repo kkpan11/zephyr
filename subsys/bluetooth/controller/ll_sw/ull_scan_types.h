@@ -11,7 +11,7 @@ struct ll_scan_set {
 	uint32_t ticks_window;
 
 #if defined(CONFIG_BT_CTLR_ADV_EXT)
-	struct node_rx_hdr *node_rx_scan_term;
+	struct node_rx_pdu *node_rx_scan_term;
 	uint16_t duration_lazy;
 
 	uint8_t is_stop:1;
@@ -22,14 +22,9 @@ struct ll_scan_set {
 
 #if defined(CONFIG_BT_CTLR_SYNC_PERIODIC)
 	struct {
-		uint8_t sid;
-
-		uint8_t adv_addr_type:2;
 		uint8_t filter_policy:1;
 		uint8_t cancelled:1;
 		uint8_t state:2;
-
-		uint8_t adv_addr[BDADDR_SIZE];
 
 		/* Non-Null when creating sync, reset in ISR context on
 		 * synchronisation state and checked in Thread context when
@@ -40,19 +35,52 @@ struct ll_scan_set {
 #endif
 };
 
-struct ll_scan_aux_set {
-	struct ull_hdr      ull;
+struct ll_scan_aux_chain {
 	struct lll_scan_aux lll;
 
 	/* lll_scan or lll_sync */
 	void *volatile parent;
 
-	struct node_rx_hdr *rx_head;
-	struct node_rx_hdr *rx_last;
+	/* Current nodes in this chain */
+	/* TODO - do we need both head and tail? */
+	struct node_rx_pdu *rx_head;
+	struct node_rx_pdu *rx_last;
+
+	/* current ticker timeout for this chain */
+	uint32_t ticker_ticks;
+
+	/* Next chain in list (if any) */
+	struct ll_scan_aux_chain *next;
+
+	/* Current total advertising data */
+	uint16_t data_len;
+
+	/* This chain is LLL scheduled */
+	uint8_t is_lll_sched:1;
+	/* Last emitted node_rx's aux_sched (only used in sync contexts) */
+	uint8_t aux_sched:1;
+};
+
+struct ll_scan_aux_set {
+	struct ull_hdr      ull;
+
+#if defined(CONFIG_BT_CTLR_SCAN_AUX_USE_CHAINS)
+	struct ll_scan_aux_chain *sched_chains;
+	struct ll_scan_aux_chain *active_chains;
+	struct ll_scan_aux_chain *flushing_chains;
+#else /* !CONFIG_BT_CTLR_SCAN_AUX_USE_CHAINS */
+	struct lll_scan_aux lll;
+
+	/* lll_scan or lll_sync */
+	void *volatile parent;
+
+	struct node_rx_pdu *rx_head;
+	struct node_rx_pdu *rx_last;
 
 	uint16_t data_len;
 
 #if defined(CONFIG_BT_CTLR_SYNC_PERIODIC)
-	struct node_rx_hdr *rx_incomplete;
+	struct node_rx_pdu *rx_incomplete;
 #endif
+#endif /* !CONFIG_BT_CTLR_SCAN_AUX_USE_CHAINS */
 };

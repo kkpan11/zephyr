@@ -10,7 +10,7 @@ colorama
 ply>=3.10
 
 # used for code coverage
-gcovr>=4.2
+gcovr>=6.0
 coverage
 
 # used for west-command testing
@@ -19,3 +19,6 @@ mypy
 
 # used for mocking functions in pytest
 mock>=4.0.1
+
+# used for JUnit XML parsing in CTest harness
+junitparser

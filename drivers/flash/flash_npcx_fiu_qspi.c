@@ -16,7 +16,7 @@
 #include "flash_npcx_fiu_qspi.h"
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(npcx_fiu_qspi, LOG_LEVEL_ERR);
+LOG_MODULE_REGISTER(npcx_fiu_qspi, CONFIG_FLASH_LOG_LEVEL);
 
 /* Driver convenience defines */
 #define HAL_INSTANCE(dev) \
@@ -30,6 +30,7 @@ struct npcx_qspi_fiu_config {
 	struct npcx_clk_cfg clk_cfg;
 	/* Enable 2 external SPI devices for direct read on QSPI bus */
 	bool en_direct_access_2dev;
+	bool base_flash_inv;
 };
 
 /* Device data */
@@ -99,10 +100,10 @@ static inline void qspi_npcx_config_uma_mode(const struct device *dev,
 static inline void qspi_npcx_config_dra_4byte_mode(const struct device *dev,
 						   const struct npcx_qspi_cfg *qspi_cfg)
 {
-#if !defined(CONFIG_SOC_SERIES_NPCX7) /* NPCX7 doesn't support this feature */
+#if defined(CONFIG_FLASH_NPCX_FIU_SUPP_DRA_4B_ADDR)
 	struct fiu_reg *const inst = HAL_INSTANCE(dev);
 
-#if defined(CONFIG_SOC_SERIES_NPCX9)
+#if defined(CONFIG_FLASH_NPCX_FIU_DRA_V1)
 	if (qspi_cfg->enter_4ba != 0) {
 		if ((qspi_cfg->flags & NPCX_QSPI_SEC_FLASH_SL) != 0) {
 			inst->SPI1_DEV |= BIT(NPCX_SPI1_DEV_FOUR_BADDR_CS11);
@@ -113,12 +114,12 @@ static inline void qspi_npcx_config_dra_4byte_mode(const struct device *dev,
 		inst->SPI1_DEV &= ~(BIT(NPCX_SPI1_DEV_FOUR_BADDR_CS11) |
 				    BIT(NPCX_SPI1_DEV_FOUR_BADDR_CS10));
 	}
-#elif defined(CONFIG_SOC_SERIES_NPCX4)
+#elif defined(CONFIG_FLASH_NPCX_FIU_DRA_V2)
 	if (qspi_cfg->enter_4ba != 0) {
 		SET_FIELD(inst->SPI_DEV, NPCX_SPI_DEV_NADDRB, NPCX_DEV_NUM_ADDR_4BYTE);
 	}
 #endif
-#endif /* CONFIG_SOC_SERIES_NPCX7 */
+#endif /* CONFIG_FLASH_NPCX_FIU_SUPP_DRA_4B_ADDR */
 }
 
 static inline void qspi_npcx_config_dra_mode(const struct device *dev,
@@ -127,7 +128,7 @@ static inline void qspi_npcx_config_dra_mode(const struct device *dev,
 	struct fiu_reg *const inst = HAL_INSTANCE(dev);
 
 	/* Select SPI device number for DRA mode in npcx4 series */
-	if (IS_ENABLED(CONFIG_SOC_SERIES_NPCX4)) {
+	if (IS_ENABLED(CONFIG_FLASH_NPCX_FIU_DRA_V2)) {
 		int spi_dev_num = (qspi_cfg->flags & NPCX_QSPI_SEC_FLASH_SL) != 0 ? 1 : 0;
 
 		SET_FIELD(inst->BURST_CFG, NPCX_BURST_CFG_SPI_DEV_SEL, spi_dev_num);
@@ -244,10 +245,28 @@ void qspi_npcx_fiu_mutex_unlock(const struct device *dev)
 	k_sem_give(&data->lock_sem);
 }
 
+#if defined(CONFIG_FLASH_NPCX_FIU_DRA_V2)
+void qspi_npcx_fiu_set_spi_size(const struct device *dev, const struct npcx_qspi_cfg *cfg)
+{
+	struct fiu_reg *const inst = HAL_INSTANCE(dev);
+	uint8_t flags = cfg->flags;
+
+	if (cfg->spi_dev_sz <= NPCX_SPI_DEV_SIZE_128M) {
+		if ((flags & NPCX_QSPI_SEC_FLASH_SL) == 0) {
+			SET_FIELD(inst->BURST_CFG, NPCX_BURST_CFG_SPI_DEV_SEL, NPCX_SPI_F_CS0);
+		} else {
+			SET_FIELD(inst->BURST_CFG, NPCX_BURST_CFG_SPI_DEV_SEL, NPCX_SPI_F_CS1);
+		}
+		inst->SPI_DEV_SIZE = BIT(cfg->spi_dev_sz);
+	} else {
+		LOG_ERR("Invalid setting of low device size");
+	}
+}
+#endif
+
 static int qspi_npcx_fiu_init(const struct device *dev)
 {
 	const struct npcx_qspi_fiu_config *const config = dev->config;
-	struct fiu_reg *const inst = HAL_INSTANCE(dev);
 	struct npcx_qspi_fiu_data *const data = dev->data;
 	const struct device *const clk_dev = DEVICE_DT_GET(NPCX_CLK_CTRL_NODE);
 	int ret;
@@ -270,9 +289,16 @@ static int qspi_npcx_fiu_init(const struct device *dev)
 
 	/* Enable direct access for 2 external SPI devices */
 	if (config->en_direct_access_2dev) {
-		if (IS_ENABLED(CONFIG_SOC_SERIES_NPCX9) || IS_ENABLED(CONFIG_SOC_SERIES_NPCX4)) {
-			inst->FIU_EXT_CFG |= BIT(NPCX_FIU_EXT_CFG_SPI1_2DEV);
+#if defined(CONFIG_FLASH_NPCX_FIU_SUPP_DRA_2_DEV)
+		struct fiu_reg *const inst = HAL_INSTANCE(dev);
+
+		inst->FIU_EXT_CFG |= BIT(NPCX_FIU_EXT_CFG_SPI1_2DEV);
+#if defined(CONFIG_FLASH_NPCX_FIU_SUPP_LOW_DEV_SWAP)
+		if (config->base_flash_inv) {
+			inst->FIU_EXT_CFG |= BIT(NPCX_FIU_EXT_CFG_LOW_DEV_NUM);
 		}
+#endif
+#endif
 	}
 
 	return 0;
@@ -283,6 +309,7 @@ static const struct npcx_qspi_fiu_config npcx_qspi_fiu_config_##n = {		\
 	.base = DT_INST_REG_ADDR(n),						\
 	.clk_cfg = NPCX_DT_CLK_CFG_ITEM(n),					\
 	.en_direct_access_2dev = DT_INST_PROP(n, en_direct_access_2dev),	\
+	.base_flash_inv = DT_INST_PROP(n, flash_dev_inv),			\
 };										\
 static struct npcx_qspi_fiu_data npcx_qspi_fiu_data_##n;			\
 DEVICE_DT_INST_DEFINE(n, qspi_npcx_fiu_init, NULL,				\

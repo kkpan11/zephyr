@@ -768,7 +768,7 @@ clear_iag:
 }
 
 #ifdef CONFIG_I2C_TARGET
-static int i2c_xec_slave_register(const struct device *dev,
+static int i2c_xec_target_register(const struct device *dev,
 				  struct i2c_target_config *config)
 {
 	const struct i2c_xec_config *cfg = dev->config;
@@ -811,7 +811,7 @@ static int i2c_xec_slave_register(const struct device *dev,
 	return 0;
 }
 
-static int i2c_xec_slave_unregister(const struct device *dev,
+static int i2c_xec_target_unregister(const struct device *dev,
 				    struct i2c_target_config *config)
 {
 	const struct i2c_xec_config *cfg = dev->config;
@@ -829,12 +829,15 @@ static int i2c_xec_slave_unregister(const struct device *dev,
 }
 #endif
 
-static const struct i2c_driver_api i2c_xec_driver_api = {
+static DEVICE_API(i2c, i2c_xec_driver_api) = {
 	.configure = i2c_xec_configure,
 	.transfer = i2c_xec_transfer,
 #ifdef CONFIG_I2C_TARGET
-	.slave_register = i2c_xec_slave_register,
-	.slave_unregister = i2c_xec_slave_unregister,
+	.target_register = i2c_xec_target_register,
+	.target_unregister = i2c_xec_target_unregister,
+#endif
+#ifdef CONFIG_I2C_RTIO
+	.iodev_submit = i2c_iodev_submit_fallback,
 #endif
 };
 

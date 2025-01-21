@@ -39,6 +39,7 @@
 #define SPI_NOR_CMD_SE_4B       0x21    /* Sector erase 4 byte address*/
 #define SPI_NOR_CMD_BE_32K      0x52    /* Block erase 32KB */
 #define SPI_NOR_CMD_BE          0xD8    /* Block erase */
+#define SPI_NOR_CMD_BE_4B       0xDC    /* Block erase 4 byte address*/
 #define SPI_NOR_CMD_CE          0xC7    /* Chip erase */
 #define SPI_NOR_CMD_RDID        0x9F    /* Read JEDEC ID */
 #define SPI_NOR_CMD_ULBPR       0x98    /* Global Block Protection Unlock */
@@ -112,5 +113,7 @@
 #define SPI_NOR_IS_SECTOR_ALIGNED(_ofs) SPI_NOR_IS_ALIGNED(_ofs, 12)
 #define SPI_NOR_IS_32K_ALIGNED(_ofs) SPI_NOR_IS_ALIGNED(_ofs, 15)
 #define SPI_NOR_IS_64K_ALIGNED(_ofs) SPI_NOR_IS_ALIGNED(_ofs, 16)
+
+#define CMD_RDCR 0x15 /* Read the configuration register. */
 
 #endif /*__SPI_NOR_H__*/

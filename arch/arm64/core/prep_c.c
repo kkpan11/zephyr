@@ -16,33 +16,12 @@
 
 #include <kernel_internal.h>
 #include <zephyr/linker/linker-defs.h>
+#include <zephyr/platform/hooks.h>
+#include <zephyr/arch/cache.h>
 
 extern void z_arm64_mm_init(bool is_primary_core);
 
 __weak void z_arm64_mm_init(bool is_primary_core) { }
-
-/*
- * These simple memset/memcpy alternatives are necessary as the optimized
- * ones depend on the MMU to be active (see commit c5b898743a20).
- */
-void z_early_memset(void *dst, int c, size_t n)
-{
-	uint8_t *d = dst;
-
-	while (n--) {
-		*d++ = c;
-	}
-}
-
-void z_early_memcpy(void *dst, const void *src, size_t n)
-{
-	uint8_t *d = dst;
-	const uint8_t *s = src;
-
-	while (n--) {
-		*d++ = *s++;
-	}
-}
 
 /**
  *
@@ -51,8 +30,12 @@ void z_early_memcpy(void *dst, const void *src, size_t n)
  * This routine prepares for the execution of and runs C code.
  *
  */
-void z_arm64_prep_c(void)
+void z_prep_c(void)
 {
+#if defined(CONFIG_SOC_PREP_HOOK)
+	soc_prep_hook();
+#endif
+
 	/* Initialize tpidrro_el0 with our struct _cpu instance address */
 	write_tpidrro_el0((uintptr_t)&_kernel.cpus[0]);
 
@@ -64,16 +47,20 @@ void z_arm64_prep_c(void)
 #endif
 	z_arm64_mm_init(true);
 	z_arm64_interrupt_init();
-	z_cstart();
 
+	z_cstart();
 	CODE_UNREACHABLE;
 }
 
+
 #if CONFIG_MP_MAX_NUM_CPUS > 1
-extern FUNC_NORETURN void z_arm64_secondary_start(void);
+extern FUNC_NORETURN void arch_secondary_cpu_init(void);
 void z_arm64_secondary_prep_c(void)
 {
-	z_arm64_secondary_start();
+	arch_secondary_cpu_init();
+#if CONFIG_ARCH_CACHE
+	arch_cache_init();
+#endif
 
 	CODE_UNREACHABLE;
 }

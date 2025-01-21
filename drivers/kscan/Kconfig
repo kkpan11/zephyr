@@ -4,15 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 menuconfig KSCAN
-	bool "Keyboard scan drivers"
+	bool "Keyboard scan drivers [DEPRECATED]"
+	select DEPRECATED
 	help
 	  Include Keyboard scan drivers in system config.
 
 if KSCAN
 
-source "drivers/kscan/Kconfig.it8xxx2"
-source "drivers/kscan/Kconfig.xec"
-source "drivers/kscan/Kconfig.ht16k33"
 source "drivers/kscan/Kconfig.input"
 
 module = KSCAN

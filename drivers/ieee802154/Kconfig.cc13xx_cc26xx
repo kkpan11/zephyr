@@ -59,7 +59,6 @@ menuconfig IEEE802154_CC13XX_CC26XX_SUB_GHZ
 	bool "TI CC13xx / CC26xx IEEE 802.15.4g driver support"
 	default y
 	depends on DT_HAS_TI_CC13XX_CC26XX_IEEE802154_SUBGHZ_ENABLED
-	select NET_L2_IEEE802154_SUB_GHZ if NET_L2_IEEE802154
 
 if IEEE802154_CC13XX_CC26XX_SUB_GHZ
 
@@ -88,12 +87,6 @@ config IEEE802154_CC13XX_CC26XX_SUB_GHZ_INIT_PRIO
 	default 80
 	help
 	  Set the initialization priority number.
-
-config IEEE802154_CC13XX_CC26XX_SUB_GHZ_RADIO_TX_RETRIES
-	bool
-	select DEPRECATED
-	help
-	  DEPRECATED - use NET_L2_IEEE802154_RADIO_TX_RETRIES instead
 
 config IEEE802154_CC13XX_CC26XX_SUB_GHZ_CUSTOM_RADIO_SETUP
 	bool "Use custom radio setup structures (advanced)"

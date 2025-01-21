@@ -9,7 +9,7 @@
 #include <zephyr/debug/stack.h>
 #include <zephyr/sys/util.h>
 
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/conn.h>
@@ -19,7 +19,6 @@
 
 #include "host/hci_core.h"
 
-#include "adv.h"
 #include "net.h"
 #include "foundation.h"
 #include "beacon.h"
@@ -40,9 +39,14 @@ static struct k_thread adv_thread_data;
 static K_KERNEL_STACK_DEFINE(adv_thread_stack, CONFIG_BT_MESH_ADV_STACK_SIZE);
 static int32_t adv_timeout;
 
+static bool is_mesh_suspended(void)
+{
+	return atomic_test_bit(bt_mesh.flags, BT_MESH_SUSPENDED);
+}
+
 static int bt_data_send(uint8_t num_events, uint16_t adv_int,
 			const struct bt_data *ad, size_t ad_len,
-			struct bt_mesh_adv *adv)
+			struct bt_mesh_adv_ctx *ctx)
 {
 	struct bt_le_adv_param param = {};
 	uint64_t uptime = k_uptime_get();
@@ -100,11 +104,13 @@ static int bt_data_send(uint8_t num_events, uint16_t adv_int,
 
 	LOG_DBG("Advertising started. Sleeping %u ms", duration);
 
-	if (adv) {
-		bt_mesh_adv_send_start(duration, err, adv);
+	if (ctx) {
+		bt_mesh_adv_send_start(duration, err, ctx);
 	}
 
-	k_sleep(K_MSEC(duration));
+	if (!is_mesh_suspended()) {
+		k_sleep(K_MSEC(duration));
+	}
 
 	err = bt_le_adv_stop();
 	if (err) {
@@ -123,38 +129,37 @@ int bt_mesh_adv_bt_data_send(uint8_t num_events, uint16_t adv_int,
 	return bt_data_send(num_events, adv_int, ad, ad_len, NULL);
 }
 
-static inline void buf_send(struct net_buf *buf)
+static inline void adv_send(struct bt_mesh_adv *adv)
 {
-	uint16_t num_events = BT_MESH_TRANSMIT_COUNT(BT_MESH_ADV(buf)->xmit) + 1;
+	uint16_t num_events = BT_MESH_TRANSMIT_COUNT(adv->ctx.xmit) + 1;
 	uint16_t adv_int;
 	struct bt_data ad;
 
-	adv_int = BT_MESH_TRANSMIT_INT(BT_MESH_ADV(buf)->xmit);
+	adv_int = BT_MESH_TRANSMIT_INT(adv->ctx.xmit);
 
-	LOG_DBG("type %u len %u: %s", BT_MESH_ADV(buf)->type,
-	       buf->len, bt_hex(buf->data, buf->len));
+	LOG_DBG("type %u len %u: %s", adv->ctx.type,
+	       adv->b.len, bt_hex(adv->b.data, adv->b.len));
 
-	ad.type = bt_mesh_adv_type[BT_MESH_ADV(buf)->type];
-	ad.data_len = buf->len;
-	ad.data = buf->data;
+	ad.type = bt_mesh_adv_type[adv->ctx.type];
+	ad.data_len = adv->b.len;
+	ad.data = adv->b.data;
 
-	bt_data_send(num_events, adv_int, &ad, 1, BT_MESH_ADV(buf));
+	bt_data_send(num_events, adv_int, &ad, 1, &adv->ctx);
 }
 
 static void adv_thread(void *p1, void *p2, void *p3)
 {
 	LOG_DBG("started");
+	struct bt_mesh_adv *adv;
 
-	while (1) {
-		struct net_buf *buf;
-
+	while (!is_mesh_suspended()) {
 		if (IS_ENABLED(CONFIG_BT_MESH_GATT_SERVER)) {
-			buf = bt_mesh_adv_buf_get(K_NO_WAIT);
-			if (IS_ENABLED(CONFIG_BT_MESH_PROXY_SOLICITATION) && !buf) {
+			adv = bt_mesh_adv_get(K_NO_WAIT);
+			if (IS_ENABLED(CONFIG_BT_MESH_PROXY_SOLICITATION) && !adv) {
 				(void)bt_mesh_sol_send();
 			}
 
-			while (!buf) {
+			while (!adv) {
 
 				/* Adv timeout may be set by a call from proxy
 				 * to bt_mesh_adv_gatt_start:
@@ -162,47 +167,64 @@ static void adv_thread(void *p1, void *p2, void *p3)
 				adv_timeout = SYS_FOREVER_MS;
 				(void)bt_mesh_adv_gatt_send();
 
-				buf = bt_mesh_adv_buf_get(SYS_TIMEOUT_MS(adv_timeout));
+				adv = bt_mesh_adv_get(SYS_TIMEOUT_MS(adv_timeout));
 				bt_le_adv_stop();
 
-				if (IS_ENABLED(CONFIG_BT_MESH_PROXY_SOLICITATION) && !buf) {
+				if (IS_ENABLED(CONFIG_BT_MESH_PROXY_SOLICITATION) && !adv) {
 					(void)bt_mesh_sol_send();
 				}
 			}
 		} else {
-			buf = bt_mesh_adv_buf_get(K_FOREVER);
+			adv = bt_mesh_adv_get(K_FOREVER);
 		}
 
-		if (!buf) {
+		if (!adv) {
 			continue;
 		}
 
 		/* busy == 0 means this was canceled */
-		if (BT_MESH_ADV(buf)->busy) {
-			BT_MESH_ADV(buf)->busy = 0U;
-			buf_send(buf);
+		if (adv->ctx.busy) {
+			adv->ctx.busy = 0U;
+			adv_send(adv);
 		}
 
-		net_buf_unref(buf);
+		struct bt_mesh_adv_ctx ctx = adv->ctx;
+
+		adv->ctx.started = 0;
+		bt_mesh_adv_unref(adv);
+		bt_mesh_adv_send_end(0, &ctx);
 
 		/* Give other threads a chance to run */
 		k_yield();
 	}
+
+	/* Empty the advertising pool when advertising is disabled */
+	while ((adv = bt_mesh_adv_get(K_NO_WAIT))) {
+		bt_mesh_adv_send_start(0, -ENODEV, &adv->ctx);
+		bt_mesh_adv_unref(adv);
+	}
 }
 
-void bt_mesh_adv_buf_local_ready(void)
+void bt_mesh_adv_local_ready(void)
 {
 	/* Will be handled automatically */
 }
 
-void bt_mesh_adv_buf_relay_ready(void)
+void bt_mesh_adv_relay_ready(void)
 {
 	/* Will be handled automatically */
 }
 
 void bt_mesh_adv_gatt_update(void)
 {
-	bt_mesh_adv_buf_get_cancel();
+	bt_mesh_adv_get_cancel();
+}
+
+int bt_mesh_adv_terminate(struct bt_mesh_adv *adv)
+{
+	ARG_UNUSED(adv);
+
+	return 0;
 }
 
 void bt_mesh_adv_init(void)
@@ -216,8 +238,36 @@ void bt_mesh_adv_init(void)
 
 int bt_mesh_adv_enable(void)
 {
+	/* The advertiser thread relies on BT_MESH_SUSPENDED flag. No point in starting the
+	 * advertiser thread if the flag is not set.
+	 */
+	if (is_mesh_suspended()) {
+		return -EINVAL;
+	}
+
 	k_thread_start(&adv_thread_data);
 	return 0;
+}
+
+int bt_mesh_adv_disable(void)
+{
+	int err;
+
+	/* k_thread_join will sleep forever if BT_MESH_SUSPENDED flag is not set. The advertiser
+	 * thread will exit once the flag is set. The flag is set by the higher layer function. Here
+	 * we need to check that the flag is dropped and ensure that the thread is stopped.
+	 */
+	if (!is_mesh_suspended()) {
+		return -EINVAL;
+	}
+
+	err = k_thread_join(&adv_thread_data, K_FOREVER);
+	LOG_DBG("Advertising disabled: %d", err);
+
+	/* Since the thread will immediately stop after this function call and won’t perform any
+	 * further operations, it’s safe to ignore the deadlock error (EDEADLK).
+	 */
+	return err == -EDEADLK ? 0 : err;
 }
 
 int bt_mesh_adv_gatt_start(const struct bt_le_adv_param *param, int32_t duration,
@@ -226,4 +276,9 @@ int bt_mesh_adv_gatt_start(const struct bt_le_adv_param *param, int32_t duration
 {
 	adv_timeout = duration;
 	return bt_le_adv_start(param, ad, ad_len, sd, sd_len);
+}
+
+int bt_mesh_wq_submit(struct k_work *work)
+{
+	return k_work_submit(work);
 }

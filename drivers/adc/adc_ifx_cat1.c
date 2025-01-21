@@ -13,7 +13,7 @@
 
 #include <zephyr/drivers/adc.h>
 #include <cyhal_adc.h>
-#include <cyhal_utils_psoc.h>
+#include <cyhal_utils_impl.h>
 
 #define ADC_CONTEXT_USES_KERNEL_TIMER
 #include "adc_context.h"
@@ -266,7 +266,7 @@ static int ifx_cat1_adc_init(const struct device *dev)
 	return 0;
 }
 
-static const struct adc_driver_api adc_cat1_driver_api = {
+static DEVICE_API(adc, adc_cat1_driver_api) = {
 	.channel_setup = ifx_cat1_adc_channel_setup,
 	.read = ifx_cat1_adc_read,
 	#ifdef CONFIG_ADC_ASYNC

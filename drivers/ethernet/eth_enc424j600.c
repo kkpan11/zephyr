@@ -442,8 +442,12 @@ done:
 	return 0;
 }
 
-static void enc424j600_rx_thread(struct enc424j600_runtime *context)
+static void enc424j600_rx_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	struct enc424j600_runtime *context = p1;
 	uint16_t eir;
 	uint16_t estat;
 	uint8_t counter;
@@ -552,6 +556,40 @@ static enum ethernet_hw_caps enc424j600_get_capabilities(const struct device *de
 	return ETHERNET_LINK_10BASE_T | ETHERNET_LINK_100BASE_T;
 }
 
+static int enc424j600_set_config(const struct device *dev,
+				 enum ethernet_config_type type,
+				 const struct ethernet_config *config)
+{
+	struct enc424j600_runtime *ctx = dev->data;
+	uint16_t tmp;
+
+	switch (type) {
+	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
+		ctx->mac_address[0] = config->mac_address.addr[0];
+		ctx->mac_address[1] = config->mac_address.addr[1];
+		ctx->mac_address[2] = config->mac_address.addr[2];
+		ctx->mac_address[3] = config->mac_address.addr[3];
+		ctx->mac_address[4] = config->mac_address.addr[4];
+		ctx->mac_address[5] = config->mac_address.addr[5];
+
+		/* write MAC address byte 2 and 1 */
+		tmp = config->mac_address.addr[0] | config->mac_address.addr[1] << 8;
+		enc424j600_write_sfru(dev, ENC424J600_SFR3_MAADR1L, tmp);
+
+		/* write MAC address byte 4 and 3 */
+		tmp = config->mac_address.addr[2] | config->mac_address.addr[3] << 8;
+		enc424j600_write_sfru(dev, ENC424J600_SFR3_MAADR2L, tmp);
+
+		/* write MAC address byte 6 and 5 */
+		tmp = config->mac_address.addr[4] | config->mac_address.addr[5] << 8;
+		enc424j600_write_sfru(dev, ENC424J600_SFR3_MAADR3L, tmp);
+
+		return 0;
+	default:
+		return -ENOTSUP;
+	}
+}
+
 static void enc424j600_iface_init(struct net_if *iface)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -640,6 +678,7 @@ static int enc424j600_stop_device(const struct device *dev)
 static const struct ethernet_api api_funcs = {
 	.iface_api.init		= enc424j600_iface_init,
 	.get_config		= enc424j600_get_config,
+	.set_config		= enc424j600_set_config,
 	.get_capabilities	= enc424j600_get_capabilities,
 	.send			= enc424j600_tx,
 	.start			= enc424j600_start_device,
@@ -767,7 +806,7 @@ static int enc424j600_init(const struct device *dev)
 	/* Start interruption-poll thread */
 	k_thread_create(&context->thread, context->thread_stack,
 			CONFIG_ETH_ENC424J600_RX_THREAD_STACK_SIZE,
-			(k_thread_entry_t)enc424j600_rx_thread,
+			enc424j600_rx_thread,
 			context, NULL, NULL,
 			K_PRIO_COOP(CONFIG_ETH_ENC424J600_RX_THREAD_PRIO),
 			0, K_NO_WAIT);

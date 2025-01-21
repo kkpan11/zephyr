@@ -1,7 +1,9 @@
-.. _lsm6dso_i2c_on_i3c:
+.. zephyr:code-sample:: lsmd6dso_i2c_on_i3c
+   :name: LSM6DSO IMU sensor (I2C on I3C bus)
+   :relevant-api: sensor_interface
 
-LSM6DSO: IMU Sensor Monitor (I2C on I3C bus)
-############################################
+   Get accelerometer and gyroscope data from an LSM6DSO sensor using I2C on I3C
+   bus (polling & trigger mode).
 
 Overview
 ********
@@ -15,12 +17,12 @@ Requirements
 This sample uses the LSM6DSO sensor controlled using the I2C interface
 exposed by the I3C controller. It has been tested using the LSM6DSO on
 the evaluation board STEVAL-MKI196V1 connected to the I3C header
-on :ref:`mimxrt685_evk`.
+on :zephyr:board:`mimxrt685_evk`.
 
 References
 **********
 
-- LSM6DSO http://www.st.com/en/mems-and-sensors/lsm6dso.html
+- LSM6DSO https://www.st.com/en/mems-and-sensors/lsm6dso.html
 
 Building and Running
 ********************
@@ -28,23 +30,23 @@ Building and Running
 This project outputs sensor data to the console. It requires an LSM6DSO
 sensor (for example, the one on evaluation board STEVAL-MKI196V1).
 
-Building on mimxrt685_evk_cm33 board
+Building on mimxrt685_evk board
 ====================================
 
 .. zephyr-app-commands::
    :zephyr-app: samples/sensor/lsm6dso_i2c_on_i3c
    :host-os: unix
-   :board: mimxrt685_evk_cm33
+   :board: mimxrt685_evk/mimxrt685s/cm33
    :goals: build
    :compact:
 
 Board Preparations
 ==================
 
-mimxrt685_evk_cm33
+mimxrt685_evk
 ------------------
 
-On the board :ref:`mimxrt685_evk`, the I3C pins are exposed on the J18
+On the board :zephyr:board:`mimxrt685_evk`, the I3C pins are exposed on the J18
 header, where:
 
   * SCL is on pin 1

@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_MODEM_LOG_LEVEL);
 
 #include <zephyr/pm/device.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/sys/util.h>
 
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/net_if.h>
@@ -81,7 +82,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_MODEM_LOG_LEVEL);
 #define HL7800_IO_DBG_LOG(fmt, ...)                                            \
 	do {                                                                   \
 		if (IS_ENABLED(HL7800_IO_LOG)) {                               \
-			LOG_DBG(fmt, ##__VA_ARGS__);                           \
+			LOG_WRN(fmt, ##__VA_ARGS__);                           \
 		}                                                              \
 	} while (false)
 
@@ -207,6 +208,7 @@ struct xmodem_packet {
  * and that its actual ID hasn't been assigned yet.
  */
 #define MDM_CREATE_SOCKET_ID (MDM_MAX_SOCKETS + 1)
+#define MDM_INVALID_SOCKET_ID -1
 
 #define BUF_ALLOC_TIMEOUT K_SECONDS(1)
 
@@ -250,6 +252,7 @@ struct xmodem_packet {
 #define DNS_WORK_DELAY_SECS 1
 #define IFACE_WORK_DELAY K_MSEC(500)
 #define SOCKET_CLEANUP_WORK_DELAY K_MSEC(100)
+#define STORED_SOCKETS_DELAY K_SECONDS(1)
 #define WAIT_FOR_KSUP_RETRIES 5
 
 #define CGCONTRDP_RESPONSE_NUM_DELIMS 7
@@ -425,6 +428,7 @@ struct hl7800_iface_ctx {
 	bool wait_for_KSUP;
 	uint32_t wait_for_KSUP_tries;
 	bool reconfig_IP_connection;
+	bool reset_sockets;
 	char dns_v4_string[NET_IPV4_ADDR_LEN];
 	char no_id_resp_cmd[NO_ID_RESP_CMD_MAX_LENGTH];
 	bool search_no_id_resp;
@@ -438,6 +442,8 @@ struct hl7800_iface_ctx {
 	int dsr_state;
 	int gpio6_state;
 	int cts_state;
+	int last_cts_state;
+	int last_cts_time;
 
 	/* RX specific attributes */
 	struct mdm_receiver_context mdm_ctx;
@@ -452,6 +458,7 @@ struct hl7800_iface_ctx {
 	/* semaphores */
 	struct k_sem response_sem;
 	struct k_sem mdm_awake;
+	struct k_sem wait_urc;
 
 	/* work */
 	struct k_work_delayable rssi_query_work;
@@ -472,6 +479,7 @@ struct hl7800_iface_ctx {
 	int file_pos;
 	struct k_work finish_fw_update_work;
 	bool fw_updated;
+	bool fw_updating;
 #endif
 
 	/* modem info */
@@ -503,8 +511,9 @@ struct hl7800_iface_ctx {
 	char mdm_pdp_addr_fam[MDM_ADDR_FAM_MAX_LEN];
 
 	/* modem state */
+	bool busy;
+	bool socket_cmd;
 	bool allow_sleep;
-	bool uart_on;
 	enum mdm_hl7800_sleep desired_sleep_level;
 	enum mdm_hl7800_sleep sleep_state;
 	enum hl7800_lpm low_power_mode;
@@ -515,11 +524,14 @@ struct hl7800_iface_ctx {
 	struct tm local_time;
 	int32_t local_time_offset;
 	bool local_time_valid;
-	bool configured;
+	enum mdm_hl7800_state state;
 	bool off;
 	void (*wake_up_callback)(int state);
 	void (*gpio6_callback)(int state);
 	void (*cts_callback)(int state);
+	bool user_at_cmd;
+	char *user_at_cmd_resp_buf;
+	uint16_t user_at_cmd_resp_buf_len;
 
 #ifdef CONFIG_MODEM_HL7800_GPS
 	struct k_work_delayable gps_work;
@@ -557,6 +569,9 @@ static char *get_sleep_state_string(enum mdm_hl7800_sleep state);
 static void set_network_state(enum mdm_hl7800_network_state state);
 static void set_startup_state(enum mdm_hl7800_startup_state state);
 static void set_sleep_state(enum mdm_hl7800_sleep state);
+static void set_state(enum mdm_hl7800_state state);
+static void generate_state_event(void);
+static char *get_state_string(enum mdm_hl7800_state state);
 static void generate_network_state_event(void);
 static void generate_startup_state_event(void);
 static void generate_sleep_state_event(void);
@@ -612,6 +627,7 @@ static int queue_stale_socket(enum net_sock_type type, uint8_t id)
 
 	sock = alloc_stale_socket();
 	if (sock != NULL) {
+		LOG_DBG("Queueing stale socket %d", id);
 		sock->type = type;
 		sock->id = id;
 		k_queue_append(&iface_ctx.stale_socket_queue, (void *)sock);
@@ -804,6 +820,16 @@ static struct hl7800_socket *socket_from_id(int socket_id)
 	return sock;
 }
 
+static inline void set_busy(bool busy)
+{
+#ifdef CONFIG_MODEM_HL7800_FW_UPDATE
+	if (iface_ctx.fw_updating && !busy) {
+		return;
+	}
+#endif
+	iface_ctx.busy = busy;
+}
+
 static void socket_put(struct hl7800_socket *sock)
 {
 	if (!sock) {
@@ -811,7 +837,7 @@ static void socket_put(struct hl7800_socket *sock)
 	}
 
 	sock->context = NULL;
-	sock->socket_id = -1;
+	sock->socket_id = MDM_INVALID_SOCKET_ID;
 	sock->created = false;
 	sock->reconfig = false;
 	sock->error = 0;
@@ -858,6 +884,17 @@ void mdm_hl7800_register_cts_callback(void (*func)(int state))
 	iface_ctx.cts_callback = func;
 }
 
+static void modem_assert_reset(bool assert)
+{
+	if (assert) {
+		HL7800_IO_DBG_LOG("MDM_RESET -> ASSERTED");
+		gpio_pin_set_dt(&hl7800_cfg.gpio[MDM_RESET], 1);
+	} else {
+		HL7800_IO_DBG_LOG("MDM_RESET -> NOT_ASSERTED");
+		gpio_pin_set_dt(&hl7800_cfg.gpio[MDM_RESET], 0);
+	}
+}
+
 static void modem_assert_wake(bool assert)
 {
 	int state;
@@ -902,19 +939,28 @@ static void modem_assert_fast_shutd(bool assert)
 static void allow_sleep_work_callback(struct k_work *item)
 {
 	ARG_UNUSED(item);
-	LOG_DBG("Allow sleep");
-	iface_ctx.allow_sleep = true;
-	set_sleep_state(iface_ctx.desired_sleep_level);
-	modem_assert_wake(false);
+	if (!iface_ctx.busy) {
+		LOG_DBG("Allow sleep");
+		iface_ctx.allow_sleep = true;
+		set_sleep_state(iface_ctx.desired_sleep_level);
+		modem_assert_wake(false);
+	} else {
+		k_work_reschedule_for_queue(&hl7800_workq, &iface_ctx.allow_sleep_work,
+					    K_MSEC(CONFIG_MODEM_HL7800_ALLOW_SLEEP_DELAY_MS));
+	}
 }
 
 static void allow_sleep(bool allow)
 {
 #ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
 	if (allow) {
-		k_work_reschedule_for_queue(&hl7800_workq,
-					    &iface_ctx.allow_sleep_work,
-					    K_MSEC(CONFIG_MODEM_HL7800_ALLOW_SLEEP_DELAY_MS));
+		if (!iface_ctx.restarting && !iface_ctx.busy) {
+			k_work_reschedule_for_queue(
+				&hl7800_workq, &iface_ctx.allow_sleep_work,
+				K_MSEC(CONFIG_MODEM_HL7800_ALLOW_SLEEP_DELAY_MS));
+		} else {
+			k_work_cancel_delayable(&iface_ctx.allow_sleep_work);
+		}
 	} else {
 		LOG_DBG("Keep awake");
 		k_work_cancel_delayable(&iface_ctx.allow_sleep_work);
@@ -928,15 +974,18 @@ static void event_handler(enum mdm_hl7800_event event, void *event_data)
 {
 	sys_snode_t *node;
 	struct mdm_hl7800_callback_agent *agent;
+	int ret;
 
-	k_sem_take(&cb_lock, K_FOREVER);
-	SYS_SLIST_FOR_EACH_NODE(&hl7800_event_callback_list, node) {
-		agent = CONTAINER_OF(node, struct mdm_hl7800_callback_agent, node);
-		if (agent->event_callback != NULL) {
-			agent->event_callback(event, event_data);
+	ret = k_sem_take(&cb_lock, K_FOREVER);
+	if (ret == 0) {
+		SYS_SLIST_FOR_EACH_NODE(&hl7800_event_callback_list, node) {
+			agent = CONTAINER_OF(node, struct mdm_hl7800_callback_agent, node);
+			if (agent->event_callback != NULL) {
+				agent->event_callback(event, event_data);
+			}
 		}
+		k_sem_give(&cb_lock);
 	}
-	k_sem_give(&cb_lock);
 }
 
 void mdm_hl7800_get_signal_quality(int *rsrp, int *sinr)
@@ -966,8 +1015,10 @@ static int send_at_cmd(struct hl7800_socket *sock, const uint8_t *data,
 		if (!sock) {
 			k_sem_reset(&iface_ctx.response_sem);
 			iface_ctx.last_socket_id = 0;
+			iface_ctx.socket_cmd = false;
 		} else {
 			sock->error = 0;
+			iface_ctx.socket_cmd = true;
 			k_sem_reset(&sock->sock_send_sem);
 			iface_ctx.last_socket_id = sock->socket_id;
 		}
@@ -1013,6 +1064,7 @@ done:
 
 static int wakeup_hl7800(void)
 {
+	set_busy(true);
 #ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
 	int ret;
 
@@ -1036,7 +1088,8 @@ static int wakeup_hl7800(void)
 	return 0;
 }
 
-int32_t mdm_hl7800_send_at_cmd(const uint8_t *data)
+int32_t mdm_hl7800_send_at_cmd(const uint8_t *data, uint8_t resp_timeout, char *resp,
+			       uint16_t *resp_len)
 {
 	int ret;
 
@@ -1047,7 +1100,22 @@ int32_t mdm_hl7800_send_at_cmd(const uint8_t *data)
 	hl7800_lock();
 	wakeup_hl7800();
 	iface_ctx.last_socket_id = 0;
-	ret = send_at_cmd(NULL, data, MDM_CMD_SEND_TIMEOUT, 0, false);
+	iface_ctx.user_at_cmd = true;
+	iface_ctx.user_at_cmd_resp_buf = resp;
+	if (resp_len) {
+		iface_ctx.user_at_cmd_resp_buf_len = *resp_len;
+	} else {
+		iface_ctx.user_at_cmd_resp_buf_len = 0;
+	}
+	if (iface_ctx.user_at_cmd_resp_buf) {
+		iface_ctx.user_at_cmd_resp_buf[0] = '\0';
+	}
+	ret = send_at_cmd(NULL, data, K_SECONDS(resp_timeout), 0, false);
+	iface_ctx.user_at_cmd = false;
+	if (resp_len && iface_ctx.user_at_cmd_resp_buf) {
+		*resp_len = strlen(iface_ctx.user_at_cmd_resp_buf);
+	}
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1064,6 +1132,7 @@ int32_t mdm_hl7800_update_apn(char *access_point_name)
 	wakeup_hl7800();
 	iface_ctx.last_socket_id = 0;
 	ret = write_apn(access_point_name);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -1118,6 +1187,7 @@ int32_t mdm_hl7800_update_rat(enum mdm_hl7800_radio_mode value)
 
 error:
 
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -1142,6 +1212,7 @@ int32_t mdm_hl7800_get_local_time(struct tm *tm, int32_t *offset)
 	wakeup_hl7800();
 	iface_ctx.last_socket_id = 0;
 	ret = send_at_cmd(NULL, "AT+CCLK?", MDM_CMD_SEND_TIMEOUT, 0, false);
+	set_busy(false);
 	allow_sleep(true);
 	if (iface_ctx.local_time_valid) {
 		memcpy(tm, &iface_ctx.local_time, sizeof(struct tm));
@@ -1162,6 +1233,7 @@ int32_t mdm_hl7800_get_operator_index(void)
 	iface_ctx.last_socket_id = 0;
 	ret = send_at_cmd(NULL, "AT+KCARRIERCFG?", MDM_CMD_SEND_TIMEOUT, 0,
 			  false);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	if (ret < 0) {
@@ -1179,6 +1251,7 @@ int32_t mdm_hl7800_get_functionality(void)
 	wakeup_hl7800();
 	iface_ctx.last_socket_id = 0;
 	ret = send_at_cmd(NULL, "AT+CFUN?", MDM_CMD_SEND_TIMEOUT, 0, false);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -1200,6 +1273,7 @@ int32_t mdm_hl7800_set_functionality(enum mdm_hl7800_functionality mode)
 	iface_ctx.last_socket_id = 0;
 	ret = send_at_cmd(NULL, buf, MDM_CMD_SEND_TIMEOUT,
 			  MDM_DEFAULT_AT_CMD_RETRIES, false);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -1246,6 +1320,7 @@ error:
 	}
 	LOG_DBG("GPS status: %d rate: %u", ret, rate);
 
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1266,6 +1341,7 @@ int32_t mdm_hl7800_polte_register(void)
 	SEND_AT_CMD_EXPECT_OK("AT%POLTECMD=\"REGISTER\"");
 error:
 	LOG_DBG("PoLTE register status: %d", ret);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1289,6 +1365,7 @@ int32_t mdm_hl7800_polte_enable(char *user, char *password)
 
 error:
 	LOG_DBG("PoLTE register status: %d", ret);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1303,6 +1380,7 @@ int32_t mdm_hl7800_polte_locate(void)
 	SEND_AT_CMD_EXPECT_OK("AT%POLTECMD=\"LOCATE\",2,1");
 error:
 	LOG_DBG("PoLTE locate status: %d", ret);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1321,6 +1399,7 @@ int32_t mdm_hl7800_perform_site_survey(void)
 	hl7800_lock();
 	wakeup_hl7800();
 	ret = send_at_cmd(NULL, "at%meas=\"97\"", MDM_CMD_SEND_TIMEOUT, 0, false);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -1342,6 +1421,7 @@ void mdm_hl7800_generate_status_events(void)
 	event_handler(HL7800_EVENT_BANDS, iface_ctx.mdm_bands_string);
 	event_handler(HL7800_EVENT_ACTIVE_BANDS, iface_ctx.mdm_active_bands_string);
 	event_handler(HL7800_EVENT_REVISION, iface_ctx.mdm_revision);
+	generate_state_event();
 	hl7800_unlock();
 }
 
@@ -1391,7 +1471,7 @@ static int send_data(struct hl7800_socket *sock, struct net_pkt *pkt)
 		}
 		snprintk(buf, sizeof(buf), "AT+KUDPSND=%d,\"%s\",%u,%zu",
 			 sock->socket_id, dst_addr,
-			 net_sin(&sock->dst)->sin_port, send_len);
+			 ntohs(net_sin(&sock->dst)->sin_port), send_len);
 	}
 	send_at_cmd(sock, buf, K_NO_WAIT, 0, false);
 
@@ -1539,8 +1619,10 @@ static int pkt_setup_ip_data(struct net_pkt *pkt, struct hl7800_socket *sock)
 			    &((struct sockaddr_in6 *)&sock->src)->sin6_addr)) {
 			return -1;
 		}
-		src_port = ntohs(net_sin6(&sock->src)->sin6_port);
-		dst_port = ntohs(net_sin6(&sock->dst)->sin6_port);
+		net_pkt_set_remote_address(pkt, &sock->dst, sizeof(struct sockaddr_in6));
+		pkt->remote.sa_family = AF_INET6;
+		src_port = net_sin6(&sock->src)->sin6_port;
+		dst_port = net_sin6(&sock->dst)->sin6_port;
 
 		hdr_len = sizeof(struct net_ipv6_hdr);
 	}
@@ -1552,8 +1634,10 @@ static int pkt_setup_ip_data(struct net_pkt *pkt, struct hl7800_socket *sock)
 			    &((struct sockaddr_in *)&sock->src)->sin_addr)) {
 			return -1;
 		}
-		src_port = ntohs(net_sin(&sock->src)->sin_port);
-		dst_port = ntohs(net_sin(&sock->dst)->sin_port);
+		net_pkt_set_remote_address(pkt, &sock->dst, sizeof(struct sockaddr_in));
+		pkt->remote.sa_family = AF_INET;
+		src_port = net_sin(&sock->src)->sin_port;
+		dst_port = net_sin(&sock->dst)->sin_port;
 
 		hdr_len = sizeof(struct net_ipv4_hdr);
 	}
@@ -1762,9 +1846,9 @@ done:
  */
 static bool on_cmd_atcmdinfo_iccid(struct net_buf **buf, uint16_t len)
 {
-	int ret;
 	char value[MDM_CCID_RESP_MAX_SIZE];
 	char *delim;
+	int iccid_len;
 	size_t out_len;
 
 	out_len = net_buf_linearize(value, sizeof(value), *buf, 0, len);
@@ -1783,9 +1867,13 @@ static bool on_cmd_atcmdinfo_iccid(struct net_buf **buf, uint16_t len)
 		LOG_INF("EID: %s", delim + 1);
 	}
 
-	ret = snprintk(iface_ctx.mdm_iccid, sizeof(iface_ctx.mdm_iccid), "%s", value);
-	if (ret > MDM_HL7800_ICCID_MAX_STRLEN) {
-		LOG_WRN("ICCID too long: %d", ret);
+	iccid_len = strlen(value);
+	strncpy(iface_ctx.mdm_iccid, value, sizeof(iface_ctx.mdm_iccid));
+	len = MIN(iccid_len, sizeof(iface_ctx.mdm_iccid) - 1);
+	iface_ctx.mdm_iccid[len] = '\0';
+
+	if (iccid_len > len) {
+		LOG_WRN("ICCID too long: %d (max %d)", iccid_len, len);
 	}
 
 	LOG_INF("ICCID: %s", iface_ctx.mdm_iccid);
@@ -1836,6 +1924,7 @@ static void dns_work_cb(struct k_work *work)
 	struct dns_resolve_context *dnsCtx;
 	struct sockaddr temp_addr;
 	bool valid_address = false;
+	bool retry = false;
 	static const char *const dns_servers_str[] = {
 #ifdef CONFIG_NET_IPV6
 		iface_ctx.dns_v6_string,
@@ -1852,10 +1941,9 @@ static void dns_work_cb(struct k_work *work)
 	if (!valid_address && IS_ENABLED(CONFIG_NET_IPV4)) {
 		/* IPv6 DNS string is not valid, replace it with IPv4 address and recheck */
 		strncpy(iface_ctx.dns_v6_string, iface_ctx.dns_v4_string,
-			strlen(iface_ctx.dns_v4_string));
+			sizeof(iface_ctx.dns_v6_string) - 1);
 		valid_address = net_ipaddr_parse(iface_ctx.dns_v6_string,
-						 strlen(iface_ctx.dns_v6_string),
-						 &temp_addr);
+						 strlen(iface_ctx.dns_v6_string), &temp_addr);
 	}
 #else
 	valid_address =
@@ -1869,12 +1957,29 @@ static void dns_work_cb(struct k_work *work)
 		/* set new DNS addr in DNS resolver */
 		LOG_DBG("Refresh DNS resolver");
 		dnsCtx = dns_resolve_get_default();
-		ret = dns_resolve_reconfigure(dnsCtx, (const char **)dns_servers_str, NULL);
-		if (ret < 0) {
-			LOG_ERR("dns_resolve_init fail (%d)", ret);
-			return;
+		if (dnsCtx->state == DNS_RESOLVE_CONTEXT_INACTIVE) {
+			LOG_DBG("Initializing DNS resolver");
+			ret = dns_resolve_init(dnsCtx, (const char **)dns_servers_str, NULL);
+			if (ret < 0) {
+				LOG_ERR("dns_resolve_init fail (%d)", ret);
+				retry = true;
+			}
+		} else {
+			LOG_DBG("Reconfiguring DNS resolver");
+			ret = dns_resolve_reconfigure(dnsCtx, (const char **)dns_servers_str, NULL);
+			if (ret < 0) {
+				LOG_ERR("dns_resolve_reconfigure fail (%d)", ret);
+				retry = true;
+			}
 		}
-		iface_ctx.dns_ready = true;
+		if (!retry) {
+			LOG_DBG("DNS ready");
+			iface_ctx.dns_ready = true;
+		} else {
+			LOG_WRN("DNS not ready, schedule a retry");
+			k_work_reschedule_for_queue(&hl7800_workq, &iface_ctx.dns_work,
+						    K_SECONDS(DNS_WORK_DELAY_SECS * 2));
+		}
 	}
 #endif
 }
@@ -1928,8 +2033,11 @@ static int hl7800_net_addr6_pton(const char *src, struct in6_addr *dst)
 
 		ipv6_section = (uint16_t)strtol(src, NULL, 10);
 		src = strchr(src, '.');
+		if (!src) {
+			return -EINVAL;
+		}
 		src++;
-		if (!src || *src == '\0') {
+		if (*src == '\0') {
 			return -EINVAL;
 		}
 		ipv6_section = (ipv6_section << 8) | (uint16_t)strtol(src, NULL, 10);
@@ -2100,7 +2208,9 @@ static bool on_cmd_atcmdinfo_ipaddr(struct net_buf **buf, uint16_t len)
 				LOG_ERR("Cannot set iface IPv4 addr");
 			}
 
-			net_if_ipv4_set_netmask(iface_ctx.iface, &iface_ctx.subnet);
+			net_if_ipv4_set_netmask_by_addr(iface_ctx.iface,
+							&new_ipv4_addr,
+							&iface_ctx.subnet);
 			net_if_ipv4_set_gw(iface_ctx.iface, &iface_ctx.gateway);
 #endif
 			/* store the new IP addr */
@@ -2369,6 +2479,7 @@ int mdm_hl7800_set_desired_sleep_level(enum mdm_hl7800_sleep level)
 		hl7800_lock();
 		wakeup_hl7800();
 		r = set_sleep_level();
+		set_busy(false);
 		allow_sleep(true);
 		hl7800_unlock();
 	}
@@ -2376,8 +2487,6 @@ int mdm_hl7800_set_desired_sleep_level(enum mdm_hl7800_sleep level)
 
 	return r;
 }
-
-#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
 
 static void initialize_sleep_level(void)
 {
@@ -2394,6 +2503,7 @@ static void initialize_sleep_level(void)
 	}
 }
 
+#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
 static int set_sleep_level(void)
 {
 	char cmd[sizeof("AT+KSLEEP=#,#,##")];
@@ -2450,6 +2560,34 @@ static void set_sleep_state(enum mdm_hl7800_sleep state)
 		k_sem_reset(&iface_ctx.mdm_awake);
 	}
 	generate_sleep_state_event();
+}
+
+static char *get_state_string(enum mdm_hl7800_state state)
+{
+	/* clang-format off */
+	switch (state) {
+		PREFIXED_SWITCH_CASE_RETURN_STRING(HL7800_STATE, NOT_READY);
+		PREFIXED_SWITCH_CASE_RETURN_STRING(HL7800_STATE, INITIALIZED);
+	default:
+		return "UNKNOWN";
+	}
+	/* clang-format on */
+}
+
+static void generate_state_event(void)
+{
+	struct mdm_hl7800_compound_event event;
+
+	event.code = iface_ctx.state;
+	event.string = get_state_string(iface_ctx.state);
+	LOG_INF("State: %s", event.string);
+	event_handler(HL7800_EVENT_STATE, &event);
+}
+
+static void set_state(enum mdm_hl7800_state state)
+{
+	iface_ctx.state = state;
+	generate_state_event();
 }
 
 static void generate_sleep_state_event(void)
@@ -2525,6 +2663,7 @@ static bool on_cmd_startup_report(struct net_buf **buf, uint16_t len)
 #ifdef CONFIG_MODEM_HL7800_FW_UPDATE
 	if (iface_ctx.fw_updated) {
 		iface_ctx.fw_updated = false;
+		iface_ctx.fw_updating = false;
 		set_fota_state(HL7800_FOTA_REBOOT_AND_RECONFIGURE);
 		/* issue reset after a firmware update to reconfigure modem state */
 		k_work_reschedule_for_queue(&hl7800_workq, &iface_ctx.mdm_reset_work,
@@ -2648,6 +2787,9 @@ static bool on_cmd_atcmdinfo_pdp_authentication_cfg(struct net_buf **buf,
 					MDM_HL7800_APN_USERNAME_MAX_STRLEN)) {
 					iface_ctx.mdm_apn.username[i++] = *p++;
 				}
+			} else {
+				LOG_WRN("Issue parsing APN username");
+				goto done;
 			}
 			LOG_INF("APN Username: %s",
 				iface_ctx.mdm_apn.username);
@@ -2666,6 +2808,7 @@ static bool on_cmd_atcmdinfo_pdp_authentication_cfg(struct net_buf **buf,
 				iface_ctx.mdm_apn.password);
 		}
 	}
+done:
 	net_buf_remove(buf, line_length);
 	net_buf_skipcrlf(buf);
 
@@ -2784,6 +2927,7 @@ static void rssi_query(void)
 	hl7800_lock();
 	wakeup_hl7800();
 	hl7800_query_rssi();
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 }
@@ -2840,6 +2984,7 @@ static void gps_work_callback(struct k_work *work)
 	hl7800_lock();
 	wakeup_hl7800();
 	r = send_at_cmd(NULL, "AT+GNSSLOC?", MDM_CMD_SEND_TIMEOUT, 1, false);
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -3295,6 +3440,7 @@ static void iface_status_work_cb(struct k_work *work)
 		SEND_AT_CMD_IGNORE_ERROR("AT+KBND?");
 	}
 	LOG_DBG("Network state updated");
+	set_busy(false);
 	allow_sleep(true);
 done:
 	hl7800_unlock();
@@ -3609,6 +3755,7 @@ static bool on_cmd_network_report(struct net_buf **buf, uint16_t len)
 	}
 
 	/* keep HL7800 awake because we want to process the network state soon */
+	set_busy(true);
 	allow_sleep(false);
 	/* start work to adjust iface */
 	k_work_reschedule_for_queue(&hl7800_workq, &iface_ctx.iface_status_work,
@@ -3670,7 +3817,7 @@ static bool on_cmd_sockok(struct net_buf **buf, uint16_t len)
 	struct hl7800_socket *sock = NULL;
 
 	sock = socket_from_id(iface_ctx.last_socket_id);
-	if (!sock) {
+	if (!sock || !iface_ctx.socket_cmd) {
 		iface_ctx.last_error = 0;
 		k_sem_give(&iface_ctx.response_sem);
 	} else {
@@ -3736,9 +3883,9 @@ static bool on_cmd_sockerror(struct net_buf **buf, uint16_t len)
 		LOG_ERR("'%s'", string);
 	}
 
+	iface_ctx.last_error = -EIO;
 	sock = socket_from_id(iface_ctx.last_socket_id);
 	if (!sock) {
-		iface_ctx.last_error = -EIO;
 		k_sem_give(&iface_ctx.response_sem);
 	} else {
 		sock->error = -EIO;
@@ -3757,12 +3904,11 @@ static bool on_cmd_sock_error_code(struct net_buf **buf, uint16_t len)
 
 	out_len = net_buf_linearize(value, sizeof(value), *buf, 0, len);
 	value[out_len] = 0;
-
+	iface_ctx.last_error = strtol(value, NULL, 10);
 	LOG_ERR("Error code: %s", value);
 
 	sock = socket_from_id(iface_ctx.last_socket_id);
 	if (!sock) {
-		iface_ctx.last_error = -EIO;
 		k_sem_give(&iface_ctx.response_sem);
 	} else {
 		sock->error = -EIO;
@@ -3886,6 +4032,8 @@ static void delete_untracked_socket_work_cb(struct k_work *item)
 {
 	struct stale_socket *sock = NULL;
 
+	hl7800_lock();
+	wakeup_hl7800();
 	do {
 		sock = dequeue_stale_socket();
 		if (sock != NULL) {
@@ -3894,6 +4042,10 @@ static void delete_untracked_socket_work_cb(struct k_work *item)
 			free_stale_socket(sock);
 		}
 	} while (sock != NULL);
+
+	set_busy(false);
+	allow_sleep(true);
+	hl7800_unlock();
 }
 
 static bool on_cmd_sockcreate(enum net_sock_type type, struct net_buf **buf, uint16_t len)
@@ -3916,7 +4068,8 @@ static bool on_cmd_sockcreate(enum net_sock_type type, struct net_buf **buf, uin
 	if (!sock) {
 		LOG_DBG("look up new socket by creation id");
 		sock = socket_from_id(MDM_CREATE_SOCKET_ID);
-		if (!sock) {
+		if (iface_ctx.reset_sockets || !sock || sock->type != type) {
+			iface_ctx.reset_sockets = false;
 			if (queue_stale_socket(type, iface_ctx.last_socket_id) == 0) {
 				/* delay some time before socket cleanup in case there
 				 * are multiple sockets to cleanup
@@ -3934,6 +4087,9 @@ static bool on_cmd_sockcreate(enum net_sock_type type, struct net_buf **buf, uin
 	sock->reconfig = false;
 	/* don't give back semaphore -- OK to follow */
 done:
+	if (iface_ctx.reconfig_IP_connection) {
+		k_sem_give(&iface_ctx.wait_urc);
+	}
 	return true;
 }
 
@@ -3969,7 +4125,7 @@ static void sockreadrecv_cb_work(struct k_work *work)
 	}
 }
 
-static void sock_read(struct net_buf **buf, uint16_t len)
+static void sock_read(struct net_buf **buf)
 {
 	struct hl7800_socket *sock = NULL;
 	struct net_buf *frag;
@@ -4075,7 +4231,7 @@ static void sock_read(struct net_buf **buf, uint16_t len)
 	}
 
 	frag = NULL;
-	len = net_buf_findcrlf(*buf, &frag);
+	(void)net_buf_findcrlf(*buf, &frag);
 	if (!frag) {
 		LOG_WRN("Unable to find OK start");
 		goto all_rx_data;
@@ -4121,6 +4277,7 @@ done:
 		sock->state = SOCK_IDLE;
 	}
 exit:
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_TX_unlock();
 }
@@ -4138,7 +4295,7 @@ static bool on_cmd_connect(struct net_buf **buf, uint16_t len)
 
 	if (sock->state == SOCK_RX) {
 		remove_data_from_buffer = false;
-		sock_read(buf, len);
+		sock_read(buf);
 	} else {
 		k_sem_give(&sock->sock_send_sem);
 	}
@@ -4272,6 +4429,7 @@ static bool on_cmd_sockdataind(struct net_buf **buf, uint16_t len)
 		k_work_submit_to_queue(&hl7800_workq, &sock->rx_data_work);
 	} else {
 		if (left_bytes > 0) {
+			wakeup_hl7800();
 			rc = start_socket_rx(sock, left_bytes);
 			if (rc < 0) {
 				goto error;
@@ -4477,12 +4635,17 @@ static void process_fw_update_rx(struct net_buf **rx_buf)
 #endif /* CONFIG_MODEM_HL7800_FW_UPDATE */
 
 /* RX thread */
-static void hl7800_rx(void)
+static void hl7800_rx(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	struct net_buf *rx_buf = NULL;
 	struct net_buf *frag = NULL;
 	int i, cmp_res;
-	uint16_t len;
+	uint16_t len, resp_offset;
+	int16_t resp_max_len;
 	size_t out_len;
 	bool cmd_handled = false;
 	static char rx_msg[MDM_HANDLER_MATCH_MAX_LEN];
@@ -4671,6 +4834,30 @@ static void hl7800_rx(void)
 				}
 			}
 
+			if (iface_ctx.user_at_cmd && iface_ctx.user_at_cmd_resp_buf &&
+			    iface_ctx.user_at_cmd_resp_buf_len > 0 && frag && len > 1) {
+				/* Get the current length of the response. Multi-line responses will
+				 * be appended.
+				 */
+				resp_offset = strlen(iface_ctx.user_at_cmd_resp_buf);
+				/* Make sure we have room for the new data and '\n\0' */
+				resp_max_len = iface_ctx.user_at_cmd_resp_buf_len - resp_offset - 2;
+				if (resp_max_len < 0) {
+					resp_max_len = 0;
+				}
+				if (resp_max_len > 0) {
+					out_len = net_buf_linearize(iface_ctx.user_at_cmd_resp_buf +
+									    resp_offset,
+								    resp_max_len, rx_buf, 0, len);
+					/* Add '\n\0' to terminate the response */
+					memcpy(iface_ctx.user_at_cmd_resp_buf + resp_offset +
+						       out_len,
+					       "\n\0", 2);
+				} else {
+					LOG_WRN("User AT cmd resp buf full");
+				}
+			}
+
 			/* Handle unhandled commands */
 			if (IS_ENABLED(HL7800_LOG_UNHANDLED_RX_MSGS) &&
 			    !cmd_handled && frag && len > 1) {
@@ -4699,16 +4886,19 @@ static void shutdown_uart(void)
 {
 #ifdef CONFIG_PM_DEVICE
 	int rc;
+	enum pm_device_state state;
 
-	if (iface_ctx.uart_on) {
+	rc = pm_device_state_get(iface_ctx.mdm_ctx.uart_dev, &state);
+	if (rc) {
+		LOG_ERR("Error getting UART power state (%d)", rc);
+	}
+	if (state != PM_DEVICE_STATE_SUSPENDED) {
 		HL7800_IO_DBG_LOG("Power OFF the UART");
 		uart_irq_rx_disable(iface_ctx.mdm_ctx.uart_dev);
 		rc = pm_device_action_run(iface_ctx.mdm_ctx.uart_dev, PM_DEVICE_ACTION_SUSPEND);
 		if (rc) {
 			LOG_ERR("Error disabling UART peripheral (%d)", rc);
 			uart_irq_rx_enable(iface_ctx.mdm_ctx.uart_dev);
-		} else {
-			iface_ctx.uart_on = false;
 		}
 	}
 #endif
@@ -4718,8 +4908,13 @@ static void power_on_uart(void)
 {
 #ifdef CONFIG_PM_DEVICE
 	int rc;
+	enum pm_device_state state;
 
-	if (!iface_ctx.uart_on) {
+	rc = pm_device_state_get(iface_ctx.mdm_ctx.uart_dev, &state);
+	if (rc) {
+		LOG_ERR("Error getting UART power state (%d)", rc);
+	}
+	if (state != PM_DEVICE_STATE_ACTIVE) {
 		HL7800_IO_DBG_LOG("Power ON the UART");
 		rc = pm_device_action_run(iface_ctx.mdm_ctx.uart_dev, PM_DEVICE_ACTION_RESUME);
 		if (rc) {
@@ -4727,7 +4922,6 @@ static void power_on_uart(void)
 			uart_irq_rx_disable(iface_ctx.mdm_ctx.uart_dev);
 		} else {
 			uart_irq_rx_enable(iface_ctx.mdm_ctx.uart_dev);
-			iface_ctx.uart_on = true;
 		}
 	}
 #endif
@@ -4765,9 +4959,12 @@ static void mdm_vgpio_work_cb(struct k_work *item)
 	hl7800_unlock();
 }
 
-void mdm_vgpio_callback_isr(const struct device *port, struct gpio_callback *cb,
-			    uint32_t pins)
+void mdm_vgpio_callback_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
+	ARG_UNUSED(port);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
 	iface_ctx.vgpio_state = read_pin(1, &hl7800_cfg.gpio[MDM_VGPIO]);
 	HL7800_IO_DBG_LOG("VGPIO:%d", iface_ctx.vgpio_state);
 	if (!iface_ctx.vgpio_state) {
@@ -4775,7 +4972,6 @@ void mdm_vgpio_callback_isr(const struct device *port, struct gpio_callback *cb,
 		if (!iface_ctx.restarting && iface_ctx.initialized) {
 			iface_ctx.reconfig_IP_connection = true;
 		}
-		check_hl7800_awake();
 	} else {
 		if (iface_ctx.off) {
 			return;
@@ -4789,10 +4985,11 @@ void mdm_vgpio_callback_isr(const struct device *port, struct gpio_callback *cb,
 		/* Keep the modem awake to see if it has anything to send to us. */
 		allow_sleep(false);
 		/* Allow the modem to go back to sleep if it was the one who
-		 * sourced the CTS transition.
+		 * sourced the transition.
 		 */
 		allow_sleep(true);
 	}
+	check_hl7800_awake();
 
 	/* When the network state changes a semaphore must be taken.
 	 * This can't be done in interrupt context because the wait time != 0.
@@ -4800,9 +4997,12 @@ void mdm_vgpio_callback_isr(const struct device *port, struct gpio_callback *cb,
 	k_work_submit_to_queue(&hl7800_workq, &iface_ctx.mdm_vgpio_work);
 }
 
-void mdm_uart_dsr_callback_isr(const struct device *port,
-			       struct gpio_callback *cb, uint32_t pins)
+void mdm_uart_dsr_callback_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
+	ARG_UNUSED(port);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
 	iface_ctx.dsr_state = read_pin(1, &hl7800_cfg.gpio[MDM_UART_DSR]);
 	HL7800_IO_DBG_LOG("MDM_UART_DSR:%d", iface_ctx.dsr_state);
 }
@@ -4823,12 +5023,15 @@ static void mark_sockets_for_reconfig(void)
 }
 #endif
 
-void mdm_gpio6_callback_isr(const struct device *port, struct gpio_callback *cb,
-			    uint32_t pins)
+void mdm_gpio6_callback_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
-#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
+	ARG_UNUSED(port);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
 	iface_ctx.gpio6_state = read_pin(1, &hl7800_cfg.gpio[MDM_GPIO6]);
 	HL7800_IO_DBG_LOG("MDM_GPIO6:%d", iface_ctx.gpio6_state);
+#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
 	if (!iface_ctx.gpio6_state) {
 		/* HL7800 is not awake, shut down UART to save power */
 		shutdown_uart();
@@ -4836,101 +5039,94 @@ void mdm_gpio6_callback_isr(const struct device *port, struct gpio_callback *cb,
 		iface_ctx.wait_for_KSUP_tries = 0;
 		iface_ctx.reconfig_IP_connection = true;
 		mark_sockets_for_reconfig();
-		/* TODO: may need to indicate all TCP connections lost here */
 	} else {
 		if (iface_ctx.off) {
 			return;
+		} else if (iface_ctx.vgpio_state) {
+			power_on_uart();
+			/* Keep the modem awake to see if it has anything to send to us. */
+			allow_sleep(false);
+			/* Allow the modem to go back to sleep if it was the one who
+			 * sourced the transition.
+			 */
+			allow_sleep(true);
 		}
-		power_on_uart();
 	}
+	check_hl7800_awake();
 
 	if ((iface_ctx.gpio6_callback != NULL) &&
 	    ((iface_ctx.desired_sleep_level == HL7800_SLEEP_HIBERNATE) ||
 	     (iface_ctx.desired_sleep_level == HL7800_SLEEP_LITE_HIBERNATE))) {
 		iface_ctx.gpio6_callback(iface_ctx.gpio6_state);
 	}
-
-	check_hl7800_awake();
-#else
-	HL7800_IO_DBG_LOG("Spurious gpio6 interrupt from the modem");
 #endif
 }
 
-/**
- * @brief Short spikes in CTS can be removed in the signal used by the application
- */
-static int glitch_filter(int default_state, const struct gpio_dt_spec *spec,
-			 uint32_t usec_to_wait, uint32_t max_iterations)
-{
-	int i = 0;
-	int state1;
-	int state2;
-
-	do {
-		state1 = read_pin(-1, spec);
-		k_busy_wait(usec_to_wait);
-		state2 = read_pin(-1, spec);
-		i += 1;
-	} while (((state1 != state2) || (state1 < 0) || (state2 < 0)) && (i < max_iterations));
-
-	if (i >= max_iterations) {
-		LOG_WRN("glitch filter max iterations exceeded %d", i);
-		if (state1 < 0) {
-			if (state2 < 0) {
-				state1 = read_pin(default_state, spec);
-			} else {
-				state1 = state2;
-			}
-		}
-	}
-
-	return state1;
-}
-
-void mdm_uart_cts_callback(const struct device *port, struct gpio_callback *cb, uint32_t pins)
+void mdm_uart_cts_callback_isr(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
 	ARG_UNUSED(port);
 	ARG_UNUSED(cb);
 	ARG_UNUSED(pins);
+	uint64_t now;
+	uint64_t elapsed;
+	int resample_state;
 
-	iface_ctx.cts_state =
-		glitch_filter(0, &hl7800_cfg.gpio[MDM_UART_CTS],
-			      CONFIG_MODEM_HL7800_CTS_FILTER_US,
-			      CONFIG_MODEM_HL7800_CTS_FILTER_MAX_ITERATIONS);
+	iface_ctx.cts_state = read_pin(0, &hl7800_cfg.gpio[MDM_UART_CTS]);
 
-	/* CTS toggles A LOT,
-	 * comment out the debug print unless we really need it.
-	 */
-	/* HL7800_IO_DBG_LOG("MDM_UART_CTS:%d", iface_ctx.cts_state); */
+	/* Debounce the CTS signal */
+	now = k_ticks_to_us_floor64(k_uptime_ticks());
+	elapsed = now - iface_ctx.last_cts_time;
+	if (iface_ctx.last_cts_time <= 0) {
+		/* This is the first transition we have seen, continue */
+	} else if (elapsed <= CONFIG_MODEM_HL7800_CTS_FILTER_US) {
+		/* CTS changed too quickly, ignore this transition */
+		iface_ctx.last_cts_time = now;
+		return;
+	}
+	iface_ctx.last_cts_time = now;
+	k_busy_wait(CONFIG_MODEM_HL7800_CTS_FILTER_US);
+	resample_state = read_pin(0, &hl7800_cfg.gpio[MDM_UART_CTS]);
+	if (iface_ctx.cts_state != resample_state) {
+		/* CTS changed while we were debouncing, ignore it */
+		iface_ctx.cts_state = resample_state;
+		return;
+	}
+	iface_ctx.cts_state = resample_state;
+	if (iface_ctx.cts_state != iface_ctx.last_cts_state) {
+		iface_ctx.last_cts_state = iface_ctx.cts_state;
+	} else {
+		return;
+	}
+
+	HL7800_IO_DBG_LOG("MDM_UART_CTS:%d(%llu)", iface_ctx.cts_state, elapsed);
+
+#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
+	if (iface_ctx.cts_state && iface_ctx.allow_sleep) {
+		/* HL7800 cannot receive UART data, shut down UART to save power.
+		 * This is critical for proper low power operation. If the UART is disabled
+		 * after VGPIO is low, the UART will not suspend properly.
+		 */
+		shutdown_uart();
+	} else {
+		if (iface_ctx.off) {
+			return;
+		}
+		if (iface_ctx.vgpio_state && iface_ctx.gpio6_state) {
+			power_on_uart();
+			/* Wake up the modem to see if it has anything to send to us. */
+			allow_sleep(false);
+			/* Allow the modem to go back to sleep if it was the one who
+			 * sourced the CTS transition.
+			 */
+			allow_sleep(true);
+		}
+	}
+#endif
 
 	if ((iface_ctx.cts_callback != NULL) &&
 	    (iface_ctx.desired_sleep_level == HL7800_SLEEP_SLEEP)) {
 		iface_ctx.cts_callback(iface_ctx.cts_state);
 	}
-
-#ifdef CONFIG_MODEM_HL7800_LOW_POWER_MODE
-	if (iface_ctx.cts_state) {
-		/* HL7800 is not awake, shut down UART to save power */
-		if (iface_ctx.allow_sleep) {
-			shutdown_uart();
-		}
-	} else {
-		if (iface_ctx.off) {
-			return;
-		}
-		if (iface_ctx.desired_sleep_level != HL7800_SLEEP_HIBERNATE) {
-			power_on_uart();
-			if (iface_ctx.sleep_state == HL7800_SLEEP_SLEEP) {
-				/* Wake up the modem to see if it has anything to send to us. */
-				allow_sleep(false);
-				/* Allow the modem to go back to sleep if it was the one who
-				 * sourced the CTS transition.
-				 */
-				allow_sleep(true);
-			}
-		}
-	}
-#endif
 
 	check_hl7800_awake();
 }
@@ -4941,7 +5137,7 @@ static void modem_reset(void)
 
 	LOG_INF("Modem Reset");
 	/* Hard reset the modem */
-	gpio_pin_set_dt(&hl7800_cfg.gpio[MDM_RESET], 1);
+	modem_assert_reset(true);
 	/* >20 milliseconds required for reset low */
 	k_sleep(MDM_RESET_LOW_TIME);
 
@@ -4964,10 +5160,10 @@ static void modem_reset(void)
 static void modem_run(void)
 {
 	LOG_INF("Modem Run");
-	gpio_pin_set_dt(&hl7800_cfg.gpio[MDM_RESET], 0);
-	k_sleep(MDM_RESET_HIGH_TIME);
 	iface_ctx.off = false;
+	modem_assert_reset(false);
 	allow_sleep(false);
+	k_sleep(MDM_RESET_HIGH_TIME);
 }
 
 static int modem_boot_handler(char *reason)
@@ -4977,9 +5173,7 @@ static int modem_boot_handler(char *reason)
 	LOG_DBG("%s", reason);
 	ret = k_sem_take(&iface_ctx.mdm_awake, MDM_BOOT_TIME);
 	if (ret) {
-		LOG_ERR("Err waiting for boot: %d, DSR: %u", ret,
-			iface_ctx.dsr_state);
-		return -1;
+		LOG_WRN("Err waiting for boot: %d, DSR: %u", ret, iface_ctx.dsr_state);
 	} else {
 		LOG_INF("Modem booted!");
 	}
@@ -5163,6 +5357,7 @@ static int modem_reset_and_configure(void)
 		"\",\"" CONFIG_MODEM_HL7800_PSM_ACTIVE_TIME "\"";
 #endif
 
+	set_busy(true);
 	iface_ctx.restarting = true;
 	iface_ctx.dns_ready = false;
 	if (iface_ctx.iface) {
@@ -5170,6 +5365,7 @@ static int modem_reset_and_configure(void)
 	}
 
 	hl7800_stop_rssi_work();
+	initialize_sleep_level();
 
 reboot:
 	modem_reset();
@@ -5205,11 +5401,11 @@ reboot:
 
 	/* If CONFIG_MODEM_HL7800_RAT_M1 or CONFIG_MODEM_HL7800_RAT_NB1, then
 	 * set the radio mode. This is only done here if the driver has not been
-	 * initialized (!iface_ctx.configured) yet because the public API also
+	 * initialized yet because the public API also
 	 * allows the RAT to be changed (and will reset the modem).
 	 */
 #ifndef CONFIG_MODEM_HL7800_RAT_NO_CHANGE
-	if (!iface_ctx.configured) {
+	if (iface_ctx.state == HL7800_STATE_NOT_READY) {
 #if CONFIG_MODEM_HL7800_RAT_M1
 		if (iface_ctx.mdm_rat != MDM_RAT_CAT_M1) {
 			if (iface_ctx.new_rat_cmd_support) {
@@ -5343,7 +5539,6 @@ reboot:
 	/* enable GPIO6 low power monitoring */
 	SEND_AT_CMD_EXPECT_OK("AT+KHWIOCFG=3,1,6");
 
-	initialize_sleep_level();
 	ret = set_sleep_level();
 	if (ret < 0) {
 		goto error;
@@ -5410,14 +5605,11 @@ reboot:
 		config_apn = true;
 	}
 
-	/* Query PDP authentication context to get APN username/password.
-	 * Temporary Workaround - Ignore error
-	 * On some modules this is returning an error and the response data.
-	 */
-	SEND_AT_CMD_IGNORE_ERROR("AT+WPPP?");
+	/* Disable PDP authentication, the driver does not support it */
+	SEND_AT_CMD_EXPECT_OK("AT+WPPP=0");
 
 #if CONFIG_MODEM_HL7800_SET_APN_NAME_ON_STARTUP
-	if (!iface_ctx.configured) {
+	if (iface_ctx.state == HL7800_STATE_NOT_READY) {
 		if (strncmp(iface_ctx.mdm_apn.value, CONFIG_MODEM_HL7800_APN_NAME,
 			    MDM_HL7800_APN_MAX_STRLEN) != 0) {
 			apn = CONFIG_MODEM_HL7800_APN_NAME;
@@ -5444,13 +5636,7 @@ reboot:
 	SEND_COMPLEX_AT_CMD("AT+CEREG?");
 
 	/* Turn on EPS network registration status reporting */
-	SEND_AT_CMD_EXPECT_OK("AT+CEREG=4");
-
-	/* query all socket configs to cleanup any sockets that are not
-	 * tracked by the driver
-	 */
-	SEND_AT_CMD_EXPECT_OK("AT+KTCPCFG?");
-	SEND_AT_CMD_EXPECT_OK("AT+KUDPCFG?");
+	SEND_AT_CMD_EXPECT_OK("AT+CEREG=5");
 
 	/* Enabled the LTE radio */
 #if !defined(CONFIG_MODEM_HL7800_BOOT_IN_AIRPLANE_MODE)
@@ -5462,7 +5648,8 @@ reboot:
 	 */
 	LOG_INF("Modem ready!");
 	iface_ctx.restarting = false;
-	iface_ctx.configured = true;
+	set_state(HL7800_STATE_INITIALIZED);
+	set_busy(false);
 	allow_sleep(sleep);
 	/* trigger APN update event */
 	event_handler(HL7800_EVENT_APN_UPDATE, &iface_ctx.mdm_apn);
@@ -5483,7 +5670,7 @@ reboot:
 
 error:
 	LOG_ERR("Unable to configure modem");
-	iface_ctx.configured = false;
+	set_state(HL7800_STATE_NOT_READY);
 	set_network_state(HL7800_UNABLE_TO_CONFIGURE);
 	/* Kernel will fault with non-zero return value.
 	 * Allow other parts of application to run when modem cannot be configured.
@@ -5513,20 +5700,16 @@ static void mdm_reset_work_callback(struct k_work *item)
 {
 	ARG_UNUSED(item);
 
-	mdm_hl7800_reset();
+	hl7800_lock();
+
+	(void)modem_reset_and_configure();
+
+	hl7800_unlock();
 }
 
 int32_t mdm_hl7800_reset(void)
 {
-	int ret;
-
-	hl7800_lock();
-
-	ret = modem_reset_and_configure();
-
-	hl7800_unlock();
-
-	return ret;
+	return k_work_reschedule_for_queue(&hl7800_workq, &iface_ctx.mdm_reset_work, K_NO_WAIT);
 }
 
 static void mdm_power_off_work_callback(struct k_work *item)
@@ -5552,13 +5735,17 @@ static void mdm_power_off_work_callback(struct k_work *item)
 	}
 	prepare_io_for_reset();
 	iface_ctx.dns_ready = false;
-	iface_ctx.configured = false;
+	set_state(HL7800_STATE_NOT_READY);
 	iface_ctx.off = true;
+	set_busy(false);
 	/* bring the iface down */
 	if (iface_ctx.iface) {
 		net_if_carrier_off(iface_ctx.iface);
 	}
 	LOG_INF("Modem powered off");
+	set_sleep_state(HL7800_SLEEP_UNINITIALIZED);
+	set_network_state(HL7800_NOT_REGISTERED);
+	set_startup_state(HL7800_STARTUP_STATE_UNKNOWN);
 
 	hl7800_unlock();
 }
@@ -5673,10 +5860,10 @@ static int configure_TCP_socket(struct hl7800_socket *sock)
 
 	if (sock->dst.sa_family == AF_INET6) {
 		af = MDM_HL7800_SOCKET_AF_IPV6;
-		dst_port = net_sin6(&sock->dst)->sin6_port;
+		dst_port = ntohs(net_sin6(&sock->dst)->sin6_port);
 	} else if (sock->dst.sa_family == AF_INET) {
 		af = MDM_HL7800_SOCKET_AF_IPV4;
-		dst_port = net_sin(&sock->dst)->sin_port;
+		dst_port = ntohs(net_sin(&sock->dst)->sin_port);
 	} else {
 		return -EINVAL;
 	}
@@ -5746,14 +5933,14 @@ static int reconfigure_IP_connection(void)
 	int ret = 0;
 
 	if (iface_ctx.reconfig_IP_connection) {
-		iface_ctx.reconfig_IP_connection = false;
-
 		/* reconfigure GPRS connection so sockets can be used */
 		ret = setup_gprs_connection(iface_ctx.mdm_apn.value);
 		if (ret < 0) {
 			LOG_ERR("AT+KCNXCFG= ret:%d", ret);
 			goto done;
 		}
+
+		k_sem_reset(&iface_ctx.wait_urc);
 
 		/* query all TCP socket configs */
 		ret = send_at_cmd(NULL, "AT+KTCPCFG?", MDM_CMD_SEND_TIMEOUT, 0,
@@ -5762,6 +5949,14 @@ static int reconfigure_IP_connection(void)
 		/* query all UDP socket configs */
 		ret = send_at_cmd(NULL, "AT+KUDPCFG?", MDM_CMD_SEND_TIMEOUT, 0,
 				  false);
+
+		ret = k_sem_take(&iface_ctx.wait_urc, STORED_SOCKETS_DELAY);
+		if (ret == -EAGAIN) {
+			/* There are no sockets to reset */
+			iface_ctx.reset_sockets = false;
+		}
+
+		iface_ctx.reconfig_IP_connection = false;
 	}
 
 done:
@@ -5802,18 +5997,18 @@ static int offload_get(sa_family_t family, enum net_sock_type type,
 		wakeup_hl7800();
 
 		/* reconfig IP connection if necessary */
-		if (reconfigure_IP_connection() < 0) {
-			socket_put(sock);
-			goto done;
-		}
+		(void)reconfigure_IP_connection();
 
-		ret = configure_UDP_socket(sock);
-		if (ret < 0) {
-			socket_put(sock);
-			goto done;
+		if (!sock->created) {
+			ret = configure_UDP_socket(sock);
+			if (ret < 0) {
+				socket_put(sock);
+				goto done;
+			}
 		}
 	}
 done:
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 	return ret;
@@ -5894,7 +6089,7 @@ static int offload_connect(struct net_context *context,
 	if (addr->sa_family == AF_INET6) {
 		net_ipaddr_copy(&net_sin6(&sock->dst)->sin6_addr,
 				&net_sin6(addr)->sin6_addr);
-		dst_port = ntohs(net_sin6(addr)->sin6_port);
+		dst_port = net_sin6(addr)->sin6_port;
 		net_sin6(&sock->dst)->sin6_port = dst_port;
 	} else
 #endif
@@ -5902,7 +6097,7 @@ static int offload_connect(struct net_context *context,
 		if (addr->sa_family == AF_INET) {
 		net_ipaddr_copy(&net_sin(&sock->dst)->sin_addr,
 				&net_sin(addr)->sin_addr);
-		dst_port = ntohs(net_sin(addr)->sin_port);
+		dst_port = net_sin(addr)->sin_port;
 		net_sin(&sock->dst)->sin_port = dst_port;
 	} else
 #endif
@@ -5911,7 +6106,7 @@ static int offload_connect(struct net_context *context,
 	}
 
 	if (dst_port < 0) {
-		LOG_ERR("Invalid port: %d", dst_port);
+		LOG_ERR("Invalid port: %d", ntohs(dst_port));
 		return -EINVAL;
 	}
 
@@ -5938,6 +6133,7 @@ static int offload_connect(struct net_context *context,
 	}
 
 done:
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -5961,7 +6157,7 @@ static int offload_sendto(struct net_pkt *pkt, const struct sockaddr *dst_addr,
 {
 	struct net_context *context = net_pkt_context(pkt);
 	struct hl7800_socket *sock;
-	int ret, dst_port = 0;
+	int ret;
 
 	if (!context) {
 		return -EINVAL;
@@ -5977,16 +6173,14 @@ static int offload_sendto(struct net_pkt *pkt, const struct sockaddr *dst_addr,
 	if (dst_addr->sa_family == AF_INET6) {
 		net_ipaddr_copy(&net_sin6(&sock->dst)->sin6_addr,
 				&net_sin6(dst_addr)->sin6_addr);
-		dst_port = ntohs(net_sin6(dst_addr)->sin6_port);
-		net_sin6(&sock->dst)->sin6_port = dst_port;
+		net_sin6(&sock->dst)->sin6_port = net_sin6(dst_addr)->sin6_port;
 	} else
 #endif
 #if defined(CONFIG_NET_IPV4)
 		if (dst_addr->sa_family == AF_INET) {
 		net_ipaddr_copy(&net_sin(&sock->dst)->sin_addr,
 				&net_sin(dst_addr)->sin_addr);
-		dst_port = ntohs(net_sin(dst_addr)->sin_port);
-		net_sin(&sock->dst)->sin_port = dst_port;
+		net_sin(&sock->dst)->sin_port = net_sin(dst_addr)->sin_port;
 	} else
 #endif
 	{
@@ -6001,6 +6195,7 @@ static int offload_sendto(struct net_pkt *pkt, const struct sockaddr *dst_addr,
 
 	ret = send_data(sock, pkt);
 
+	set_busy(false);
 	allow_sleep(true);
 	hl7800_unlock();
 
@@ -6100,6 +6295,7 @@ static int offload_put(struct net_context *context)
 		/* delete session */
 		delete_socket(sock, sock->type, sock->socket_id);
 	}
+	set_busy(false);
 	allow_sleep(true);
 
 	socket_put(sock);
@@ -6163,11 +6359,14 @@ int32_t mdm_hl7800_update_fw(char *file_path)
 		goto err;
 	}
 
+	wakeup_hl7800();
+
 	/* turn on device service indications */
 	ret = send_at_cmd(NULL, "AT+WDSI=2", MDM_CMD_SEND_TIMEOUT, 0, false);
 	if (ret < 0) {
 		goto err;
 	}
+	iface_ctx.fw_updating = true;
 
 	notify_all_tcp_sockets_closed();
 	hl7800_stop_rssi_work();
@@ -6206,6 +6405,10 @@ static int hl7800_init(const struct device *dev)
 	ARG_UNUSED(dev);
 
 	LOG_DBG("HL7800 Init");
+	iface_ctx.reset_sockets = true;
+
+	/* The UART starts in the on state and CTS is set low by the HL7800 */
+	iface_ctx.cts_state = iface_ctx.last_cts_state = 0;
 
 	/* Prevent the network interface from starting until
 	 * the modem has been initialized
@@ -6220,7 +6423,7 @@ static int hl7800_init(const struct device *dev)
 
 	/* init sockets */
 	for (i = 0; i < MDM_MAX_SOCKETS; i++) {
-		iface_ctx.sockets[i].socket_id = -1;
+		iface_ctx.sockets[i].socket_id = MDM_INVALID_SOCKET_ID;
 		k_work_init(&iface_ctx.sockets[i].recv_cb_work,
 			    sockreadrecv_cb_work);
 		k_work_init(&iface_ctx.sockets[i].rx_data_work,
@@ -6232,6 +6435,7 @@ static int hl7800_init(const struct device *dev)
 	iface_ctx.last_socket_id = 0;
 	k_sem_init(&iface_ctx.response_sem, 0, 1);
 	k_sem_init(&iface_ctx.mdm_awake, 0, 1);
+	k_sem_init(&iface_ctx.wait_urc, 0, 1);
 
 	/* initialize the work queue */
 	k_work_queue_start(&hl7800_workq, hl7800_workq_stack,
@@ -6258,6 +6462,7 @@ static int hl7800_init(const struct device *dev)
 	k_work_init(&iface_ctx.finish_fw_update_work,
 		    finish_fw_update_work_callback);
 	iface_ctx.fw_updated = false;
+	iface_ctx.fw_updating = false;
 #endif
 
 	/* setup port devices and pin directions */
@@ -6325,9 +6530,6 @@ static int hl7800_init(const struct device *dev)
 		return ret;
 	}
 
-	/* when this driver starts, the UART peripheral is already enabled */
-	iface_ctx.uart_on = true;
-
 	modem_assert_wake(false);
 	modem_assert_pwr_on(false);
 	modem_assert_fast_shutd(false);
@@ -6385,7 +6587,7 @@ static int hl7800_init(const struct device *dev)
 	}
 
 	/* UART CTS */
-	gpio_init_callback(&iface_ctx.mdm_uart_cts_cb, mdm_uart_cts_callback,
+	gpio_init_callback(&iface_ctx.mdm_uart_cts_cb, mdm_uart_cts_callback_isr,
 			   BIT(hl7800_cfg.gpio[MDM_UART_CTS].pin));
 	ret = gpio_add_callback(hl7800_cfg.gpio[MDM_UART_CTS].port,
 				&iface_ctx.mdm_uart_cts_cb);
@@ -6421,7 +6623,7 @@ static int hl7800_init(const struct device *dev)
 	k_thread_name_set(
 		k_thread_create(&hl7800_rx_thread, hl7800_rx_stack,
 				K_THREAD_STACK_SIZEOF(hl7800_rx_stack),
-				(k_thread_entry_t)hl7800_rx, NULL, NULL, NULL,
+				hl7800_rx, NULL, NULL, NULL,
 				RX_THREAD_PRIORITY, 0, K_NO_WAIT),
 		"hl7800 rx");
 

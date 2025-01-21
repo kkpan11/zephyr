@@ -36,9 +36,9 @@ struct log_source_dynamic_data {
 	 */
 	uint32_t dummy[2];
 #endif
-#if defined(CONFIG_RISCV) && defined(CONFIG_64BIT)
-	/* Workaround: RV64 needs to ensure that structure is just 8 bytes. */
-	uint32_t dummy;
+#if defined(CONFIG_64BIT)
+	/* Workaround: Ensure that structure size is a multiple of 8 bytes. */
+	uint32_t dummy_64;
 #endif
 };
 
@@ -137,11 +137,16 @@ struct log_source_dynamic_data {
 /**
  * @brief Declare a logger instance pointer in the module structure.
  *
+ * If logging is disabled then element in the structure is still declared to avoid
+ * compilation issues. If compiler supports zero length arrays then it is utilized
+ * to not use any space, else a byte array is created.
+ *
  * @param _name Name of a structure element that will have a pointer to logging
  * instance object.
  */
 #define LOG_INSTANCE_PTR_DECLARE(_name)	\
-	IF_ENABLED(CONFIG_LOG, (Z_LOG_INSTANCE_STRUCT * _name))
+	COND_CODE_1(CONFIG_LOG, (Z_LOG_INSTANCE_STRUCT * _name), \
+				(int _name[TOOLCHAIN_HAS_ZLA ? 0 : 1]))
 
 #define Z_LOG_RUNTIME_INSTANCE_REGISTER(_module_name, _inst_name) \
 	STRUCT_SECTION_ITERABLE_ALTERNATE(log_dynamic, log_source_dynamic_data, \

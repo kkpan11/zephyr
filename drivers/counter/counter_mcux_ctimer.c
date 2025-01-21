@@ -277,7 +277,7 @@ static int mcux_lpc_ctimer_init(const struct device *dev)
 	return 0;
 }
 
-static const struct counter_driver_api mcux_ctimer_driver_api = {
+static DEVICE_API(counter, mcux_ctimer_driver_api) = {
 	.start = mcux_lpc_ctimer_start,
 	.stop = mcux_lpc_ctimer_stop,
 	.get_value = mcux_lpc_ctimer_get_value,
@@ -300,7 +300,7 @@ static const struct counter_driver_api mcux_ctimer_driver_api = {
 		.base = (CTIMER_Type *)DT_INST_REG_ADDR(id),		\
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(id)),	\
 		.clock_subsys =				\
-		(clock_control_subsys_t)(DT_INST_CLOCKS_CELL(id, name) + MCUX_CTIMER_CLK_OFFSET),\
+		(clock_control_subsys_t)(DT_INST_CLOCKS_CELL(id, name)),\
 		.mode = DT_INST_PROP(id, mode),						\
 		.input = DT_INST_PROP(id, input),					\
 		.prescale = DT_INST_PROP(id, prescale),				\

@@ -1,12 +1,13 @@
-.. _task_wdt_sample:
+.. zephyr:code-sample:: task-wdt
+   :name: Task watchdog
+   :relevant-api: task_wdt_api
 
-Task Watchdog Sample
-####################
+   Monitor a thread using a task watchdog.
 
 Overview
 ********
 
-This sample allows to test the task watchdog subsystem.
+This sample allows to test the :ref:`task watchdog <task_wdt_api>` subsystem.
 
 Building and Running
 ********************
@@ -18,7 +19,7 @@ fallback. Otherwise the task watchdog will run independently.
 Building and Running for ST Nucleo L073RZ
 =========================================
 The sample can be built and executed for the
-:ref:`nucleo_l073rz_board` as follows:
+:zephyr:board:`nucleo_l073rz` as follows:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/subsys/task_wdt

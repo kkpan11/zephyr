@@ -25,9 +25,8 @@
 #include <zephyr/irq.h>
 LOG_MODULE_REGISTER(dac_sam, CONFIG_DAC_LOG_LEVEL);
 
-BUILD_ASSERT(IS_ENABLED(CONFIG_SOC_SERIES_SAME70) ||
-	     IS_ENABLED(CONFIG_SOC_SERIES_SAMV71),
-	     "Only SAME70, SAMV71 series devices are currently supported.");
+BUILD_ASSERT(IS_ENABLED(CONFIG_SOC_SERIES_SAMX7X)
+	     "Only SAMx7x series devices are currently supported.");
 
 #define DAC_CHANNEL_NO  2
 
@@ -85,6 +84,10 @@ static int dac_sam_channel_setup(const struct device *dev,
 		return -ENOTSUP;
 	}
 
+	if (channel_cfg->internal) {
+		return -ENOTSUP;
+	}
+
 	/* Enable Channel */
 	dac->DACC_CHER = DACC_CHER_CH0 << channel_cfg->channel_id;
 
@@ -104,6 +107,11 @@ static int dac_sam_write_value(const struct device *dev, uint8_t channel,
 
 	if (dac->DACC_IMR & (DACC_IMR_TXRDY0 << channel)) {
 		/* Attempting to send data on channel that's already in use */
+		return -EINVAL;
+	}
+
+	if (value >= BIT(12)) {
+		LOG_ERR("value %d out of range", value);
 		return -EINVAL;
 	}
 
@@ -153,7 +161,7 @@ static int dac_sam_init(const struct device *dev)
 	return 0;
 }
 
-static const struct dac_driver_api dac_sam_driver_api = {
+static DEVICE_API(dac, dac_sam_driver_api) = {
 	.channel_setup = dac_sam_channel_setup,
 	.write_value = dac_sam_write_value,
 };

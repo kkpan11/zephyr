@@ -16,7 +16,7 @@
 #include <stdio.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(fpga_zynqmp);
+LOG_MODULE_REGISTER(fpga_zynqmp, CONFIG_FPGA_LOG_LEVEL);
 
 static void power_up_fpga(void)
 {
@@ -293,7 +293,7 @@ static int zynqmp_fpga_load(const struct device *dev, uint32_t *image_ptr,
 	}
 
 	for (int i = 0; i < (img_size / 4); i++) {
-		*(BITSTREAM + i) = __bswap_32(*(addr + i));
+		*(BITSTREAM + i) = BSWAP_32(*(addr + i));
 	}
 
 	init_pcap(dev);
@@ -315,7 +315,7 @@ static int zynqmp_fpga_init(const struct device *dev)
 
 static struct zynqmp_fpga_data fpga_data;
 
-static const struct fpga_driver_api zynqmp_api = {
+static DEVICE_API(fpga, zynqmp_api) = {
 	.reset = zynqmp_fpga_reset,
 	.load = zynqmp_fpga_load,
 	.get_status = zynqmp_fpga_get_status,
@@ -323,4 +323,4 @@ static const struct fpga_driver_api zynqmp_api = {
 };
 
 DEVICE_DT_INST_DEFINE(0, &zynqmp_fpga_init, NULL, &fpga_data, NULL,
-	      APPLICATION, CONFIG_FPGA_INIT_PRIORITY, &zynqmp_api);
+	      POST_KERNEL, CONFIG_FPGA_INIT_PRIORITY, &zynqmp_api);

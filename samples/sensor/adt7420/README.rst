@@ -1,7 +1,8 @@
-.. _adt7420:
+.. zephyr:code-sample:: adt7420
+   :name: ADT7420 high-accuracy digital I2C temperature sensor
+   :relevant-api: sensor_interface
 
-ADT7420: High accuracy digital I2C temperature sensor
-#####################################################
+   Get temperature data from an ADT7420 sensor using polling and window mode.
 
 Description
 ***********
@@ -18,7 +19,7 @@ upper and lower window boundaries.
 References
 **********
 
- - ADT7420: http://www.analog.com/adt7420
+ - ADT7420: https://www.analog.com/adt7420
 
 Wiring
 *******
@@ -41,7 +42,7 @@ In this example below the :ref:`nrf52dk_nrf52832` board is used.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/sensor/adt7420
-   :board: nrf52dk_nrf52832
+   :board: nrf52dk/nrf52832
    :goals: build flash
 
 Sample Output

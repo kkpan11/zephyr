@@ -78,7 +78,6 @@ static void rx_ended(uint8_t *data, size_t len)
 
 static void tx_sar_conf(void)
 {
-#ifdef CONFIG_BT_MESH_V1d1
 	/* Reconfigure SAR Transmitter state so that the transport layer doesn't
 	 * retransmit.
 	 */
@@ -97,12 +96,10 @@ static void tx_sar_conf(void)
 #else
 	bt_mesh.sar_tx = tx_set;
 #endif
-#endif
 }
 
 static void rx_sar_conf(void)
 {
-#ifdef CONFIG_BT_MESH_V1d1
 	/* Reconfigure SAR Receiver state so that the transport layer does
 	 * generate Segmented Acks as rarely as possible.
 	 */
@@ -118,7 +115,6 @@ static void rx_sar_conf(void)
 	bt_mesh_test_sar_conf_set(NULL, &rx_set);
 #else
 	bt_mesh.sar_rx = rx_set;
-#endif
 #endif
 }
 
@@ -141,14 +137,16 @@ static void test_tx_immediate_replay_attack(void)
 		is_tx_succeeded = false;
 
 		memset(test_data, i, sizeof(test_data));
-		ASSERT_OK(bt_mesh_test_send_ra(rx_cfg.addr, test_data,
-			sizeof(test_data), &send_cb, &sem));
+		ASSERT_OK(bt_mesh_test_send_data(rx_cfg.addr, NULL, test_data, sizeof(test_data),
+						 &send_cb, &sem));
 
 		if (k_sem_take(&sem, K_SECONDS(TEST_DATA_WAITING_TIME))) {
 			LOG_ERR("Send timed out");
 		}
 
 		ASSERT_TRUE(is_tx_succeeded);
+		/* Let complete advertising of the previous transaction to prevent collisions. */
+		k_sleep(K_SECONDS(1));
 	}
 
 	bt_mesh.seq = seq;
@@ -157,14 +155,16 @@ static void test_tx_immediate_replay_attack(void)
 		is_tx_succeeded = true;
 
 		memset(test_data, i, sizeof(test_data));
-		ASSERT_OK(bt_mesh_test_send_ra(rx_cfg.addr, test_data,
-			sizeof(test_data), &send_cb, &sem));
+		ASSERT_OK(bt_mesh_test_send_data(rx_cfg.addr, NULL, test_data, sizeof(test_data),
+						 &send_cb, &sem));
 
 		if (k_sem_take(&sem, K_SECONDS(TEST_DATA_WAITING_TIME))) {
 			LOG_ERR("Send timed out");
 		}
 
 		ASSERT_TRUE(!is_tx_succeeded);
+		/* Let complete advertising of the previous transaction to prevent collisions. */
+		k_sleep(K_SECONDS(1));
 	}
 
 	PASS();
@@ -174,11 +174,11 @@ static void test_rx_immediate_replay_attack(void)
 {
 	bt_mesh_test_setup();
 	rx_sar_conf();
-	bt_mesh_test_ra_cb_setup(rx_ended);
+	bt_mesh_test_data_cb_setup(rx_ended);
 
 	k_sleep(K_SECONDS(6 * TEST_DATA_WAITING_TIME));
 
-	ASSERT_TRUE(rx_cnt == 3, "Device didn't receive expected data");
+	ASSERT_TRUE_MSG(rx_cnt == 3, "Device didn't receive expected data\n");
 
 	PASS();
 }
@@ -200,28 +200,32 @@ static void test_tx_power_replay_attack(void)
 		is_tx_succeeded = true;
 
 		memset(test_data, i, sizeof(test_data));
-		ASSERT_OK(bt_mesh_test_send_ra(rx_cfg.addr, test_data,
-			sizeof(test_data), &send_cb, &sem));
+		ASSERT_OK(bt_mesh_test_send_data(rx_cfg.addr, NULL, test_data, sizeof(test_data),
+						 &send_cb, &sem));
 
 		if (k_sem_take(&sem, K_SECONDS(TEST_DATA_WAITING_TIME))) {
 			LOG_ERR("Send timed out");
 		}
 
 		ASSERT_TRUE(!is_tx_succeeded);
+		/* Let complete advertising of the previous transaction to prevent collisions. */
+		k_sleep(K_SECONDS(1));
 	}
 
 	for (int i = 0; i < 3; i++) {
 		is_tx_succeeded = false;
 
 		memset(test_data, i, sizeof(test_data));
-		ASSERT_OK(bt_mesh_test_send_ra(rx_cfg.addr, test_data,
-			sizeof(test_data), &send_cb, &sem));
+		ASSERT_OK(bt_mesh_test_send_data(rx_cfg.addr, NULL, test_data, sizeof(test_data),
+						 &send_cb, &sem));
 
 		if (k_sem_take(&sem, K_SECONDS(TEST_DATA_WAITING_TIME))) {
 			LOG_ERR("Send timed out");
 		}
 
 		ASSERT_TRUE(is_tx_succeeded);
+		/* Let complete advertising of the previous transaction to prevent collisions. */
+		k_sleep(K_SECONDS(1));
 	}
 
 	PASS();
@@ -231,11 +235,11 @@ static void test_rx_power_replay_attack(void)
 {
 	bt_mesh_test_setup();
 	rx_sar_conf();
-	bt_mesh_test_ra_cb_setup(rx_ended);
+	bt_mesh_test_data_cb_setup(rx_ended);
 
 	k_sleep(K_SECONDS(6 * TEST_DATA_WAITING_TIME));
 
-	ASSERT_TRUE(rx_cnt == 3, "Device didn't receive expected data");
+	ASSERT_TRUE_MSG(rx_cnt == 3, "Device didn't receive expected data\n");
 
 	PASS();
 }
@@ -377,11 +381,11 @@ static void test_rx_rpl_frag(void)
 		.ctx.addr = 100,
 		.local_match = 1,
 	};
-	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl, false));
 	rx.ctx.addr = 101;
-	ASSERT_FALSE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_FALSE(bt_mesh_rpl_check(&rx, &rpl, false));
 	rx.ctx.addr = 102;
-	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl, false));
 
 	/* Let the settings store RPL. */
 	k_sleep(K_SECONDS(CONFIG_BT_MESH_RPL_STORE_TIMEOUT));
@@ -451,11 +455,11 @@ static void test_rx_reboot_after_defrag(void)
 		.ctx.addr = 100,
 		.local_match = 1,
 	};
-	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl, false));
 	rx.ctx.addr = 101;
-	ASSERT_FALSE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_FALSE(bt_mesh_rpl_check(&rx, &rpl, false));
 	rx.ctx.addr = 102;
-	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl));
+	ASSERT_TRUE(bt_mesh_rpl_check(&rx, &rpl, false));
 
 	PASS();
 }

@@ -12,10 +12,6 @@
 #include <offsets_short_arch.h>
 #include <ksched.h>
 
-#if !defined(__GNUC__)
-#error __FILE__ goes only with Cortex-M GCC
-#endif
-
 #if !defined(CONFIG_ARMV6_M_ARMV8_M_BASELINE) && \
 	!defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
 #error "Unsupported architecture"
@@ -29,7 +25,7 @@
 static struct k_thread user_thread;
 static K_THREAD_STACK_DEFINE(user_thread_stack, 1024);
 
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #include "test_syscalls.h"
 
 void z_impl_test_arm_user_syscall(void)
@@ -66,7 +62,7 @@ static inline void z_vrfy_test_arm_user_syscall(void)
 {
 	z_impl_test_arm_user_syscall();
 }
-#include <syscalls/test_arm_user_syscall_mrsh.c>
+#include <zephyr/syscalls/test_arm_user_syscall_mrsh.c>
 
 
 void arm_isr_handler(const void *args)
@@ -119,8 +115,12 @@ void arm_isr_handler(const void *args)
 	}
 }
 
-static void user_thread_entry(uint32_t irq_line)
+static void user_thread_entry(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	uint32_t irq_line = POINTER_TO_INT(p1);
 	/* User Thread */
 #if !defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
 	ARG_UNUSED(irq_line);
@@ -234,7 +234,7 @@ ZTEST(arm_thread_swap, test_arm_syscalls)
 	k_thread_create(&user_thread,
 		user_thread_stack,
 		K_THREAD_STACK_SIZEOF(user_thread_stack),
-		(k_thread_entry_t)user_thread_entry,
+		user_thread_entry,
 		(uint32_t *)i, NULL, NULL,
 		K_PRIO_COOP(PRIORITY), K_USER,
 		K_NO_WAIT);
@@ -267,7 +267,7 @@ static inline void z_vrfy_test_arm_cpu_write_reg(void)
 {
 	z_impl_test_arm_cpu_write_reg();
 }
-#include <syscalls/test_arm_cpu_write_reg_mrsh.c>
+#include <zephyr/syscalls/test_arm_cpu_write_reg_mrsh.c>
 
 /**
  * @brief Test CPU scrubs registers after system call

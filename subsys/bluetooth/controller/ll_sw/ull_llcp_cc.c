@@ -68,7 +68,7 @@ static void cc_ntf_established(struct ll_conn *conn, struct proc_ctx *ctx)
 
 	ntf->hdr.type = NODE_RX_TYPE_CIS_ESTABLISHED;
 	ntf->hdr.handle = conn->lll.handle;
-	ntf->hdr.rx_ftr.param = ll_conn_iso_stream_get(ctx->data.cis_create.cis_handle);
+	ntf->rx_ftr.param = ll_conn_iso_stream_get(ctx->data.cis_create.cis_handle);
 
 	pdu = (struct node_rx_conn_iso_estab *)ntf->pdu;
 
@@ -85,7 +85,7 @@ static void cc_ntf_established(struct ll_conn *conn, struct proc_ctx *ctx)
 /* LLCP Remote Procedure FSM states */
 enum {
 	/* Establish Procedure */
-	RP_CC_STATE_IDLE,
+	RP_CC_STATE_IDLE = LLCP_STATE_IDLE,
 	RP_CC_STATE_WAIT_RX_CIS_REQ,
 	RP_CC_STATE_WAIT_REPLY,
 	RP_CC_STATE_WAIT_TX_CIS_RSP,
@@ -297,14 +297,6 @@ static void rp_cc_state_idle(struct ll_conn *conn, struct proc_ctx *ctx, uint8_t
 		/* Ignore other evts */
 		break;
 	}
-}
-
-static inline bool phy_valid(uint8_t phy)
-{
-	/* This is equivalent to:
-	 * exactly one bit set, and no bit set is rfu's
-	 */
-	return (phy == PHY_1M || phy == PHY_2M || phy == PHY_CODED);
 }
 
 static uint8_t rp_cc_check_phy(struct ll_conn *conn, struct proc_ctx *ctx,
@@ -590,17 +582,6 @@ void llcp_rp_cc_rx(struct ll_conn *conn, struct proc_ctx *ctx, struct node_rx_pd
 	}
 }
 
-void llcp_rp_cc_init_proc(struct proc_ctx *ctx)
-{
-	switch (ctx->proc) {
-	case PROC_CIS_CREATE:
-		ctx->state = RP_CC_STATE_IDLE;
-		break;
-	default:
-		LL_ASSERT(0);
-	}
-}
-
 bool llcp_rp_cc_awaiting_reply(struct proc_ctx *ctx)
 {
 	return (ctx->state == RP_CC_STATE_WAIT_REPLY);
@@ -642,7 +623,8 @@ static void lp_cc_execute_fsm(struct ll_conn *conn, struct proc_ctx *ctx, uint8_
 
 /* LLCP Local Procedure FSM states */
 enum {
-	LP_CC_STATE_IDLE,
+	LP_CC_STATE_IDLE = LLCP_STATE_IDLE,
+	LP_CC_STATE_WAIT_NTF_AVAIL,
 	LP_CC_STATE_WAIT_OFFSET_CALC,
 	LP_CC_STATE_WAIT_OFFSET_CALC_TX_REQ,
 	LP_CC_STATE_WAIT_TX_CIS_REQ,
@@ -839,13 +821,33 @@ static void lp_cc_st_idle(struct ll_conn *conn, struct proc_ctx *ctx, uint8_t ev
 			} else {
 				/* Peer doesn't support CIS Peripheral so report unsupported */
 				ctx->data.cis_create.error = BT_HCI_ERR_UNSUPP_REMOTE_FEATURE;
-				lp_cc_complete(conn, ctx, evt, param);
+				ctx->state = LP_CC_STATE_WAIT_NTF_AVAIL;
 			}
 			break;
 		default:
 			/* Unknown procedure */
 			LL_ASSERT(0);
 			break;
+		}
+		break;
+	default:
+		/* Ignore other evts */
+		break;
+	}
+}
+
+static void lp_cc_state_wait_ntf_avail(struct ll_conn *conn, struct proc_ctx *ctx, uint8_t evt,
+				 void *param)
+{
+	switch (evt) {
+	case LP_CC_EVT_RUN:
+		if (llcp_ntf_alloc_is_available()) {
+			ctx->node_ref.rx = llcp_ntf_alloc();
+			/* Mark node as RETAIN to trigger put/sched */
+			ctx->node_ref.rx->hdr.type = NODE_RX_TYPE_RETAIN;
+
+			/* Now we're good to complete procedure*/
+			lp_cc_complete(conn, ctx, evt, param);
 		}
 		break;
 	default:
@@ -900,14 +902,14 @@ static void lp_cc_st_wait_rx_cis_rsp(struct ll_conn *conn, struct proc_ctx *ctx,
 		break;
 	case LP_CC_EVT_UNKNOWN:
 		/* Unsupported in peer, so disable locally for this connection */
-		feature_unmask_features(conn, LL_FEAT_BIT_CIS_PERIPHERAL);
+		feature_unmask_peer_features(conn, LL_FEAT_BIT_CIS_PERIPHERAL);
 		ctx->data.cis_create.error = BT_HCI_ERR_UNSUPP_REMOTE_FEATURE;
 		lp_cc_complete(conn, ctx, evt, param);
 		break;
 	case LP_CC_EVT_REJECT:
 		if (pdu->llctrl.reject_ext_ind.error_code == BT_HCI_ERR_UNSUPP_REMOTE_FEATURE) {
 			/* Unsupported in peer, so disable locally for this connection */
-			feature_unmask_features(conn, LL_FEAT_BIT_CIS_PERIPHERAL);
+			feature_unmask_peer_features(conn, LL_FEAT_BIT_CIS_PERIPHERAL);
 		}
 		ctx->data.cis_create.error = pdu->llctrl.reject_ext_ind.error_code;
 		lp_cc_complete(conn, ctx, evt, param);
@@ -1039,6 +1041,9 @@ static void lp_cc_execute_fsm(struct ll_conn *conn, struct proc_ctx *ctx, uint8_
 	switch (ctx->state) {
 	case LP_CC_STATE_IDLE:
 		lp_cc_st_idle(conn, ctx, evt, param);
+		break;
+	case LP_CC_STATE_WAIT_NTF_AVAIL:
+		lp_cc_state_wait_ntf_avail(conn, ctx, evt, param);
 		break;
 	case LP_CC_STATE_WAIT_OFFSET_CALC_TX_REQ:
 		lp_cc_st_wait_offset_calc_tx_req(conn, ctx, evt, param);

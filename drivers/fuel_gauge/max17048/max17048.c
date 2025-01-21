@@ -31,8 +31,8 @@ LOG_MODULE_REGISTER(MAX17048);
 struct max17048_data {
 	/* Charge as percentage */
 	uint8_t charge;
-	/* Voltage as mV */
-	uint16_t voltage;
+	/* Voltage as uV */
+	uint32_t voltage;
 
 	/* Time in minutes */
 	uint16_t time_to_full;
@@ -72,9 +72,10 @@ int max17048_adc(const struct device *i2c_dev, uint16_t *response)
 /**
  * Battery voltage
  */
-int max17048_voltage(const struct device *i2c_dev, uint16_t *response)
+int max17048_voltage(const struct device *i2c_dev, uint32_t *response)
 {
-	int rc = max17048_adc(i2c_dev, response);
+	uint16_t raw_voltage;
+	int rc = max17048_adc(i2c_dev, &raw_voltage);
 
 	if (rc < 0) {
 		return rc;
@@ -85,12 +86,10 @@ int max17048_voltage(const struct device *i2c_dev, uint16_t *response)
 	 * MAX17048-MAX17049.pdf
 	 * Page 10, Table 2. Register Summary: 78.125µV/cell
 	 * Max17048 only supports one cell so we just have to multiply the value by 78.125 to
-	 * obtain µV and then divide the value to obtain V.
-	 * But to avoid floats, instead of using 78.125 we will use 78125 and use this value as
-	 * milli volts instead of volts.
+	 * obtain µV
 	 */
 
-	*response = *response * 78125 / 1000000;
+	*response = (uint32_t)raw_voltage * 78.125;
 	return 0;
 }
 
@@ -175,43 +174,42 @@ static int max17048_init(const struct device *dev)
 /**
  * Get a single property from the fuel gauge
  */
-static int max17048_get_prop(const struct device *dev, struct fuel_gauge_get_property *prop)
+static int max17048_get_single_prop_impl(const struct device *dev, fuel_gauge_prop_t prop,
+					 union fuel_gauge_prop_val *val)
 {
 	struct max17048_data *data = dev->data;
 	int rc = 0;
 
-	switch (prop->property_type) {
+	switch (prop) {
 	case FUEL_GAUGE_RUNTIME_TO_EMPTY:
-		prop->value.runtime_to_empty = data->time_to_empty;
+		val->runtime_to_empty = data->time_to_empty;
 		break;
 	case FUEL_GAUGE_RUNTIME_TO_FULL:
-		prop->value.runtime_to_full = data->time_to_full;
+		val->runtime_to_full = data->time_to_full;
 		break;
 	case FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE:
-		prop->value.relative_state_of_charge = data->charge;
+		val->relative_state_of_charge = data->charge;
 		break;
 	case FUEL_GAUGE_VOLTAGE:
-		prop->value.voltage = data->voltage;
+		val->voltage = data->voltage;
 		break;
 	default:
 		rc = -ENOTSUP;
 	}
 
-	prop->status = rc;
-
 	return rc;
 }
 
 /**
- * Get all possible properties from the fuel gague
+ * Get properties from the fuel gauge
  */
-static int max17048_get_props(const struct device *dev, struct fuel_gauge_get_property *props,
-			      size_t len)
+static int max17048_get_prop(const struct device *dev, fuel_gauge_prop_t prop,
+			     union fuel_gauge_prop_val *val)
 {
-	int err_count = 0;
 	struct max17048_data *data = dev->data;
 	int rc = max17048_percent(dev, &data->charge);
 	int16_t crate;
+	int ret;
 
 	if (rc < 0) {
 		LOG_ERR("Error while reading battery percentage");
@@ -242,7 +240,6 @@ static int max17048_get_props(const struct device *dev, struct fuel_gauge_get_pr
 		 */
 		data->charging = crate > 0;
 
-
 		/**
 		 * In the following code, we multiply by 1000 the charge to increase the
 		 * precision. If we just truncate the division without this multiplier,
@@ -266,12 +263,6 @@ static int max17048_get_props(const struct device *dev, struct fuel_gauge_get_pr
 			data->time_to_empty = hours_pending * 60 / 1000;
 			data->time_to_full = 0;
 		}
-
-		for (int i = 0; i < len; i++) {
-			int ret = max17048_get_prop(dev, props + i);
-
-			err_count += ret ? 1 : 0;
-		}
 	} else {
 		/**
 		 * This case is to avoid a division by 0 when the charge rate is the same
@@ -283,13 +274,13 @@ static int max17048_get_props(const struct device *dev, struct fuel_gauge_get_pr
 		data->time_to_empty = 0;
 	}
 
-	err_count = (err_count == len) ? -1 : err_count;
+	ret = max17048_get_single_prop_impl(dev, prop, val);
 
-	return err_count;
+	return ret;
 }
 
-static const struct fuel_gauge_driver_api max17048_driver_api = {
-	.get_property = &max17048_get_props,
+static DEVICE_API(fuel_gauge, max17048_driver_api) = {
+	.get_property = &max17048_get_prop,
 };
 
 #define MAX17048_DEFINE(inst)                                                                      \

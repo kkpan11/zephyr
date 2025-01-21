@@ -1,7 +1,8 @@
-.. _bluetooth_encrypted_advertising_sample:
+.. zephyr:code-sample:: bluetooth_encrypted_advertising
+   :name: Encrypted Advertising
+   :relevant-api: bluetooth
 
-Bluetooth: Encrypted Advertising
-################################
+   Use the Bluetooth LE encrypted advertising feature.
 
 Overview
 ********
@@ -14,7 +15,7 @@ This sample demonstrates the use of the encrypted advertising feature, such as:
  - the decryption of those advertising payloads,
  - and the update of the Randomizer field whenever the RPA is changed.
 
-To use the `bt_ead_encrypt` and `bt_ead_decrypt` functions, you must enable
+To use the :c:func:`bt_ead_encrypt` and :c:func:`bt_ead_decrypt` functions, you must enable
 the Kconfig symbol :kconfig:option:`CONFIG_BT_EAD`.
 
 While this sample uses extended advertising, it is **not** mandatory when using
@@ -25,8 +26,8 @@ Requirements
 ************
 
 * Two boards with Bluetooth Low Energy support
-* Two boards with a push button connected via a GPIO pin, see :ref:`Button
-  sample <button-sample>` for more details
+* Two boards with a push button connected via a GPIO pin, see the :zephyr:code-sample:`button`
+  sample for more details
 
 Building and Running
 ********************
@@ -34,7 +35,7 @@ Building and Running
 This sample can be found under
 :zephyr_file:`samples/bluetooth/encrypted_advertising` in the Zephyr tree.
 
-See :ref:`bluetooth samples section <bluetooth-samples>` for details.
+See :zephyr:code-sample-category:`bluetooth` samples for details.
 
 This sample uses two applications, so two devices need to be setup.
 Flash one device with the central application, and another device with the

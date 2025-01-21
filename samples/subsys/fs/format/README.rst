@@ -1,7 +1,8 @@
-.. _fs_format_sample:
+.. zephyr:code-sample:: fs-format
+   :name: Format filesystem
+   :relevant-api: file_system_api
 
-FS Format Sample
-################
+   Format different storage devices for different file systems.
 
 Overview
 ***********
@@ -9,6 +10,7 @@ Overview
 This sample shows how to format different storage
 devices for different file systems. There are 2 scenarios prepared for this
 sample:
+
 * littleFS on flash device
 * FAT file system on RAM disk
 
@@ -17,19 +19,20 @@ Building and running
 
 To run this sample, build it for the desired board and scenario and flash it.
 
-The Flash scenario is supported on the nrf52dk_nrf52832 board.
+The Flash scenario is supported on the nrf52dk/nrf52832 board.
 The RAM disk scenario is supported on the mimxrt1064_evk board.
-To build the RAM disk sample, the configuration `prj_ram.conf` needs to be used by setting `CONF_FILE=prj_ram.conf`.
+To build the RAM disk sample, the configuration :file:`prj_ram.conf` needs to be used by setting
+``CONF_FILE=prj_ram.conf``.
 
-The Flash sample for the nrf 52DK board can be build as follow:
+The Flash sample for the nrf 52DK board can be built as follow:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/subsys/fs/format
-   :board: nrf52dk_nrf52832
+   :board: nrf52dk/nrf52832
    :goals: build flash
    :compact:
 
-The RAM disk sample for the MIMXRT1064-EVK board can be build as follow:
+The RAM disk sample for the MIMXRT1064-EVK board can be built as follow:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/subsys/fs/format

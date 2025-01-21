@@ -15,7 +15,7 @@
 #include <stdbool.h>
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #define PUT_EXT_LEN \
 	((sizeof(union mpsc_pbuf_generic) + sizeof(void *)) / sizeof(uint32_t))
@@ -1292,6 +1292,29 @@ ZTEST(log_buffer, test_utilization)
 	packet = (struct test_data_var *)mpsc_pbuf_alloc(&buffer, len, K_NO_WAIT);
 
 	zassert_true(packet == NULL);
+}
+
+/* Make sure that `mpsc_pbuf_alloc()` works in spinlock-held context when buf is not available */
+ZTEST(log_buffer, test_alloc_in_spinlock)
+{
+	struct mpsc_pbuf_buffer buffer;
+	struct test_data_var *packet;
+	struct k_spinlock l = {0};
+
+	init(&buffer, 32, false);
+
+	/* Allocate all available buffer */
+	packet = (struct test_data_var *)mpsc_pbuf_alloc(
+		&buffer, 32, K_MSEC(10));
+	zassert_not_null(packet);
+
+	K_SPINLOCK(&l) {
+		/* Try to allocate another buf */
+		packet = (struct test_data_var *)mpsc_pbuf_alloc(
+			&buffer, 32, K_MSEC(10));
+		/* No buf is available this time */
+		zassert_is_null(packet);
+	}
 }
 
 /*test case main entry*/

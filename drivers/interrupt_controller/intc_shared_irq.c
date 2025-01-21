@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Intel Corporation.
+ * Copyright (c) 2015 - 2023 Intel Corporation.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -117,7 +117,7 @@ static inline int disable(const struct device *dev,
 	return -EIO;
 }
 
-void shared_irq_isr(const struct device *dev)
+static void shared_irq_isr(const struct device *dev)
 {
 	struct shared_irq_runtime *clients = dev->data;
 	const struct shared_irq_config *config = dev->config;
@@ -125,21 +125,22 @@ void shared_irq_isr(const struct device *dev)
 
 	for (i = 0U; i < config->client_count; i++) {
 		if (clients->client[i].isr_dev) {
-			clients->client[i].isr_func(clients->client[i].isr_dev);
+			clients->client[i].isr_func(clients->client[i].isr_dev, config->irq_num);
 		}
 	}
 }
 
-static const struct shared_irq_driver_api api_funcs = {
+static DEVICE_API(shared_irq, api_funcs) = {
 	.isr_register = isr_register,
 	.enable = enable,
 	.disable = disable,
 };
 
 
-int shared_irq_initialize(const struct device *dev)
+static int shared_irq_initialize(const struct device *dev)
 {
 	const struct shared_irq_config *config = dev->config;
+
 	config->config();
 	return 0;
 }

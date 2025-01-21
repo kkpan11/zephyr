@@ -15,6 +15,7 @@ LOG_MODULE_REGISTER(spi_xmc4xxx);
 #include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 
 #include <xmc_spi.h>
 #include <xmc_usic.h>
@@ -123,9 +124,9 @@ static void spi_xmc4xxx_shift_frames(const struct device *dev)
 				   XMC_SPI_CH_STATUS_FLAG_RECEIVE_INDICATION |
 				   XMC_SPI_CH_STATUS_FLAG_ALTERNATIVE_RECEIVE_INDICATION);
 
-	XMC_SPI_CH_Transmit(config->spi, tx_data, XMC_SPI_CH_MODE_STANDARD);
-
 	spi_context_update_tx(ctx, 1, 1);
+
+	XMC_SPI_CH_Transmit(config->spi, tx_data, XMC_SPI_CH_MODE_STANDARD);
 
 #if defined(CONFIG_SPI_XMC4XXX_INTERRUPT)
 	return;
@@ -195,7 +196,8 @@ static int spi_xmc4xxx_configure(const struct device *dev, const struct spi_conf
 	bool CPOL = SPI_MODE_GET(settings) & SPI_MODE_CPOL;
 	bool CPHA = SPI_MODE_GET(settings) & SPI_MODE_CPHA;
 	XMC_SPI_CH_CONFIG_t usic_cfg = {.baudrate = spi_cfg->frequency};
-	XMC_SPI_CH_BRG_SHIFT_CLOCK_PASSIVE_LEVEL_t clock_settings;
+	XMC_SPI_CH_BRG_SHIFT_CLOCK_PASSIVE_LEVEL_t clock_settings =
+		XMC_SPI_CH_BRG_SHIFT_CLOCK_PASSIVE_LEVEL_0_DELAY_ENABLED;
 
 	if (spi_context_configured(ctx, spi_cfg)) {
 		return 0;
@@ -468,7 +470,9 @@ static int spi_xmc4xxx_transceive_dma(const struct device *dev, const struct spi
 		spi_context_cs_control(ctx, false);
 	}
 
+#if defined(CONFIG_SPI_XMC4XXX_INTERRUPT)
 	irq_enable(config->irq_num_rx);
+#endif
 	spi_context_release(ctx, ret);
 
 	return ret;
@@ -588,10 +592,13 @@ static int spi_xmc4xxx_init(const struct device *dev)
 	return 0;
 }
 
-static const struct spi_driver_api spi_xmc4xxx_driver_api = {
+static DEVICE_API(spi, spi_xmc4xxx_driver_api) = {
 	.transceive = spi_xmc4xxx_transceive_sync,
 #if defined(CONFIG_SPI_ASYNC)
 	.transceive_async = spi_xmc4xxx_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = spi_xmc4xxx_release,
 };
@@ -672,17 +679,16 @@ static const struct spi_driver_api spi_xmc4xxx_driver_api = {
 			SPI_CONTEXT_INIT_LOCK(xmc4xxx_data_##index, ctx),                          \
 		SPI_CONTEXT_INIT_SYNC(xmc4xxx_data_##index, ctx),                                  \
 		SPI_DMA_CHANNEL(index, tx, MEMORY_TO_PERIPHERAL, 8, 1)                             \
-		SPI_DMA_CHANNEL(index, rx, PERIPHERAL_TO_MEMORY, 1, 8)};                           \
+			SPI_DMA_CHANNEL(index, rx, PERIPHERAL_TO_MEMORY, 1, 8)};                   \
                                                                                                    \
 	static const struct spi_xmc4xxx_config xmc4xxx_config_##index = {                          \
 		.spi = (XMC_USIC_CH_t *)DT_INST_REG_ADDR(index),                                   \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(index),                                     \
 		.miso_src = DT_INST_ENUM_IDX(index, miso_src),                                     \
-		XMC4XXX_IRQ_HANDLER_STRUCT_INIT(index)                                             \
-		XMC4XXX_IRQ_DMA_STRUCT_INIT(index)};                                               \
+		XMC4XXX_IRQ_HANDLER_STRUCT_INIT(index) XMC4XXX_IRQ_DMA_STRUCT_INIT(index)};        \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(index, &spi_xmc4xxx_init, NULL, &xmc4xxx_data_##index,               \
-			      &xmc4xxx_config_##index, POST_KERNEL,                                \
-			      CONFIG_SPI_INIT_PRIORITY, &spi_xmc4xxx_driver_api);
+	SPI_DEVICE_DT_INST_DEFINE(index, spi_xmc4xxx_init, NULL, &xmc4xxx_data_##index,            \
+				  &xmc4xxx_config_##index, POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,  \
+				  &spi_xmc4xxx_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(XMC4XXX_INIT)

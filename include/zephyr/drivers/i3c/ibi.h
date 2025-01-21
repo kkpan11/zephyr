@@ -14,10 +14,11 @@
  * @{
  */
 
+#include <stdint.h>
+
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
-#include <zephyr/types.h>
-#include <zephyr/sys/util.h>
+#include <zephyr/sys/slist.h>
 
 #ifndef CONFIG_I3C_IBI_MAX_PAYLOAD_SIZE
 #define CONFIG_I3C_IBI_MAX_PAYLOAD_SIZE 0
@@ -44,7 +45,7 @@ enum i3c_ibi_type {
 
 	I3C_IBI_TYPE_MAX = I3C_IBI_HOTJOIN,
 
-	/*
+	/**
 	 * Not an actual IBI type, but simply used by
 	 * the IBI workq for generic callbacks.
 	 */
@@ -86,9 +87,6 @@ struct i3c_ibi_payload {
  * @brief Node about a queued IBI.
  */
 struct i3c_ibi_work {
-	/**
-	 * Private, do not modify.
-	 */
 	sys_snode_t node;
 
 	/**

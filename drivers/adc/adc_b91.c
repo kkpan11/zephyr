@@ -35,7 +35,7 @@ struct b91_adc_data {
 	struct k_sem acq_sem;
 	struct k_thread thread;
 
-	K_THREAD_STACK_MEMBER(stack, CONFIG_ADC_B91_ACQUISITION_THREAD_STACK_SIZE);
+	K_KERNEL_STACK_MEMBER(stack, CONFIG_ADC_B91_ACQUISITION_THREAD_STACK_SIZE);
 };
 
 struct b91_adc_cfg {
@@ -216,8 +216,12 @@ static int adc_b91_adc_start_read(const struct device *dev, const struct adc_seq
 }
 
 /* Main ADC Acquisition thread */
-static void adc_b91_acquisition_thread(const struct device *dev)
+static void adc_b91_acquisition_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	const struct device *dev = p1;
 	int16_t adc_code;
 	struct b91_adc_data *data = dev->data;
 
@@ -260,7 +264,7 @@ static int adc_b91_init(const struct device *dev)
 
 	k_thread_create(&data->thread, data->stack,
 			CONFIG_ADC_B91_ACQUISITION_THREAD_STACK_SIZE,
-			(k_thread_entry_t)adc_b91_acquisition_thread,
+			adc_b91_acquisition_thread,
 			(void *)dev, NULL, NULL,
 			CONFIG_ADC_B91_ACQUISITION_THREAD_PRIO,
 			0, K_NO_WAIT);
@@ -448,7 +452,7 @@ static const struct b91_adc_cfg cfg_0 = {
 	.vref_internal_mv = DT_INST_PROP(0, vref_internal_mv),
 };
 
-static const struct adc_driver_api adc_b91_driver_api = {
+static DEVICE_API(adc, adc_b91_driver_api) = {
 	.channel_setup = adc_b91_channel_setup,
 	.read = adc_b91_read,
 #ifdef CONFIG_ADC_ASYNC

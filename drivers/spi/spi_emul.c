@@ -17,6 +17,7 @@ LOG_MODULE_REGISTER(spi_emul_ctlr);
 #include <zephyr/device.h>
 #include <zephyr/drivers/emul.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/drivers/spi_emul.h>
 
 /** Working data for the device */
@@ -68,6 +69,7 @@ static int spi_emul_io(const struct device *dev, const struct spi_config *config
 {
 	struct spi_emul *emul;
 	const struct spi_emul_api *api;
+	int ret;
 
 	emul = spi_emul_find(dev, config->slave);
 	if (!emul) {
@@ -78,7 +80,26 @@ static int spi_emul_io(const struct device *dev, const struct spi_config *config
 	__ASSERT_NO_MSG(emul->api);
 	__ASSERT_NO_MSG(emul->api->io);
 
+	if (emul->mock_api != NULL && emul->mock_api->io != NULL) {
+		ret = emul->mock_api->io(emul->target, config, tx_bufs, rx_bufs);
+		if (ret != -ENOSYS) {
+			return ret;
+		}
+	}
+
 	return api->io(emul->target, config, tx_bufs, rx_bufs);
+}
+
+/**
+ * @brief This is a no-op stub of the SPI API's `release` method to protect drivers under test
+ *        from hitting a segmentation fault when using SPI_LOCK_ON plus spi_release()
+ */
+static int spi_emul_release(const struct device *dev, const struct spi_config *config)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(config);
+
+	return 0;
 }
 
 /**
@@ -109,8 +130,12 @@ int spi_emul_register(const struct device *dev, struct spi_emul *emul)
 
 /* Device instantiation */
 
-static struct spi_driver_api spi_emul_api = {
+static DEVICE_API(spi, spi_emul_api) = {
 	.transceive = spi_emul_io,
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
+#endif
+	.release = spi_emul_release,
 };
 
 #define EMUL_LINK_AND_COMMA(node_id)                                                               \
@@ -126,7 +151,7 @@ static struct spi_driver_api spi_emul_api = {
 		.num_children = ARRAY_SIZE(emuls_##n),                                             \
 	};                                                                                         \
 	static struct spi_emul_data spi_emul_data_##n;                                             \
-	DEVICE_DT_INST_DEFINE(n, spi_emul_init, NULL, &spi_emul_data_##n, &spi_emul_cfg_##n,       \
-			      POST_KERNEL, CONFIG_SPI_INIT_PRIORITY, &spi_emul_api);
+	SPI_DEVICE_DT_INST_DEFINE(n, spi_emul_init, NULL, &spi_emul_data_##n, &spi_emul_cfg_##n,   \
+				  POST_KERNEL, CONFIG_SPI_INIT_PRIORITY, &spi_emul_api);
 
 DT_INST_FOREACH_STATUS_OKAY(SPI_EMUL_INIT)

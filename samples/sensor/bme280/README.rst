@@ -1,12 +1,13 @@
-.. _bme280:
+.. zephyr:code-sample:: bme280
+   :name: BME280 humidity and pressure sensor
+   :relevant-api: sensor_interface
 
-BME280 Humidity and Pressure Sensor
-###################################
+   Get temperature, pressure, and humidity data from a BME280 sensor.
 
 Overview
 ********
 
-This sample shows how to use the Zephyr :ref:`sensor_api` API driver for the
+This sample shows how to use the Zephyr :ref:`sensor` API driver for the
 `Bosch BME280`_ environmental sensor.
 
 .. _Bosch BME280:
@@ -73,6 +74,34 @@ The devicetree overlay :zephyr_file:`samples/sensor/bme280/arduino_i2c.overlay`
 works on any board with a properly configured Arduino pin-compatible I2C
 peripheral.
 
+BME280 via Raspberry Pi Pico
+============================
+
+The default assignment of the built-in spi0 device on the :zephyr:board:`rpi_pico` is
+to GPIO16 through GPIO19.  With the sensor wired to those lines, build and
+flash with:
+
+.. zephyr-app-commands::
+   :zephyr-app: samples/sensor/bme280
+   :goals: build flash
+   :board: rpi_pico
+
+An alternative is to use PIO serving as an SPI device.  The devicetree
+overlay :zephyr_file:`samples/sensor/bme280/rpi_pico_spi_pio.overlay`
+demonstrates using PIO SPI with the sensor wired to arbitrary GPIO pins.
+Build and flash with:
+
+.. zephyr-app-commands::
+   :zephyr-app: samples/sensor/bme280
+   :goals: build flash
+   :board: rpi_pico
+   :gen-args: -DDTC_OVERLAY_FILE=rpi_pico_spi_pio.overlay
+
+Note that miso-gpios, mosi-gpios, and clk-gpios need to be assigned to the
+selected PIO device in pinctrl, while cs-gpios should not;  chip select is
+controlled by the SPI context and must operate as a conventional GPIO pin,
+not under control of PIO.
+
 Board-specific overlays
 =======================
 
@@ -83,7 +112,7 @@ See existing overlays for examples.
 The build system uses these overlays by default when targeting those boards, so
 no ``DTC_OVERLAY_FILE`` setting is needed when building and running.
 
-For example, to build for the :ref:`adafruit_feather_m0_basic_proto` using the
+For example, to build for the :zephyr:board:`adafruit_feather_m0_basic_proto` using the
 :zephyr_file:`samples/sensor/bme280/boards/adafruit_feather_m0_basic_proto.overlay`
 overlay provided with this sample:
 

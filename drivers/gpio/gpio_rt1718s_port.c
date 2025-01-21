@@ -15,7 +15,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/gpio/gpio_utils.h>
 #include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(gpio_rt1718s_port, CONFIG_GPIO_LOG_LEVEL);
+LOG_MODULE_REGISTER(gpio_rt1718s_port, CONFIG_GPIO_LOG_LEVEL);
 
 /* Driver config */
 struct gpio_rt1718s_port_config {
@@ -255,6 +255,9 @@ static int gpio_rt1718s_pin_interrupt_configure(const struct device *dev, gpio_p
 		case GPIO_INT_TRIG_LOW:
 			new_reg_mask8 = (reg_mask8 | mask_fall) & ~mask_rise;
 			break;
+		default:
+			ret = -EINVAL;
+			goto done;
 		}
 
 		ret = rt1718s_reg_burst_read(config->rt1718s_dev, RT1718S_REG_ALERT_MASK,
@@ -328,13 +331,14 @@ void rt1718s_gpio_alert_handler(const struct device *dev)
 
 	k_sem_give(&data_port->lock);
 
-	if (reg_int8 & RT1718S_GPIO_INT_MASK)
+	if (reg_int8 & RT1718S_GPIO_INT_MASK) {
 		/* Call the GPIO callbacks for rising *or* falling edge */
 		gpio_fire_callbacks(&data_port->cb_list_gpio, config->gpio_port_dev,
 				    (reg_int8 & 0x7) | ((reg_int8 >> 4) & 0x7));
+	}
 }
 
-static const struct gpio_driver_api gpio_rt1718s_driver = {
+static DEVICE_API(gpio, gpio_rt1718s_driver) = {
 	.pin_configure = gpio_rt1718s_pin_config,
 	.port_get_raw = gpio_rt1718s_port_get_raw,
 	.port_set_masked_raw = gpio_rt1718s_port_set_masked_raw,

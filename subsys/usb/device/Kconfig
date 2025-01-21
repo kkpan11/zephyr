@@ -48,6 +48,23 @@ config USB_DEVICE_SN
 	  Serial Number String will be derived from
 	  Hardware Information Driver (HWINFO).
 
+config USB_CONFIGURATION_STRING_DESC_ENABLE
+	bool "USB configuration string descriptor support"
+	help
+	  Enable string descriptor that describes the default configuration.
+	  Since there is only one configuration, this string descriptor may not
+	  provide much useful information.
+
+if USB_CONFIGURATION_STRING_DESC_ENABLE
+
+config USB_CONFIGURATION_STRING_DESC
+	string "USB configuration string descriptor"
+	default "Default Configuration"
+	help
+	  String descriptor that describes the default configuration.
+
+endif # USB_CONFIGURATION_STRING_DESC_ENABLE
+
 config USB_COMPOSITE_DEVICE
 	bool "Use Interface Association Descriptor code triple"
 	help
@@ -97,7 +114,7 @@ config USB_NUMOF_EP_WRITE_RETRIES
 
 config USB_DEVICE_SOF
 	bool "Start of Frame processing in events"
-	default y if (USB_DEVICE_AUDIO && NRFX_USBD)
+	default y if (USB_DEVICE_AUDIO && NRF_USBD_COMMON)
 
 config USB_DEVICE_BOS
 	bool "USB Binary Device Object Store (BOS)"

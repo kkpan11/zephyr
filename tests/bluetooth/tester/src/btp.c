@@ -31,11 +31,11 @@ static struct k_thread cmd_thread;
 #define CMD_QUEUED 2
 struct btp_buf {
 	intptr_t _reserved;
+	uint8_t rsp[BTP_MTU];
 	union {
 		uint8_t data[BTP_MTU];
 		struct btp_hdr hdr;
 	};
-	uint8_t rsp[BTP_MTU];
 };
 
 static struct btp_buf cmd_buf[CMD_QUEUED];
@@ -49,6 +49,9 @@ static struct {
 	const struct btp_handler *handlers;
 	size_t num;
 } service_handler[BTP_SERVICE_ID_MAX + 1];
+
+static struct net_buf_simple *rsp_buf = NET_BUF_SIMPLE(BTP_MTU);
+static K_MUTEX_DEFINE(rsp_buf_mutex);
 
 static void tester_send_with_index(uint8_t service, uint8_t opcode, uint8_t index,
 				   const uint8_t *data, size_t len);
@@ -92,6 +95,9 @@ static void cmd_handler(void *p1, void *p2, void *p3)
 		uint16_t len;
 
 		cmd = k_fifo_get(&cmds_queue, K_FOREVER);
+
+		LOG_DBG("cmd service 0x%02x opcode 0x%02x index 0x%02x", cmd->hdr.service,
+			cmd->hdr.opcode, cmd->hdr.index);
 
 		len = sys_le16_to_cpu(cmd->hdr.len);
 
@@ -161,7 +167,7 @@ static uint8_t *recv_cb(uint8_t *buf, size_t *off)
 		return buf;
 	}
 
-	k_fifo_put(&cmds_queue, CONTAINER_OF(buf, struct btp_buf, data));
+	k_fifo_put(&cmds_queue, CONTAINER_OF(buf, struct btp_buf, data[0]));
 
 	*off = 0;
 	return new_buf->data;
@@ -241,6 +247,34 @@ void tester_init(void)
 			      BTP_INDEX_NONE, NULL, 0);
 }
 
+int tester_rsp_buffer_lock(void)
+{
+	if (k_mutex_lock(&rsp_buf_mutex, Z_FOREVER) != 0) {
+		LOG_ERR("Cannot lock rsp_ring_buf");
+
+		return -EACCES;
+	}
+
+	return 0;
+}
+
+void tester_rsp_buffer_unlock(void)
+{
+	k_mutex_unlock(&rsp_buf_mutex);
+}
+
+void tester_rsp_buffer_free(void)
+{
+	net_buf_simple_init(rsp_buf, 0);
+}
+
+void tester_rsp_buffer_allocate(size_t len, uint8_t **data)
+{
+	tester_rsp_buffer_free();
+
+	*data = net_buf_simple_add(rsp_buf, len);
+}
+
 static void tester_send_with_index(uint8_t service, uint8_t opcode, uint8_t index,
 				   const uint8_t *data, size_t len)
 {
@@ -262,6 +296,9 @@ static void tester_rsp_with_index(uint8_t service, uint8_t opcode, uint8_t index
 {
 	struct btp_status s;
 
+	LOG_DBG("service 0x%02x opcode 0x%02x index 0x%02x status 0x%02x", service, opcode, index,
+		status);
+
 	if (status == BTP_STATUS_SUCCESS) {
 		tester_send_with_index(service, opcode, index, NULL, 0);
 		return;
@@ -274,6 +311,9 @@ static void tester_rsp_with_index(uint8_t service, uint8_t opcode, uint8_t index
 void tester_event(uint8_t service, uint8_t opcode, const void *data, size_t len)
 {
 	__ASSERT_NO_MSG(opcode >= 0x80);
+
+	LOG_DBG("service 0x%02x opcode 0x%02x", service, opcode);
+
 	tester_send_with_index(service, opcode, BTP_INDEX, data, len);
 }
 
@@ -283,6 +323,8 @@ void tester_rsp_full(uint8_t service, uint8_t opcode, const void *rsp, size_t le
 
 	__ASSERT_NO_MSG(opcode < 0x80);
 	__ASSERT_NO_MSG(delayed_cmd != NULL);
+
+	LOG_DBG("service 0x%02x opcode 0x%02x", service, opcode);
 
 	tester_send_with_index(service, opcode, BTP_INDEX, rsp, len);
 
@@ -299,6 +341,8 @@ void tester_rsp(uint8_t service, uint8_t opcode, uint8_t status)
 
 	__ASSERT_NO_MSG(opcode < 0x80);
 	__ASSERT_NO_MSG(delayed_cmd != NULL);
+
+	LOG_DBG("service 0x%02x opcode 0x%02x status 0x%02x", service, opcode, status);
 
 	tester_rsp_with_index(service, opcode, BTP_INDEX, status);
 

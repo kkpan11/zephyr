@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 Nordic Semiconductor ASA
+ * Copyright (c) 2017-2024 Nordic Semiconductor ASA
  * Copyright (c) 2016 Linaro Limited
  * Copyright (c) 2016 Intel Corporation
  *
@@ -23,13 +23,13 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(flash_nrf);
 
-#if DT_NODE_HAS_STATUS(DT_INST(0, nordic_nrf51_flash_controller), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf51_flash_controller))
 #define DT_DRV_COMPAT nordic_nrf51_flash_controller
-#elif DT_NODE_HAS_STATUS(DT_INST(0, nordic_nrf52_flash_controller), okay)
+#elif DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf52_flash_controller))
 #define DT_DRV_COMPAT nordic_nrf52_flash_controller
-#elif DT_NODE_HAS_STATUS(DT_INST(0, nordic_nrf53_flash_controller), okay)
+#elif DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf53_flash_controller))
 #define DT_DRV_COMPAT nordic_nrf53_flash_controller
-#elif DT_NODE_HAS_STATUS(DT_INST(0, nordic_nrf91_flash_controller), okay)
+#elif DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nordic_nrf91_flash_controller))
 #define DT_DRV_COMPAT nordic_nrf91_flash_controller
 #else
 #error No matching compatible for soc_flash_nrf.c
@@ -116,6 +116,26 @@ static inline bool is_uicr_addr_valid(off_t addr, size_t len)
 #endif /* CONFIG_SOC_FLASH_NRF_UICR */
 }
 
+#if CONFIG_SOC_FLASH_NRF_UICR && IS_ENABLED(NRF91_ERRATA_7_ENABLE_WORKAROUND)
+static inline void nrf91_errata_7_enter(void)
+{
+	__disable_irq();
+}
+
+static inline void nrf91_errata_7_exit(void)
+{
+	__DSB();
+	__enable_irq();
+}
+
+static void nrf_buffer_read_91_uicr(void *data, off_t addr, size_t len)
+{
+	nrf91_errata_7_enter();
+	nrf_nvmc_buffer_read(data, (uint32_t)addr, len);
+	nrf91_errata_7_exit();
+}
+#endif
+
 static void nvmc_wait_ready(void)
 {
 	while (!nrfx_nvmc_write_done_check()) {
@@ -125,9 +145,11 @@ static void nvmc_wait_ready(void)
 static int flash_nrf_read(const struct device *dev, off_t addr,
 			    void *data, size_t len)
 {
+	const bool within_uicr = is_uicr_addr_valid(addr, len);
+
 	if (is_regular_addr_valid(addr, len)) {
 		addr += DT_REG_ADDR(SOC_NV_FLASH_NODE);
-	} else if (!is_uicr_addr_valid(addr, len)) {
+	} else if (!within_uicr) {
 		LOG_ERR("invalid address: 0x%08lx:%zu",
 				(unsigned long)addr, len);
 		return -EINVAL;
@@ -136,6 +158,13 @@ static int flash_nrf_read(const struct device *dev, off_t addr,
 	if (!len) {
 		return 0;
 	}
+
+#if CONFIG_SOC_FLASH_NRF_UICR && IS_ENABLED(NRF91_ERRATA_7_ENABLE_WORKAROUND)
+	if (within_uicr) {
+		nrf_buffer_read_91_uicr(data, (uint32_t)addr, len);
+		return 0;
+	}
+#endif
 
 	nrf_nvmc_buffer_read(data, (uint32_t)addr, len);
 
@@ -155,7 +184,7 @@ static int flash_nrf_write(const struct device *dev, off_t addr,
 		return -EINVAL;
 	}
 
-#if !IS_ENABLED(CONFIG_SOC_FLASH_NRF_EMULATE_ONE_BYTE_WRITE_ACCESS)
+#if !defined(CONFIG_SOC_FLASH_NRF_EMULATE_ONE_BYTE_WRITE_ACCESS)
 	if (!is_aligned_32(addr) || (len % sizeof(uint32_t))) {
 		LOG_ERR("not word-aligned: 0x%08lx:%zu",
 				(unsigned long)addr, len);
@@ -232,6 +261,15 @@ static int flash_nrf_erase(const struct device *dev, off_t addr, size_t size)
 	return ret;
 }
 
+static int flash_nrf_get_size(const struct device *dev, uint64_t *size)
+{
+	ARG_UNUSED(dev);
+
+	*size = (uint64_t)nrfx_nvmc_flash_size_get();
+
+	return 0;
+}
+
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
 static struct flash_pages_layout dev_layout;
 
@@ -252,11 +290,12 @@ flash_nrf_get_parameters(const struct device *dev)
 	return &flash_nrf_parameters;
 }
 
-static const struct flash_driver_api flash_nrf_api = {
+static DEVICE_API(flash, flash_nrf_api) = {
 	.read = flash_nrf_read,
 	.write = flash_nrf_write,
 	.erase = flash_nrf_erase,
 	.get_parameters = flash_nrf_get_parameters,
+	.get_size = flash_nrf_get_size,
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
 	.page_layout = flash_nrf_pages_layout,
 #endif

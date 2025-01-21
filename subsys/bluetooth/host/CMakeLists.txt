@@ -3,31 +3,15 @@
 zephyr_library()
 zephyr_library_link_libraries(subsys__bluetooth)
 
+add_subdirectory_ifdef(CONFIG_BT_CLASSIC classic)
+add_subdirectory_ifdef(CONFIG_BT_SHELL shell)
+
 zephyr_library_sources_ifdef(CONFIG_BT_HCI_RAW          hci_raw.c hci_common.c)
 zephyr_library_sources_ifdef(CONFIG_BT_MONITOR          monitor.c)
-zephyr_library_sources_ifdef(CONFIG_BT_TINYCRYPT_ECC    hci_ecc.c)
-zephyr_library_sources_ifdef(CONFIG_BT_A2DP             a2dp.c)
-zephyr_library_sources_ifdef(CONFIG_BT_AVDTP            avdtp.c)
-zephyr_library_sources_ifdef(CONFIG_BT_RFCOMM           rfcomm.c)
-zephyr_library_sources_ifdef(CONFIG_BT_TESTING          testing.c)
+zephyr_library_sources_ifdef(CONFIG_BT_SEND_ECC_EMULATION          hci_ecc.c)
 zephyr_library_sources_ifdef(CONFIG_BT_SETTINGS         settings.c)
 zephyr_library_sources_ifdef(CONFIG_BT_HOST_CCM         aes_ccm.c)
 zephyr_library_sources_ifdef(CONFIG_BT_LONG_WQ          long_wq.c)
-
-zephyr_library_sources_ifdef(
-  CONFIG_BT_BREDR
-  br.c
-  keys_br.c
-  l2cap_br.c
-  sdp.c
-  ssp.c
-  )
-
-zephyr_library_sources_ifdef(
-  CONFIG_BT_HFP_HF
-  hfp_hf.c
-  at.c
-  )
 
 if(CONFIG_BT_HCI_HOST)
   zephyr_library_sources(
@@ -47,10 +31,12 @@ if(CONFIG_BT_HCI_HOST)
     CONFIG_BT_OBSERVER
     scan.c
     )
+
   zephyr_library_sources_ifdef(
     CONFIG_BT_HOST_CRYPTO
-    crypto.c
+    crypto_psa.c
     )
+
   zephyr_library_sources_ifdef(
     CONFIG_BT_ECC
     ecc.c
@@ -80,6 +66,11 @@ if(CONFIG_BT_HCI_HOST)
     CONFIG_BT_ISO
     iso.c
     conn.c
+    )
+
+  zephyr_library_sources_ifdef(
+    CONFIG_BT_CHANNEL_SOUNDING
+    cs.c
     )
 
   if(CONFIG_BT_DF)
@@ -122,4 +113,16 @@ if(CONFIG_BT_CONN_DISABLE_SECURITY)
   be accessed.
   Do not use in production."
     )
+endif()
+
+zephyr_library_link_libraries_ifdef(CONFIG_MBEDTLS mbedTLS)
+zephyr_library_include_directories_ifdef(CONFIG_BUILD_WITH_TFM
+  $<TARGET_PROPERTY:tfm,TFM_BINARY_DIR>/api_ns/interface/include
+)
+
+# Bluetooth Mesh has test dependencies in the host.
+# In order to compile Bsim tests with these test features
+# and PSA enabled, the libraries must be linked.
+if(CONFIG_BT_MESH AND CONFIG_BT_TESTING)
+  zephyr_library_link_libraries_ifdef(CONFIG_MBEDTLS mbedTLS)
 endif()

@@ -10,7 +10,8 @@
 
 #define BT_EATT_PSM		0x27
 #define BT_ATT_DEFAULT_LE_MTU	23
-#define BT_ATT_TIMEOUT		K_SECONDS(30)
+#define BT_ATT_TIMEOUT_SEC	30
+#define BT_ATT_TIMEOUT		K_SECONDS(BT_ATT_TIMEOUT_SEC)
 
 /* Local ATT Rx MTU
  *
@@ -270,7 +271,7 @@ struct bt_att_signed_write_cmd {
 	uint8_t  value[0];
 } __packed;
 
-typedef void (*bt_att_func_t)(struct bt_conn *conn, uint8_t err,
+typedef void (*bt_att_func_t)(struct bt_conn *conn, int err,
 			      const void *pdu, uint16_t length,
 			      void *user_data);
 
@@ -291,10 +292,9 @@ struct bt_att_req {
 	void *user_data;
 };
 
-void att_sent(struct bt_conn *conn, void *user_data);
-
 void bt_att_init(void);
 uint16_t bt_att_get_mtu(struct bt_conn *conn);
+uint16_t bt_att_get_uatt_mtu(struct bt_conn *conn);
 struct net_buf *bt_att_create_pdu(struct bt_conn *conn, uint8_t op,
 				  size_t len);
 
@@ -347,3 +347,5 @@ bool bt_att_tx_meta_data_match(const struct net_buf *buf, bt_gatt_complete_func_
 #endif /* CONFIG_BT_EATT */
 
 bool bt_att_chan_opt_valid(struct bt_conn *conn, enum bt_att_chan_opt chan_opt);
+
+void bt_gatt_req_set_mtu(struct bt_att_req *req, uint16_t mtu);
