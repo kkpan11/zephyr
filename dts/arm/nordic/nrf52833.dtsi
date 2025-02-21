@@ -5,10 +5,13 @@
  */
 
 #include <arm/armv7-m.dtsi>
-#include "nrf_common.dtsi"
+#include <nordic/nrf_common.dtsi>
+#include <zephyr/dt-bindings/adc/nrf-saadc-v3.h>
+#include <zephyr/dt-bindings/regulator/nrf5x.h>
 
 / {
 	chosen {
+		zephyr,bt-hci = &bt_hci_controller;
 		zephyr,entropy = &rng;
 		zephyr,flash-controller = &flash_controller;
 	};
@@ -36,6 +39,7 @@
 		ficr: ficr@10000000 {
 			compatible = "nordic,nrf-ficr";
 			reg = <0x10000000 0x1000>;
+			#nordic,ficr-cells = <1>;
 			status = "okay";
 		};
 
@@ -79,6 +83,20 @@
 				reg = <0x40000520 0x1>;
 				status = "okay";
 			};
+
+			reg1: regulator@40000578 {
+				compatible = "nordic,nrf5x-regulator";
+				reg = <0x40000578 0x1>;
+				regulator-name = "REG1";
+				regulator-initial-mode = <NRF5X_REG_MODE_LDO>;
+			};
+
+			reg0: regulator@40000580 {
+				compatible = "nordic,nrf52x-regulator-hv";
+				reg = <0x40000580 0x1>;
+				regulator-name = "REG0";
+				status = "disabled";
+			};
 		};
 
 		radio: radio@40001000 {
@@ -95,6 +113,14 @@
 			ieee802154: ieee802154 {
 				compatible = "nordic,nrf-ieee802154";
 				status = "disabled";
+			};
+
+			/* Note: In the nRF Connect SDK the SoftDevice Controller
+			 * is added and set as the default Bluetooth Controller.
+			 */
+			bt_hci_controller: bt_hci_controller {
+				compatible = "zephyr,bt-hci-ll-sw-split";
+				status = "okay";
 			};
 		};
 
@@ -119,9 +145,10 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0x40003000 0x1000>;
-			clock-frequency = <I2C_BITRATE_STANDARD>;
 			interrupts = <3 NRF_DEFAULT_IRQ_PRIORITY>;
+			easydma-maxcnt-bits = <16>;
 			status = "disabled";
+			zephyr,pm-device-runtime-auto;
 		};
 
 		spi0: spi@40003000 {
@@ -154,9 +181,10 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0x40004000 0x1000>;
-			clock-frequency = <I2C_BITRATE_STANDARD>;
 			interrupts = <4 NRF_DEFAULT_IRQ_PRIORITY>;
+			easydma-maxcnt-bits = <16>;
 			status = "disabled";
+			zephyr,pm-device-runtime-auto;
 		};
 
 		spi1: spi@40004000 {
@@ -181,14 +209,15 @@
 			compatible = "nordic,nrf-nfct";
 			reg = <0x40005000 0x1000>;
 			interrupts = <5 NRF_DEFAULT_IRQ_PRIORITY>;
-			status = "okay";
+			status = "disabled";
 		};
 
-		gpiote: gpiote@40006000 {
+		gpiote: gpiote0: gpiote@40006000 {
 			compatible = "nordic,nrf-gpiote";
 			reg = <0x40006000 0x1000>;
 			interrupts = <6 5>;
 			status = "disabled";
+			instance = <0>;
 		};
 
 		adc: adc@40007000 {
@@ -197,6 +226,7 @@
 			interrupts = <7 NRF_DEFAULT_IRQ_PRIORITY>;
 			status = "disabled";
 			#io-channel-cells = <1>;
+			zephyr,pm-device-runtime-auto;
 		};
 
 		timer0: timer@40008000 {
@@ -265,6 +295,7 @@
 			reg = <0x4000f000 0x1000>;
 			interrupts = <15 NRF_DEFAULT_IRQ_PRIORITY>;
 			length-field-length-8-bits;
+			headermask-supported;
 			status = "okay";
 		};
 
@@ -294,16 +325,13 @@
 
 		comp: comparator@40013000 {
 			/*
-			 * This comparator node can be COMP or LPCOMP,
-			 * for the user to pick:
-			 * compatible = "nordic,nrf-comp" or
-			 *              "nordic,nrf-lpcomp".
+			 * Use compatible "nordic,nrf-comp" to configure as COMP
+			 * Use compatible "nordic,nrf-lpcomp" to configure as LPCOMP
 			 */
 			compatible = "nordic,nrf-comp";
 			reg = <0x40013000 0x1000>;
 			interrupts = <19 NRF_DEFAULT_IRQ_PRIORITY>;
 			status = "disabled";
-			#io-channel-cells = <1>;
 		};
 
 		egu0: swi0: egu@40014000 {
@@ -518,6 +546,7 @@
 			#gpio-cells = <2>;
 			status = "disabled";
 			port = <0>;
+			gpiote-instance = <&gpiote>;
 		};
 
 		gpio1: gpio@50000300 {
@@ -529,10 +558,16 @@
 			ngpios = <10>;
 			status = "disabled";
 			port = <1>;
+			gpiote-instance = <&gpiote>;
 		};
 	};
 };
 
 &nvic {
 	arm,num-irq-priority-bits = <3>;
+};
+
+&systick {
+	/* Use RTC for system clock, instead of SysTick. */
+	status = "disabled";
 };

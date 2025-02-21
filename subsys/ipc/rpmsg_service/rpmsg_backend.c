@@ -9,10 +9,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/ipm.h>
 #include <zephyr/device.h>
+#include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 
 #include <openamp/open_amp.h>
-#include <metal/device.h>
 
 #define LOG_MODULE_NAME rpmsg_backend
 LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_RPMSG_SERVICE_LOG_LEVEL);
@@ -60,25 +60,7 @@ static const struct device *const ipm_handle =
 #endif
 
 static metal_phys_addr_t shm_physmap[] = { SHM_START_ADDR };
-static struct metal_device shm_device = {
-	.name = SHM_DEVICE_NAME,
-	.bus = NULL,
-	.num_regions = 1,
-	{
-		{
-			.virt       = (void *) SHM_START_ADDR,
-			.physmap    = shm_physmap,
-			.size       = SHM_SIZE,
-			.page_shift = 0xffffffff,
-			.page_mask  = 0xffffffff,
-			.mem_flags  = 0,
-			.ops        = { NULL },
-		},
-	},
-	.node = { NULL },
-	.irq_num = 0,
-	.irq_info = NULL
-};
+static struct metal_io_region shm_io;
 
 static struct virtio_vring_info rvrings[2] = {
 	[0] = {
@@ -128,8 +110,17 @@ static void ipc_virtio_notify(struct virtqueue *vq)
 	uint32_t current_core = sse_200_platform_get_cpu_id();
 
 	status = ipm_send(ipm_handle, 0, current_core ? 0 : 1, 0, 1);
+#elif defined(CONFIG_IPM_STM32_HSEM)
+	/* No data transfer, only doorbell. */
+	status = ipm_send(ipm_handle, 0, 0, NULL, 0);
 #else
-	uint32_t dummy_data = 0x55005500; /* Some data must be provided */
+	/* The IPM interface is unclear on whether or not ipm_send
+	 * can be called with NULL as data, thus, drivers might cause
+	 * problems if you do. To avoid problems, we always send some
+	 * dummy data, unless the IPM driver cannot transfer data.
+	 * Ref: #68741
+	 */
+	uint32_t dummy_data = 0x55005500;
 
 	status = ipm_send(ipm_handle, 0, 0, &dummy_data, sizeof(dummy_data));
 #endif /* #if defined(CONFIG_SOC_MPS2_AN521) */
@@ -174,7 +165,6 @@ int rpmsg_backend_init(struct metal_io_region **io, struct virtio_device *vdev)
 {
 	int32_t                  err;
 	struct metal_init_params metal_params = METAL_INIT_DEFAULTS;
-	struct metal_device     *device;
 
 	/* Start IPM workqueue */
 	k_work_queue_start(&ipm_work_q, ipm_stack_area,
@@ -192,23 +182,9 @@ int rpmsg_backend_init(struct metal_io_region **io, struct virtio_device *vdev)
 		return err;
 	}
 
-	err = metal_register_generic_device(&shm_device);
-	if (err) {
-		LOG_ERR("Couldn't register shared memory device: %d", err);
-		return err;
-	}
-
-	err = metal_device_open("generic", SHM_DEVICE_NAME, &device);
-	if (err) {
-		LOG_ERR("metal_device_open failed: %d", err);
-		return err;
-	}
-
-	*io = metal_device_io_region(device, 0);
-	if (!*io) {
-		LOG_ERR("metal_device_io_region failed to get region");
-		return err;
-	}
+	/* declare shared memory region */
+	metal_io_init(&shm_io, (void *)SHM_START_ADDR, shm_physmap, SHM_SIZE, -1, 0, NULL);
+	*io = &shm_io;
 
 	/* IPM setup */
 #if defined(CONFIG_RPMSG_SERVICE_DUAL_IPM_SUPPORT)

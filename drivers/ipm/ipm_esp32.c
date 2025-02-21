@@ -33,8 +33,12 @@ struct esp32_ipm_memory {
 };
 
 struct esp32_ipm_config {
-	uint32_t irq_source_pro_cpu;
-	uint32_t irq_source_app_cpu;
+	int irq_source_pro_cpu;
+	int irq_priority_pro_cpu;
+	int irq_flags_pro_cpu;
+	int irq_source_app_cpu;
+	int irq_priority_app_cpu;
+	int irq_flags_app_cpu;
 };
 
 struct esp32_ipm_data {
@@ -54,15 +58,24 @@ IRAM_ATTR static void esp32_ipm_isr(const struct device *dev)
 
 	/* clear interrupt flag */
 	if (core_id == 0) {
+#if defined(CONFIG_SOC_SERIES_ESP32)
 		DPORT_WRITE_PERI_REG(DPORT_CPU_INTR_FROM_CPU_0_REG, 0);
+#elif defined(CONFIG_SOC_SERIES_ESP32S3)
+		WRITE_PERI_REG(SYSTEM_CPU_INTR_FROM_CPU_0_REG, 0);
+#endif
 	} else {
+#if defined(CONFIG_SOC_SERIES_ESP32)
 		DPORT_WRITE_PERI_REG(DPORT_CPU_INTR_FROM_CPU_1_REG, 0);
+#elif defined(CONFIG_SOC_SERIES_ESP32S3)
+		WRITE_PERI_REG(SYSTEM_CPU_INTR_FROM_CPU_1_REG, 0);
+#endif
 	}
 
 	/* first of all take the own of the shared memory */
-	while (!atomic_cas(&dev_data->control->lock,
-		ESP32_IPM_LOCK_FREE_VAL, dev_data->this_core_id))
+	while (!atomic_cas(&dev_data->control->lock, ESP32_IPM_LOCK_FREE_VAL,
+			   dev_data->this_core_id)) {
 		;
+	}
 
 	if (dev_data->cb) {
 
@@ -87,7 +100,7 @@ static int esp32_ipm_send(const struct device *dev, int wait, uint32_t id,
 {
 	struct esp32_ipm_data *dev_data = (struct esp32_ipm_data *)dev->data;
 
-	if (data == NULL) {
+	if (size > 0 && data == NULL) {
 		LOG_ERR("Invalid data source");
 		return -EINVAL;
 	}
@@ -130,12 +143,21 @@ static int esp32_ipm_send(const struct device *dev, int wait, uint32_t id,
 		memcpy(dev_data->shm.app_cpu_shm, data, size);
 		atomic_set(&dev_data->control->lock, ESP32_IPM_LOCK_FREE_VAL);
 		LOG_DBG("Generating interrupt on remote CPU 1 from CPU 0");
+#if defined(CONFIG_SOC_SERIES_ESP32)
 		DPORT_WRITE_PERI_REG(DPORT_CPU_INTR_FROM_CPU_1_REG, DPORT_CPU_INTR_FROM_CPU_1);
+#elif defined(CONFIG_SOC_SERIES_ESP32S3)
+		WRITE_PERI_REG(SYSTEM_CPU_INTR_FROM_CPU_1_REG, SYSTEM_CPU_INTR_FROM_CPU_1);
+#endif
+
 	} else {
 		memcpy(dev_data->shm.pro_cpu_shm, data, size);
 		atomic_set(&dev_data->control->lock, ESP32_IPM_LOCK_FREE_VAL);
 		LOG_DBG("Generating interrupt on remote CPU 0 from CPU 1");
+#if defined(CONFIG_SOC_SERIES_ESP32)
 		DPORT_WRITE_PERI_REG(DPORT_CPU_INTR_FROM_CPU_0_REG, DPORT_CPU_INTR_FROM_CPU_0);
+#elif defined(CONFIG_SOC_SERIES_ESP32S3)
+		WRITE_PERI_REG(SYSTEM_CPU_INTR_FROM_CPU_0_REG, SYSTEM_CPU_INTR_FROM_CPU_0);
+#endif
 	}
 
 	irq_unlock(key);
@@ -188,39 +210,54 @@ static int esp32_ipm_init(const struct device *dev)
 {
 	struct esp32_ipm_data *data = (struct esp32_ipm_data *)dev->data;
 	struct esp32_ipm_config *cfg = (struct esp32_ipm_config *)dev->config;
+	int ret;
 
 	data->this_core_id = esp_core_id();
 	data->other_core_id = (data->this_core_id  == 0) ? 1 : 0;
 
 	LOG_DBG("Size of IPM shared memory: %d", data->shm_size);
-	LOG_DBG("Address of PRO_CPU IPM shared memory: %p", data->shm.pro_cpu_shm);
-	LOG_DBG("Address of APP_CPU IPM shared memory: %p", data->shm.app_cpu_shm);
-	LOG_DBG("Address of IPM control structure: %p", data->control);
+	LOG_DBG("Address of PRO_CPU IPM shared memory: %p", (void *)data->shm.pro_cpu_shm);
+	LOG_DBG("Address of APP_CPU IPM shared memory: %p", (void *)data->shm.app_cpu_shm);
+	LOG_DBG("Address of IPM control structure: %p", (void *)data->control);
 
 	/* pro_cpu is responsible to initialize the lock of shared memory */
 	if (data->this_core_id == 0) {
-		esp_intr_alloc(cfg->irq_source_pro_cpu,
-			ESP_INTR_FLAG_IRAM,
-			(intr_handler_t)esp32_ipm_isr,
-			(void *)dev,
-			NULL);
+		ret = esp_intr_alloc(cfg->irq_source_pro_cpu,
+				ESP_PRIO_TO_FLAGS(cfg->irq_priority_pro_cpu) |
+				ESP_INT_FLAGS_CHECK(cfg->irq_flags_pro_cpu) |
+					ESP_INTR_FLAG_IRAM,
+				(intr_handler_t)esp32_ipm_isr,
+				(void *)dev,
+				NULL);
+
+		if (ret != 0) {
+			LOG_ERR("could not allocate interrupt (err %d)", ret);
+			return ret;
+		}
 
 		atomic_set(&data->control->lock, ESP32_IPM_LOCK_FREE_VAL);
 	} else {
 		/* app_cpu wait for initialization from pro_cpu, then takes it,
 		 * after that releases
 		 */
-		esp_intr_alloc(cfg->irq_source_app_cpu,
-			ESP_INTR_FLAG_IRAM,
-			(intr_handler_t)esp32_ipm_isr,
-			(void *)dev,
-			NULL);
+		ret = esp_intr_alloc(cfg->irq_source_app_cpu,
+				ESP_PRIO_TO_FLAGS(cfg->irq_priority_app_cpu) |
+				ESP_INT_FLAGS_CHECK(cfg->irq_flags_app_cpu) |
+					ESP_INTR_FLAG_IRAM,
+				(intr_handler_t)esp32_ipm_isr,
+				(void *)dev,
+				NULL);
+
+		if (ret != 0) {
+			LOG_ERR("could not allocate interrupt (err %d)", ret);
+			return ret;
+		}
 
 		LOG_DBG("Waiting CPU0 to sync");
-
 		while (!atomic_cas(&data->control->lock,
-			ESP32_IPM_LOCK_FREE_VAL, data->this_core_id))
+			ESP32_IPM_LOCK_FREE_VAL, data->this_core_id)) {
 			;
+		}
 
 		atomic_set(&data->control->lock, ESP32_IPM_LOCK_FREE_VAL);
 
@@ -231,7 +268,7 @@ static int esp32_ipm_init(const struct device *dev)
 	return 0;
 }
 
-static const struct ipm_driver_api esp32_ipm_driver_api = {
+static DEVICE_API(ipm, esp32_ipm_driver_api) = {
 	.send = esp32_ipm_send,
 	.register_callback = esp32_ipm_register_callback,
 	.max_data_size_get = esp32_ipm_max_data_size_get,
@@ -247,9 +284,13 @@ static const struct ipm_driver_api esp32_ipm_driver_api = {
 
 #define ESP32_IPM_INIT(idx)			\
 										\
-static struct esp32_ipm_config esp32_ipm_device_cfg_##idx = {	\
-	.irq_source_pro_cpu = DT_INST_IRQN(idx),		\
-	.irq_source_app_cpu = DT_INST_IRQN(idx) + 1,	\
+static struct esp32_ipm_config esp32_ipm_device_cfg_##idx = {		\
+	.irq_source_pro_cpu = DT_INST_IRQ_BY_IDX(idx, 0, irq),			\
+	.irq_priority_pro_cpu = DT_INST_IRQ_BY_IDX(idx, 0, priority),	\
+	.irq_flags_pro_cpu = DT_INST_IRQ_BY_IDX(idx, 0, flags),			\
+	.irq_source_app_cpu = DT_INST_IRQ_BY_IDX(idx, 1, irq),			\
+	.irq_priority_app_cpu = DT_INST_IRQ_BY_IDX(idx, 1, priority),	\
+	.irq_flags_app_cpu = DT_INST_IRQ_BY_IDX(idx, 1, flags),			\
 };	\
 	\
 static struct esp32_ipm_data esp32_ipm_device_data_##idx = {	\

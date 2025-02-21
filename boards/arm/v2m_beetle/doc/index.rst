@@ -190,7 +190,7 @@ Peripheral Mapping:
    - I2C_1_SDA : D22
    - I2C_1_SCL : D23
 
-For mode details please refer to `Beetle Technical Reference Manual (TRM)`_.
+For more details please refer to `Beetle Technical Reference Manual (TRM)`_.
 
 System Clock
 ============
@@ -229,7 +229,7 @@ Flashing an application to V2M Beetle
 -------------------------------------
 
 You can build applications in the usual way. Here is an example for
-the :ref:`hello_world` application.
+the :zephyr:code-sample:`hello_world` application.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/hello_world

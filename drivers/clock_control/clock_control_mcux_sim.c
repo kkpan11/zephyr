@@ -20,6 +20,12 @@ static int mcux_sim_on(const struct device *dev,
 {
 	clock_ip_name_t clock_ip_name = (clock_ip_name_t) sub_system;
 
+#ifdef CONFIG_ETH_NXP_ENET
+	if ((uint32_t)sub_system == KINETIS_SIM_ENET_CLK) {
+		clock_ip_name = kCLOCK_Enet0;
+	}
+#endif
+
 	CLOCK_EnableClock(clock_ip_name);
 
 	return 0;
@@ -45,6 +51,12 @@ static int mcux_sim_get_subsys_rate(const struct device *dev,
 	case KINETIS_SIM_LPO_CLK:
 		clock_name = kCLOCK_LpoClk;
 		break;
+	case KINETIS_SIM_ENET_CLK:
+		clock_name = kCLOCK_CoreSysClk;
+		break;
+	case KINETIS_SIM_ENET_1588_CLK:
+		clock_name = kCLOCK_Osc0ErClk;
+		break;
 	default:
 		clock_name = (clock_name_t) sub_system;
 		break;
@@ -55,7 +67,7 @@ static int mcux_sim_get_subsys_rate(const struct device *dev,
 	return 0;
 }
 
-#if DT_NODE_HAS_STATUS(DT_INST(0, nxp_kinetis_ke1xf_sim), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_INST(0, nxp_kinetis_ke1xf_sim))
 #define NXP_KINETIS_SIM_NODE DT_INST(0, nxp_kinetis_ke1xf_sim)
 #if DT_NODE_HAS_PROP(DT_INST(0, nxp_kinetis_ke1xf_sim), clkout_source)
 	#define NXP_KINETIS_SIM_CLKOUT_SOURCE \
@@ -91,14 +103,14 @@ static int mcux_sim_init(const struct device *dev)
 	return 0;
 }
 
-static const struct clock_control_driver_api mcux_sim_driver_api = {
+static DEVICE_API(clock_control, mcux_sim_driver_api) = {
 	.on = mcux_sim_on,
 	.off = mcux_sim_off,
 	.get_rate = mcux_sim_get_subsys_rate,
 };
 
 DEVICE_DT_DEFINE(NXP_KINETIS_SIM_NODE,
-		    &mcux_sim_init,
+		    mcux_sim_init,
 		    NULL,
 		    NULL, NULL,
 		    PRE_KERNEL_1, CONFIG_CLOCK_CONTROL_INIT_PRIORITY,

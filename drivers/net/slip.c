@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #include <zephyr/net/net_core.h>
 #include <zephyr/net/dummy.h>
 #include <zephyr/drivers/uart_pipe.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #include "slip.h"
 
@@ -302,7 +302,7 @@ static inline int slip_input_byte(struct slip_context *slip,
 static uint8_t *recv_cb(uint8_t *buf, size_t *off)
 {
 	struct slip_context *slip =
-		CONTAINER_OF(buf, struct slip_context, buf);
+		CONTAINER_OF(buf, struct slip_context, buf[0]);
 	size_t i;
 
 	if (!slip->init_done) {
@@ -407,7 +407,7 @@ use_random_mac:
 		slip->mac_addr[2] = 0x5E;
 		slip->mac_addr[3] = 0x00;
 		slip->mac_addr[4] = 0x53;
-		slip->mac_addr[5] = sys_rand32_get();
+		slip->mac_addr[5] = sys_rand8_get();
 	}
 	net_if_set_link_addr(iface, ll_addr->addr, ll_addr->len,
 			     NET_LINK_ETHERNET);

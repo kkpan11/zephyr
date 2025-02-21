@@ -143,6 +143,9 @@ static bool copy_to_pbuffer(struct mpsc_pbuf_buffer *mpsc_buffer,
 	uint8_t *src_data = (uint8_t *)msg + sizeof(struct mpsc_pbuf_hdr);
 	size_t hdr_wlen = DIV_ROUND_UP(sizeof(struct mpsc_pbuf_hdr),
 					   sizeof(uint32_t));
+	if (wlen <= hdr_wlen) {
+		return false;
+	}
 
 	dst->hdr.data = msg->buf.hdr.data;
 	memcpy(dst_data, src_data, (wlen - hdr_wlen) * sizeof(uint32_t));
@@ -158,10 +161,11 @@ static void process_log_msg(const struct shell *sh,
 			     bool locked, bool colors)
 {
 	unsigned int key = 0;
-	uint32_t flags = LOG_OUTPUT_FLAG_LEVEL |
-		      LOG_OUTPUT_FLAG_TIMESTAMP |
-		      (IS_ENABLED(CONFIG_SHELL_LOG_FORMAT_TIMESTAMP) ?
-			LOG_OUTPUT_FLAG_FORMAT_TIMESTAMP : 0);
+	uint32_t flags = LOG_OUTPUT_FLAG_LEVEL | LOG_OUTPUT_FLAG_TIMESTAMP | LOG_OUTPUT_FLAG_THREAD;
+
+	if (IS_ENABLED(CONFIG_SHELL_LOG_FORMAT_TIMESTAMP)) {
+		flags |= LOG_OUTPUT_FLAG_FORMAT_TIMESTAMP;
+	}
 
 	if (colors) {
 		flags |= LOG_OUTPUT_FLAG_COLORS;

@@ -29,7 +29,7 @@ int bt_long_wq_submit(struct k_work *work)
 static int long_wq_init(void)
 {
 
-	const struct k_work_queue_config cfg = {.name = "BT_LW_WQ"};
+	const struct k_work_queue_config cfg = {.name = "BT LW WQ"};
 
 	k_work_queue_init(&bt_long_wq);
 
@@ -40,4 +40,4 @@ static int long_wq_init(void)
 	return 0;
 }
 
-SYS_INIT(long_wq_init, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
+SYS_INIT(long_wq_init, POST_KERNEL, CONFIG_BT_LONG_WQ_INIT_PRIO);

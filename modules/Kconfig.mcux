@@ -1,15 +1,22 @@
 # MCUXpresso SDK
 
 # Copyright (c) 2016, Freescale Semiconductor, Inc.
+# Copyright 2024 NXP
 # SPDX-License-Identifier: Apache-2.0
 
 config HAS_MCUX
 	bool
-	select HAS_CMSIS_CORE
-	depends on SOC_FAMILY_KINETIS || SOC_FAMILY_IMX || SOC_FAMILY_LPC || \
-		SOC_FAMILY_NXP_ADSP || SOC_FAMILY_NXP_S32
+	depends on SOC_FAMILY_KINETIS || SOC_FAMILY_NXP_IMX || SOC_FAMILY_LPC || \
+		SOC_FAMILY_NXP_S32 || SOC_FAMILY_NXP_IMXRT || SOC_FAMILY_NXP_RW || \
+		SOC_FAMILY_NXP_MCX
 
 if HAS_MCUX
+
+config MCUX_CORE_SUFFIX
+	string
+	help
+	  String describing the core identifer used by MCUX SDK when using
+	  dual core parts
 
 config HAS_MCUX_12B1MSPS_SAR
 	bool
@@ -275,11 +282,6 @@ config HAS_MCUX_SMC
 	help
 	  Set if the SMC  module is present in the SoC.
 
-config HAS_MCUX_CSI
-	bool
-	help
-	  Set if the CMOS Sensor Interface module is present in the SoC.
-
 config HAS_MCUX_LPTMR
 	bool
 	help
@@ -325,11 +327,6 @@ config HAS_MCUX_OS_TIMER
 	help
 	  Set if the OS timer is used as a kernel timer on the SoC.
 
-config HAS_MCUX_ACMP
-	bool
-	help
-	  Set if the ACMP module is present on the SoC.
-
 config HAS_MCUX_PWT
 	bool
 	help
@@ -362,9 +359,39 @@ config HAS_MCUX_ADC_ETC
 	  Set if the ADC External Trigger Control module is present
 	  on the SoC.
 
-config HAS_MCUX_XBARA
+config HAS_MCUX_XCACHE
 	bool
 	help
-	  Set if the XBARA module is present on the SoC.
+	  Set if the XCACHE module is present on the SoC.
+
+config HAS_NXP_MONOLITHIC_NBU
+	bool
+	help
+	  Set if the platform supports the monolithic build for BT/15.4 applications.
+
+config NXP_FW_LOADER
+	bool "Include firmware loader component"
+	help
+	   The firmware loader is used to load firmwares to embedded tranceivers.
+	   It is needed to enable connectivity features.
+
+config NXP_MONOLITHIC_WIFI
+	bool "WiFi firmware monolithic build"
+	help
+	   If enabled, the WiFi firmware used by the device will be linked with the
+	   application directly.
+
+config NXP_MONOLITHIC_NBU
+	bool "Narrowband Unit (BT/15.4) firmware monolithic build"
+	depends on HAS_NXP_MONOLITHIC_NBU
+	help
+	   If enabled, the NBU firmware used by the device will be linked with the
+	   application directly.
+
+config NXP_RF_IMU
+	bool "Include RF_IMU adapter for intercore messaging"
+	select EVENTS
+	help
+	   RF_IMU adapter is needed for intercore messaging.
 
 endif # HAS_MCUX

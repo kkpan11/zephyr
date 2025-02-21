@@ -20,6 +20,8 @@ LOG_MODULE_REGISTER(net_ipv4_autoconf_sample, LOG_LEVEL_DBG);
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/net_mgmt.h>
 
+#include "net_sample_common.h"
+
 static struct net_mgmt_event_callback mgmt_cb;
 
 static void handler(struct net_mgmt_event_callback *cb,
@@ -41,13 +43,17 @@ static void handler(struct net_mgmt_event_callback *cb,
 	for (i = 0; i < NET_IF_MAX_IPV4_ADDR; i++) {
 		char buf[NET_IPV4_ADDR_LEN];
 
-		if (cfg->ip.ipv4->unicast[i].addr_type != NET_ADDR_AUTOCONF) {
+		if (cfg->ip.ipv4->unicast[i].ipv4.addr_type != NET_ADDR_AUTOCONF) {
 			continue;
 		}
 
 		LOG_INF("Your address: %s",
 			net_addr_ntop(AF_INET,
-				    &cfg->ip.ipv4->unicast[i].address.in_addr,
+				    &cfg->ip.ipv4->unicast[i].ipv4.address.in_addr,
+				    buf, sizeof(buf)));
+		LOG_INF("Your netmask: %s",
+			net_addr_ntop(AF_INET,
+				    &cfg->ip.ipv4->unicast[i].netmask,
 				    buf, sizeof(buf)));
 	}
 }
@@ -55,6 +61,8 @@ static void handler(struct net_mgmt_event_callback *cb,
 int main(void)
 {
 	LOG_INF("Run ipv4 autoconf client");
+
+	wait_for_network();
 
 	net_mgmt_init_event_callback(&mgmt_cb, handler,
 				     NET_EVENT_IPV4_ADDR_ADD);

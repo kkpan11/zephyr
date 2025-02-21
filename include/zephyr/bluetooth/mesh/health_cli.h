@@ -26,7 +26,7 @@ extern "C" {
 /** Health Client Model Context */
 struct bt_mesh_health_cli {
 	/** Composition data model entry pointer. */
-	struct bt_mesh_model *model;
+	const struct bt_mesh_model *model;
 
 	/** Publication structure instance */
 	struct bt_mesh_model_pub pub;
@@ -98,6 +98,22 @@ struct bt_mesh_health_cli {
 	void (*current_status)(struct bt_mesh_health_cli *cli, uint16_t addr,
 			       uint8_t test_id, uint16_t cid, uint8_t *faults,
 			       size_t fault_count);
+
+	/** @brief Optional callback for updating the message to be sent as periodic publication.
+	 *
+	 *  This callback is called before sending the periodic publication message.
+	 *  The callback can be used to update the message to be sent.
+	 *
+	 *  If this callback is not implemented, periodic publication can still be enabled,
+	 *  but no messages will be sent.
+	 *
+	 *  @param cli Health client that is sending the periodic publication message.
+	 *  @param pub_buf Publication message buffer to be updated.
+	 *
+	 *  @return 0 if @p pub_buf is updated successfully, or (negative) error code on failure.
+	 *            The message won't be sent if an error is returned.
+	 */
+	int (*update)(struct bt_mesh_health_cli *cli, struct net_buf_simple *pub_buf);
 
 	/* Internal parameters for tracking message responses. */
 	struct bt_mesh_msg_ack_ctx ack_ctx;

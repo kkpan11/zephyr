@@ -19,8 +19,6 @@ LOG_MODULE_REGISTER(bt_mesh_blob_cli);
 	SYS_SLIST_FOR_EACH_CONTAINER((sys_slist_t *)&(cli)->inputs->targets,   \
 				     target, n)
 
-#define CHUNK_SIZE_MAX BLOB_CHUNK_SIZE_MAX(BT_MESH_TX_SDU_MAX)
-
 /* The Maximum BLOB Poll Interval - T_MBPI */
 #define BLOB_POLL_TIME_MAX_SECS 30
 
@@ -409,8 +407,8 @@ static void broadcast_complete(struct bt_mesh_blob_cli *cli)
 
 static void tx_complete(struct k_work *work)
 {
-	struct bt_mesh_blob_cli *cli =
-		CONTAINER_OF(work, struct bt_mesh_blob_cli, tx.complete);
+	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+	struct bt_mesh_blob_cli *cli = CONTAINER_OF(dwork, struct bt_mesh_blob_cli, tx.complete);
 
 	if (!cli->tx.ctx.is_inited || !cli->tx.sending) {
 		return;
@@ -542,7 +540,7 @@ void blob_cli_broadcast(struct bt_mesh_blob_cli *cli,
 
 void blob_cli_broadcast_tx_complete(struct bt_mesh_blob_cli *cli)
 {
-	k_work_submit(&cli->tx.complete);
+	k_work_schedule(&cli->tx.complete, K_MSEC(cli->tx.ctx.post_send_delay_ms));
 }
 
 void blob_cli_broadcast_rsp(struct bt_mesh_blob_cli *cli,
@@ -764,9 +762,9 @@ static void block_get_tx(struct bt_mesh_blob_cli *cli, uint16_t dst)
  *
  * After sending all reported missing chunks to each target, the Client updates
  * @ref bt_mesh_blob_target_pull::block_report_timestamp value for every target individually in
- * chunk_tx_complete. The Client then proceedes to block_report_wait state and uses the earliest of
+ * chunk_tx_complete. The Client then proceeds to block_report_wait state and uses the earliest of
  * all block_report_timestamp and cli_timestamp to schedule the retry timer. When the retry
- * timer expires, the Client proceedes to the block_check_end state.
+ * timer expires, the Client proceeds to the block_check_end state.
  *
  * In Pull mode, target nodes send a Partial Block Report message to the Client to inform about
  * missing chunks. The Client doesn't control when these messages are sent by target nodes, and
@@ -916,7 +914,7 @@ static void chunk_tx_complete(struct bt_mesh_blob_cli *cli, uint16_t dst)
 	int64_t timestamp = k_uptime_get() + BLOCK_REPORT_TIME_MSEC;
 
 	if (!UNICAST_MODE(cli)) {
-		/* If using group adressing, reset timestamp for all targets after all chunks are
+		/* If using group addressing, reset timestamp for all targets after all chunks are
 		 * sent to the group address
 		 */
 		TARGETS_FOR_EACH(cli, target) {
@@ -934,6 +932,7 @@ static void chunk_send(struct bt_mesh_blob_cli *cli)
 		.send = chunk_tx,
 		.next = chunk_send_end,
 		.acked = false,
+		.post_send_delay_ms = cli->chunk_interval_ms,
 	};
 
 	if (cli->xfer->mode == BT_MESH_BLOB_XFER_MODE_PULL) {
@@ -1087,7 +1086,7 @@ static void progress_checked(struct bt_mesh_blob_cli *cli)
 
 	cli->state = BT_MESH_BLOB_CLI_STATE_NONE;
 
-	if (cli->cb && cli->cb->end) {
+	if (cli->cb && cli->cb->xfer_progress_complete) {
 		cli->cb->xfer_progress_complete(cli);
 	}
 }
@@ -1204,10 +1203,10 @@ static void rx_block_status(struct bt_mesh_blob_cli *cli,
 	blob_cli_broadcast_rsp(cli, target);
 }
 
-static int handle_xfer_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
+static int handle_xfer_status(const struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
 			      struct net_buf_simple *buf)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 	enum bt_mesh_blob_xfer_phase expected_phase;
 	struct bt_mesh_blob_target *target;
 	struct bt_mesh_blob_xfer_info info = { 0 };
@@ -1276,10 +1275,10 @@ static int handle_xfer_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx 
 	return 0;
 }
 
-static int handle_block_report(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
+static int handle_block_report(const struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
 			       struct net_buf_simple *buf)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 	struct block_status status = {
 		.status = BT_MESH_BLOB_SUCCESS,
 		.block.number = cli->block.number,
@@ -1330,10 +1329,10 @@ static int handle_block_report(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx
 	return 0;
 }
 
-static int handle_block_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
+static int handle_block_status(const struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
 			       struct net_buf_simple *buf)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 	struct bt_mesh_blob_target *target;
 	struct block_status status = { 0 };
 	uint8_t status_and_format;
@@ -1375,8 +1374,8 @@ static int handle_block_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx
 		LOG_DBG("Missing: %s", bt_hex(status.block.missing, len));
 		break;
 	case BT_MESH_BLOB_CHUNKS_MISSING_ENCODED:
-		/** An empty Missing Chunks field entails that there are no
-		 *  missing chunks for this block (Spec 5.3.8)
+		/** MshMBTv1.0: 5.3.8: An empty Missing Chunks field entails that there are no
+		 * missing chunks for this block.
 		 */
 		if (!buf->len) {
 			status.missing = BT_MESH_BLOB_CHUNKS_MISSING_NONE;
@@ -1401,10 +1400,10 @@ static int handle_block_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx
 	return 0;
 }
 
-static int handle_info_status(struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
+static int handle_info_status(const struct bt_mesh_model *mod, struct bt_mesh_msg_ctx *ctx,
 			      struct net_buf_simple *buf)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 	struct bt_mesh_blob_cli_caps caps;
 	enum bt_mesh_blob_status status;
 	struct bt_mesh_blob_target *target;
@@ -1458,22 +1457,23 @@ const struct bt_mesh_model_op _bt_mesh_blob_cli_op[] = {
 	BT_MESH_MODEL_OP_END,
 };
 
-static int blob_cli_init(struct bt_mesh_model *mod)
+static int blob_cli_init(const struct bt_mesh_model *mod)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 
 	cli->mod = mod;
 
+	bt_mesh_blob_cli_set_chunk_interval_ms(cli, CONFIG_BT_MESH_TX_BLOB_CHUNK_SEND_INTERVAL);
 	cli->tx.cli_timestamp = 0ll;
 	k_work_init_delayable(&cli->tx.retry, retry_timeout);
-	k_work_init(&cli->tx.complete, tx_complete);
+	k_work_init_delayable(&cli->tx.complete, tx_complete);
 
 	return 0;
 }
 
-static void blob_cli_reset(struct bt_mesh_model *mod)
+static void blob_cli_reset(const struct bt_mesh_model *mod)
 {
-	struct bt_mesh_blob_cli *cli = mod->user_data;
+	struct bt_mesh_blob_cli *cli = mod->rt->user_data;
 
 	cli_state_reset(cli);
 }
@@ -1496,7 +1496,7 @@ int bt_mesh_blob_cli_caps_get(struct bt_mesh_blob_cli *cli,
 	cli->caps.min_block_size_log = 0x06;
 	cli->caps.max_block_size_log = 0x20;
 	cli->caps.max_chunks = CONFIG_BT_MESH_BLOB_CHUNK_COUNT_MAX;
-	cli->caps.max_chunk_size = CHUNK_SIZE_MAX;
+	cli->caps.max_chunk_size = BLOB_TX_CHUNK_SIZE;
 	cli->caps.max_size = 0xffffffff;
 	cli->caps.mtu_size = 0xffff;
 	cli->caps.modes = BT_MESH_BLOB_XFER_MODE_ALL;
@@ -1521,9 +1521,9 @@ int bt_mesh_blob_cli_send(struct bt_mesh_blob_cli *cli,
 		return -EBUSY;
 	}
 
-	if (!(xfer->mode & BT_MESH_BLOB_XFER_MODE_ALL) ||
-	    xfer->block_size_log < 0x06 || xfer->block_size_log > 0x20 ||
-	    xfer->chunk_size < 8 || xfer->chunk_size > CHUNK_SIZE_MAX) {
+	if (!(xfer->mode & BT_MESH_BLOB_XFER_MODE_ALL) || xfer->block_size_log < 0x06 ||
+	    xfer->block_size_log > 0x20 || xfer->chunk_size < 8 ||
+	    xfer->chunk_size > BLOB_TX_CHUNK_SIZE) {
 		LOG_ERR("Incompatible transfer parameters");
 		return -EINVAL;
 	}
@@ -1650,4 +1650,9 @@ uint8_t bt_mesh_blob_cli_xfer_progress_active_get(struct bt_mesh_blob_cli *cli)
 bool bt_mesh_blob_cli_is_busy(struct bt_mesh_blob_cli *cli)
 {
 	return cli->state != BT_MESH_BLOB_CLI_STATE_NONE;
+}
+
+void bt_mesh_blob_cli_set_chunk_interval_ms(struct bt_mesh_blob_cli *cli, uint32_t interval_ms)
+{
+	cli->chunk_interval_ms = interval_ms;
 }

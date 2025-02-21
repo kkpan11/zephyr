@@ -7,15 +7,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <zephyr/kernel.h>
-#include <zephyr/bluetooth/conn.h>
-#include <zephyr/bluetooth/bluetooth.h>
-#include <zephyr/bluetooth/audio/has.h>
-#include <zephyr/shell/shell.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 
-#include "shell/bt.h"
+#include <zephyr/bluetooth/audio/has.h>
+#include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/kernel.h>
+#include <zephyr/shell/shell.h>
+#include <zephyr/shell/shell_string_conv.h>
+
+#include "common/bt_shell_private.h"
 
 static int preset_select(uint8_t index, bool sync)
 {
@@ -24,7 +29,7 @@ static int preset_select(uint8_t index, bool sync)
 
 static void preset_name_changed(uint8_t index, const char *name)
 {
-	shell_print(ctx_shell, "Preset name changed index %u name %s", index, name);
+	bt_shell_print("Preset name changed index %u name %s", index, name);
 }
 
 static const struct bt_has_preset_ops preset_ops = {
@@ -294,21 +299,21 @@ SHELL_STATIC_SUBCMD_SET_CREATE(has_cmds,
 		      "Initialize the service and register type "
 		      "[binaural | monaural(default) | banded] [sync] [independent]",
 		      cmd_has_register, 1, 3),
-	SHELL_CMD_ARG(preset-reg, NULL, "Register preset <index> <properties> <name>",
+	SHELL_CMD_ARG(preset_reg, NULL, "Register preset <index> <properties> <name>",
 		      cmd_preset_reg, 4, 0),
-	SHELL_CMD_ARG(preset-unreg, NULL, "Unregister preset <index>", cmd_preset_unreg, 2, 0),
-	SHELL_CMD_ARG(preset-list, NULL, "List all presets", cmd_preset_list, 1, 0),
-	SHELL_CMD_ARG(preset-set-avail, NULL, "Set preset as available <index>",
+	SHELL_CMD_ARG(preset_unreg, NULL, "Unregister preset <index>", cmd_preset_unreg, 2, 0),
+	SHELL_CMD_ARG(preset_list, NULL, "List all presets", cmd_preset_list, 1, 0),
+	SHELL_CMD_ARG(preset_set_avail, NULL, "Set preset as available <index>",
 		      cmd_preset_avail, 2, 0),
-	SHELL_CMD_ARG(preset-set-unavail, NULL, "Set preset as unavailable <index>",
+	SHELL_CMD_ARG(preset_set_unavail, NULL, "Set preset as unavailable <index>",
 		      cmd_preset_unavail, 2, 0),
-	SHELL_CMD_ARG(preset-active-set, NULL, "Set active preset <index>",
+	SHELL_CMD_ARG(preset_active_set, NULL, "Set active preset <index>",
 		      cmd_preset_active_set, 2, 0),
-	SHELL_CMD_ARG(preset-active-get, NULL, "Get active preset", cmd_preset_active_get, 1, 0),
-	SHELL_CMD_ARG(preset-active-clear, NULL, "Clear selected preset",
+	SHELL_CMD_ARG(preset_active_get, NULL, "Get active preset", cmd_preset_active_get, 1, 0),
+	SHELL_CMD_ARG(preset_active_clear, NULL, "Clear selected preset",
 		      cmd_preset_active_clear, 1, 0),
-	SHELL_CMD_ARG(set-name, NULL, "Set preset name <index> <name>", cmd_preset_name_set, 3, 0),
-	SHELL_CMD_ARG(features-set, NULL, "Set hearing aid features "
+	SHELL_CMD_ARG(set_name, NULL, "Set preset name <index> <name>", cmd_preset_name_set, 3, 0),
+	SHELL_CMD_ARG(features_set, NULL, "Set hearing aid features "
 		      "[binaural | monaural(default) | banded] [sync] [independent]",
 		      cmd_features_set, 1, 3),
 	SHELL_SUBCMD_SET_END

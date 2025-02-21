@@ -1,7 +1,8 @@
-.. _x-nucleo-iks01a2-shub-sample:
+.. zephyr:code-sample:: x-nucleo-iks01a2-shub
+   :name: X-NUCLEO-IKS01A2 shield - SensorHub (Mode 2)
+   :relevant-api: sensor_interface
 
-X-NUCLEO-IKS01A2: shield SensorHub (Mode 2) sample
-##################################################
+   Interact with all the sensors of an X-NUCLEO-IKS01A2 shield using Sensor Hub mode.
 
 Overview
 ********
@@ -35,13 +36,13 @@ does not yet support sensors multiple instances.
 References
 **********
 
--X-NUCLEO-IKS01A2: http://www.st.com/en/ecosystems/x-nucleo-iks01a2.html
+-X-NUCLEO-IKS01A2: https://www.st.com/en/ecosystems/x-nucleo-iks01a2.html
 
 Building and Running
 ********************
 
 This sample runs with X-NUCLEO-IKS01A2 stacked on any board with a matching
-Arduino connector. For this example, we use a :ref:`nucleo_f401re_board` board.
+Arduino connector. For this example, we use a :zephyr:board:`nucleo_f401re` board.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/shields/x_nucleo_iks01a2/sensorhub

@@ -71,6 +71,8 @@ struct can_esp32_twai_config {
 	const struct device *clock_dev;
 	const clock_control_subsys_t clock_subsys;
 	int irq_source;
+	int irq_priority;
+	int irq_flags;
 #ifndef CONFIG_SOC_SERIES_ESP32
 	/* 32-bit variant of output clock divider register required for non-ESP32 MCUs */
 	uint32_t cdr32;
@@ -118,34 +120,19 @@ static int can_esp32_twai_set_timing(const struct device *dev, const struct can_
 	struct can_sja1000_data *data = dev->data;
 	uint8_t btr0;
 	uint8_t btr1;
-	uint8_t sjw;
 
-	__ASSERT_NO_MSG(timing->sjw == CAN_SJW_NO_CHANGE ||
-			(timing->sjw >= 0x1 && timing->sjw <= 0x4));
-	__ASSERT_NO_MSG(timing->prop_seg == 0);
-	__ASSERT_NO_MSG(timing->phase_seg1 >= 0x1 && timing->phase_seg1 <= 0x10);
-	__ASSERT_NO_MSG(timing->phase_seg2 >= 0x1 && timing->phase_seg2 <= 0x8);
-	__ASSERT_NO_MSG(timing->prescaler >= 0x1 && timing->prescaler <= 0x2000);
-
-	if (data->started) {
+	if (data->common.started) {
 		return -EBUSY;
 	}
 
 	k_mutex_lock(&data->mod_lock, K_FOREVER);
 
-	if (timing->sjw == CAN_SJW_NO_CHANGE) {
-		sjw = data->sjw;
-	} else {
-		sjw = timing->sjw;
-		data->sjw = timing->sjw;
-	}
-
 	btr0 = TWAI_BAUD_PRESC_PREP(timing->prescaler - 1) |
-	       TWAI_SYNC_JUMP_WIDTH_PREP(sjw - 1);
+	       TWAI_SYNC_JUMP_WIDTH_PREP(timing->sjw - 1);
 	btr1 = TWAI_TIME_SEG1_PREP(timing->phase_seg1 - 1) |
 	       TWAI_TIME_SEG2_PREP(timing->phase_seg2 - 1);
 
-	if ((data->mode & CAN_MODE_3_SAMPLES) != 0) {
+	if ((data->common.mode & CAN_MODE_3_SAMPLES) != 0) {
 		btr1 |= TWAI_TIME_SAMP;
 	}
 
@@ -217,12 +204,19 @@ static int can_esp32_twai_init(const struct device *dev)
 	can_esp32_twai_write_reg32(dev, TWAI_CLOCK_DIVIDER_REG, twai_config->cdr32);
 #endif /* !CONFIG_SOC_SERIES_ESP32 */
 
-	esp_intr_alloc(twai_config->irq_source, 0, can_esp32_twai_isr, (void *)dev, NULL);
+	err = esp_intr_alloc(twai_config->irq_source,
+			ESP_PRIO_TO_FLAGS(twai_config->irq_priority) |
+			ESP_INT_FLAGS_CHECK(twai_config->irq_flags) | ESP_INTR_FLAG_IRAM,
+			can_esp32_twai_isr, (void *)dev, NULL);
 
-	return 0;
+	if (err != 0) {
+		LOG_ERR("could not allocate interrupt (err %d)", err);
+	}
+
+	return err;
 }
 
-const struct can_driver_api can_esp32_twai_driver_api = {
+DEVICE_API(can, can_esp32_twai_driver_api) = {
 	.get_capabilities = can_sja1000_get_capabilities,
 	.start = can_sja1000_start,
 	.stop = can_sja1000_stop,
@@ -239,10 +233,9 @@ const struct can_driver_api can_esp32_twai_driver_api = {
 	.set_state_change_callback = can_sja1000_set_state_change_callback,
 	.get_core_clock = can_esp32_twai_get_core_clock,
 	.get_max_filters = can_sja1000_get_max_filters,
-	.get_max_bitrate = can_sja1000_get_max_bitrate,
-#ifndef CONFIG_CAN_AUTO_BUS_OFF_RECOVERY
+#ifdef CONFIG_CAN_MANUAL_RECOVERY_MODE
 	.recover = can_sja1000_recover,
-#endif /* !CONFIG_CAN_AUTO_BUS_OFF_RECOVERY */
+#endif /* CONFIG_CAN_MANUAL_RECOVERY_MODE */
 	.timing_min = CAN_SJA1000_TIMING_MIN_INITIALIZER,
 #ifdef CONFIG_SOC_SERIES_ESP32
 	.timing_max = CAN_SJA1000_TIMING_MAX_INITIALIZER,
@@ -287,7 +280,9 @@ const struct can_driver_api can_esp32_twai_driver_api = {
 		.clock_dev = DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(inst)),                             \
 		.clock_subsys = (clock_control_subsys_t)DT_INST_CLOCKS_CELL(inst, offset),         \
 		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(inst),                                      \
-		.irq_source = DT_INST_IRQN(inst),                                                  \
+		.irq_source = DT_INST_IRQ_BY_IDX(inst, 0, irq),                                    \
+		.irq_priority = DT_INST_IRQ_BY_IDX(inst, 0, priority),                             \
+		.irq_flags = DT_INST_IRQ_BY_IDX(inst, 0, flags),                                   \
 		TWAI_CDR32_INIT(inst)                                                              \
 	};                                                                                         \
 	CAN_ESP32_TWAI_ASSERT_CLKOUT_DIVIDER(inst);                                                \
@@ -296,13 +291,13 @@ const struct can_driver_api can_esp32_twai_driver_api = {
 					can_esp32_twai_read_reg, can_esp32_twai_write_reg,         \
 					CAN_SJA1000_OCR_OCMODE_BIPHASE,                            \
 					COND_CODE_0(IS_ENABLED(CONFIG_SOC_SERIES_ESP32), (0),      \
-					(CAN_ESP32_TWAI_DT_CDR_INST_GET(inst))));                  \
+					(CAN_ESP32_TWAI_DT_CDR_INST_GET(inst))), 25000);           \
                                                                                                    \
 	static struct can_sja1000_data can_sja1000_data_##inst =                                   \
 		CAN_SJA1000_DATA_INITIALIZER(NULL);                                                \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(inst, can_esp32_twai_init, NULL, &can_sja1000_data_##inst,           \
-			      &can_sja1000_config_##inst, POST_KERNEL,                             \
-			      CONFIG_CAN_INIT_PRIORITY, &can_esp32_twai_driver_api);
+	CAN_DEVICE_DT_INST_DEFINE(inst, can_esp32_twai_init, NULL, &can_sja1000_data_##inst,       \
+				  &can_sja1000_config_##inst, POST_KERNEL,                         \
+				  CONFIG_CAN_INIT_PRIORITY, &can_esp32_twai_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(CAN_ESP32_TWAI_INIT)

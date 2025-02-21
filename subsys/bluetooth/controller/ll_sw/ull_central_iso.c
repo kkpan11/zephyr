@@ -73,9 +73,11 @@ static void mfy_cis_offset_get(void *param);
 static void ticker_op_cb(uint32_t status, void *param);
 #endif /* CONFIG_BT_CTLR_CENTRAL_SPACING  == 0 */
 
-static void set_bn_max_pdu(bool framed, uint32_t iso_interval,
-			   uint32_t sdu_interval, uint16_t max_sdu, uint8_t *bn,
-			   uint8_t *max_pdu);
+static uint32_t iso_interval_adjusted_bn_max_pdu_get(bool framed, uint32_t iso_interval,
+						     uint32_t iso_interval_cig,
+						     uint32_t sdu_interval,
+						     uint16_t max_sdu, uint8_t *bn,
+						     uint8_t *max_pdu);
 static uint8_t ll_cig_parameters_validate(void);
 static uint8_t ll_cis_parameters_validate(uint8_t cis_idx, uint8_t cis_id,
 					  uint16_t c_sdu, uint16_t p_sdu,
@@ -136,7 +138,9 @@ uint8_t ll_cis_parameters_set(uint8_t cis_id,
 	ll_iso_setup.stream[cis_idx].c_max_sdu = c_sdu;
 	ll_iso_setup.stream[cis_idx].p_max_sdu = p_sdu;
 	ll_iso_setup.stream[cis_idx].lll.tx.phy = c_phy;
+	ll_iso_setup.stream[cis_idx].lll.tx.phy_flags = PHY_FLAGS_S8;
 	ll_iso_setup.stream[cis_idx].lll.rx.phy = p_phy;
+	ll_iso_setup.stream[cis_idx].lll.rx.phy_flags = PHY_FLAGS_S8;
 	ll_iso_setup.stream[cis_idx].central.c_rtn = c_rtn;
 	ll_iso_setup.stream[cis_idx].central.p_rtn = p_rtn;
 	ll_iso_setup.cis_idx++;
@@ -145,7 +149,6 @@ uint8_t ll_cis_parameters_set(uint8_t cis_id,
 }
 
 /* TODO:
- * - Drop retransmissions to stay within Max_Transmission_Latency instead of asserting
  * - Calculate ISO_Interval to allow SDU_Interval < ISO_Interval
  */
 uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
@@ -153,6 +156,7 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 	uint16_t cis_created_handles[STREAMS_PER_GROUP];
 	struct ll_conn_iso_stream *cis;
 	struct ll_conn_iso_group *cig;
+	uint32_t iso_interval_cig_us;
 	uint32_t iso_interval_us;
 	uint32_t cig_sync_delay;
 	uint32_t max_se_length;
@@ -227,12 +231,21 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 		 * handle the throughput. For unframed these must be divisible, if they're not,
 		 * framed mode must be forced.
 		 */
-		cig->iso_interval = cig->c_sdu_interval / ISO_INT_UNIT_US;
+		iso_interval_us = cig->c_sdu_interval;
 
-		if (cig->iso_interval < BT_HCI_ISO_INTERVAL_MIN) {
+		if (iso_interval_us < ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN)) {
 			/* ISO_Interval is below minimum (5 ms) */
-			cig->iso_interval = BT_HCI_ISO_INTERVAL_MIN;
+			iso_interval_us = ISO_INTERVAL_TO_US(BT_HCI_ISO_INTERVAL_MIN);
 		}
+
+#if defined(CONFIG_BT_CTLR_CONN_ISO_AVOID_SEGMENTATION)
+		/* Check if this is a HAP usecase which requires higher link bandwidth to ensure
+		 * segmentation is not invoked in ISO-AL.
+		 */
+		if (cig->central.framing && cig->c_sdu_interval == 10000U) {
+			iso_interval_us = 7500U; /* us */
+		}
+#endif
 
 		if (!cig->central.framing && (cig->c_sdu_interval % ISO_INT_UNIT_US)) {
 			/* Framing not requested but requirement for unframed is not met. Force
@@ -240,9 +253,11 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 			 */
 			force_framed = true;
 		}
+	} else {
+		iso_interval_us = cig->iso_interval * ISO_INT_UNIT_US;
 	}
 
-	iso_interval_us = cig->iso_interval * ISO_INT_UNIT_US;
+	iso_interval_cig_us = iso_interval_us;
 
 	lll_hdr_init(&cig->lll, cig);
 	max_se_length = 0U;
@@ -299,6 +314,8 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 	}
 
 	num_cis = cig->lll.num_cis;
+
+ll_cig_parameters_commit_retry:
 	handle_iter = UINT16_MAX;
 
 	/* 1) Acquire CIS instances and initialize instance data.
@@ -347,14 +364,21 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 			 * directions
 			 */
 			if (tx) {
+				uint32_t iso_interval_adjust_us;
 				uint8_t max_pdu;
 				uint8_t bn;
 
 				bn = cis->lll.tx.bn;
 				max_pdu = cis->lll.tx.max_pdu;
-				set_bn_max_pdu(cis->framed, iso_interval_us,
-					       cig->c_sdu_interval,
-					       cis->c_max_sdu, &bn, &max_pdu);
+				iso_interval_adjust_us =
+					iso_interval_adjusted_bn_max_pdu_get(cis->framed,
+						iso_interval_us, iso_interval_cig_us,
+						cig->c_sdu_interval, cis->c_max_sdu, &bn, &max_pdu);
+				if (iso_interval_adjust_us != iso_interval_us) {
+					iso_interval_us = iso_interval_adjust_us;
+
+					goto ll_cig_parameters_commit_retry;
+				}
 				cis->lll.tx.bn = bn;
 				cis->lll.tx.max_pdu = max_pdu;
 			} else {
@@ -362,14 +386,21 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 			}
 
 			if (rx) {
+				uint32_t iso_interval_adjust_us;
 				uint8_t max_pdu;
 				uint8_t bn;
 
 				bn = cis->lll.rx.bn;
 				max_pdu = cis->lll.rx.max_pdu;
-				set_bn_max_pdu(cis->framed, iso_interval_us,
-					       cig->p_sdu_interval,
-					       cis->p_max_sdu, &bn, &max_pdu);
+				iso_interval_adjust_us =
+					iso_interval_adjusted_bn_max_pdu_get(cis->framed,
+						iso_interval_us, iso_interval_cig_us,
+						cig->p_sdu_interval, cis->p_max_sdu, &bn, &max_pdu);
+				if (iso_interval_adjust_us != iso_interval_us) {
+					iso_interval_us = iso_interval_adjust_us;
+
+					goto ll_cig_parameters_commit_retry;
+				}
 				cis->lll.rx.bn = bn;
 				cis->lll.rx.max_pdu = max_pdu;
 			} else {
@@ -388,6 +419,9 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 		se[i].total_count = MAX((cis->central.c_rtn + 1) * cis->lll.tx.bn,
 					(cis->central.p_rtn + 1) * cis->lll.rx.bn);
 	}
+
+	cig->lll.iso_interval_us = iso_interval_us;
+	cig->iso_interval = iso_interval_us / ISO_INT_UNIT_US;
 
 	handle_iter = UINT16_MAX;
 	total_time = 0U;
@@ -508,8 +542,29 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 
 		if (!cig->central.test) {
 			/* Make sure specified Max_Transport_Latency is not exceeded */
-			LL_ASSERT(c_latency <= cig->c_latency);
-			LL_ASSERT(p_latency <= cig->p_latency);
+			if ((c_latency > cig->c_latency) || (p_latency > cig->p_latency)) {
+				/* Check if we can reduce RTN to meet requested latency */
+				if (!cis->central.c_rtn && !cis->central.p_rtn) {
+					/* Actual latency exceeds the Max. Transport Latency */
+					err = BT_HCI_ERR_INVALID_PARAM;
+
+					/* Release allocated resources  and exit */
+					goto ll_cig_parameters_commit_cleanup;
+				}
+
+				/* Reduce the RTN to meet host requested latency.
+				 * NOTE: Both central and peripheral retransmission is reduced for
+				 * simplicity.
+				 */
+				if (cis->central.c_rtn) {
+					cis->central.c_rtn--;
+				}
+				if (cis->central.p_rtn) {
+					cis->central.p_rtn--;
+				}
+
+				goto ll_cig_parameters_commit_retry;
+			}
 		}
 
 		c_max_latency = MAX(c_max_latency, c_latency);
@@ -550,7 +605,7 @@ uint8_t ll_cig_parameters_commit(uint8_t cig_id, uint16_t *handles)
 		HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_XTAL_US);
 	cig->ull.ticks_preempt_to_start =
 		HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_PREEMPT_MIN_US);
-	cig->ull.ticks_slot = HAL_TICKER_US_TO_TICKS(slot_us);
+	cig->ull.ticks_slot = HAL_TICKER_US_TO_TICKS_CEIL(slot_us);
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 
 	/* Reset params cache */
@@ -626,7 +681,9 @@ uint8_t ll_cis_parameters_test_set(uint8_t cis_id, uint8_t nse,
 	ll_iso_setup.stream[cis_idx].lll.tx.max_pdu = c_bn ? c_pdu : 0U;
 	ll_iso_setup.stream[cis_idx].lll.rx.max_pdu = p_bn ? p_pdu : 0U;
 	ll_iso_setup.stream[cis_idx].lll.tx.phy = c_phy;
+	ll_iso_setup.stream[cis_idx].lll.tx.phy_flags = PHY_FLAGS_S8;
 	ll_iso_setup.stream[cis_idx].lll.rx.phy = p_phy;
+	ll_iso_setup.stream[cis_idx].lll.rx.phy_flags = PHY_FLAGS_S8;
 	ll_iso_setup.stream[cis_idx].lll.tx.bn = c_bn;
 	ll_iso_setup.stream[cis_idx].lll.rx.bn = p_bn;
 	ll_iso_setup.cis_idx++;
@@ -681,15 +738,6 @@ void ll_cis_create(uint16_t cis_handle, uint16_t acl_handle)
 	/* Initialize stream states */
 	cis->established = 0;
 	cis->teardown = 0;
-	cis->lll.event_count = LLL_CONN_ISO_EVENT_COUNT_MAX;
-	cis->lll.sn = 0;
-	cis->lll.nesn = 0;
-	cis->lll.cie = 0;
-	cis->lll.flush = LLL_CIS_FLUSH_NONE;
-	cis->lll.active = 0;
-	cis->lll.datapath_ready_rx = 0;
-	cis->lll.tx.bn_curr = 1U;
-	cis->lll.rx.bn_curr = 1U;
 
 	(void)memset(&cis->hdr, 0U, sizeof(cis->hdr));
 
@@ -853,20 +901,42 @@ uint8_t ull_central_iso_setup(uint16_t cis_handle,
 	cis->offset = cis_offset;
 
 #else /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
-	if (IS_ENABLED(CONFIG_BT_CTLR_CENTRAL_SPACING) && (CONFIG_BT_CTLR_CENTRAL_SPACING > 0)) {
+
+	if (false) {
+
+#if defined(CONFIG_BT_CTLR_CENTRAL_SPACING)
+	} else if (CONFIG_BT_CTLR_CENTRAL_SPACING > 0) {
 		uint32_t cis_offset;
 
-		cis_offset = MAX((HAL_TICKER_TICKS_TO_US(conn->ull.ticks_slot) +
-				  (EVENT_TICKER_RES_MARGIN_US << 1U) + cig->sync_delay -
-				  cis->sync_delay), *cis_offset_min);
+		cis_offset = HAL_TICKER_TICKS_TO_US(conn->ull.ticks_slot) +
+			     (EVENT_TICKER_RES_MARGIN_US << 1U);
+
+		cis_offset += cig->sync_delay - cis->sync_delay;
+
+		if (cis_offset < *cis_offset_min) {
+			cis_offset = *cis_offset_min;
+		}
+
 		cis->offset = cis_offset;
+#endif /* CONFIG_BT_CTLR_CENTRAL_SPACING */
+
 	} else {
 		cis->offset = *cis_offset_min;
 	}
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 
 	cis->central.instant = instant;
+#if defined(CONFIG_BT_CTLR_ISOAL_PSN_IGNORE)
+	cis->pkt_seq_num = 0U;
+#endif /* CONFIG_BT_CTLR_ISOAL_PSN_IGNORE */
+	/* It is intentional to initialize to the 39 bit maximum value and rollover to 0 in the
+	 * prepare function, the event counter is pre-incremented in prepare function for the
+	 * current ISO event.
+	 */
+	cis->lll.event_count_prepare = LLL_CONN_ISO_EVENT_COUNT_MAX;
+	cis->lll.event_count = LLL_CONN_ISO_EVENT_COUNT_MAX;
 	cis->lll.next_subevent = 0U;
+	cis->lll.tifs_us = conn->lll.tifs_cis_us;
 	cis->lll.sn = 0U;
 	cis->lll.nesn = 0U;
 	cis->lll.cie = 0U;
@@ -928,13 +998,15 @@ int ull_central_iso_cis_offset_get(uint16_t cis_handle,
 	}
 
 	return -EBUSY;
-#endif /* CONFIG_BT_CTLR_CENTRAL_SPACING  != 0 */
+#else /* CONFIG_BT_CTLR_CENTRAL_SPACING != 0 */
 
 	*cis_offset_min = HAL_TICKER_TICKS_TO_US(conn->ull.ticks_slot) +
-			  (EVENT_TICKER_RES_MARGIN_US << 1U) +
-			  cig->sync_delay - cis->sync_delay;
+			  (EVENT_TICKER_RES_MARGIN_US << 1U);
+
+	*cis_offset_min += cig->sync_delay - cis->sync_delay;
 
 	return 0;
+#endif /* CONFIG_BT_CTLR_CENTRAL_SPACING != 0 */
 }
 
 #if (CONFIG_BT_CTLR_CENTRAL_SPACING == 0)
@@ -955,6 +1027,7 @@ static void mfy_cig_offset_get(void *param)
 	struct ll_conn_iso_stream *cis;
 	struct ll_conn_iso_group *cig;
 	uint32_t conn_interval_us;
+	uint32_t offset_limit_us;
 	uint32_t ticks_to_expire;
 	uint32_t offset_max_us;
 	uint32_t offset_min_us;
@@ -964,18 +1037,25 @@ static void mfy_cig_offset_get(void *param)
 	cis = param;
 	cig = cis->group;
 
+	/* Find a free offset that does not overlap other periodically scheduled
+	 * states/roles.
+	 */
 	err = ull_sched_conn_iso_free_offset_get(cig->ull.ticks_slot,
 						 &ticks_to_expire);
 	LL_ASSERT(!err);
 
+	/* Calculate the offset for the select CIS in the CIG */
 	offset_min_us = HAL_TICKER_TICKS_TO_US(ticks_to_expire) +
 			(EVENT_TICKER_RES_MARGIN_US << 2U);
 	offset_min_us += cig->sync_delay - cis->sync_delay;
 
+	/* Ensure the offset is not greater than the ACL interval, considering
+	 * the minimum CIS offset requirement.
+	 */
 	conn = ll_conn_get(cis->lll.acl_handle);
-
 	conn_interval_us = (uint32_t)conn->lll.interval * CONN_INT_UNIT_US;
-	while (offset_min_us >= (conn_interval_us + PDU_CIS_OFFSET_MIN_US)) {
+	offset_limit_us = conn_interval_us + PDU_CIS_OFFSET_MIN_US;
+	while (offset_min_us >= offset_limit_us) {
 		offset_min_us -= conn_interval_us;
 	}
 
@@ -1005,6 +1085,7 @@ static void mfy_cis_offset_get(void *param)
 	uint32_t cig_remainder_us;
 	uint32_t acl_remainder_us;
 	uint32_t cig_interval_us;
+	uint32_t offset_limit_us;
 	uint32_t ticks_to_expire;
 	uint32_t ticks_current;
 	uint32_t offset_min_us;
@@ -1106,12 +1187,18 @@ static void mfy_cis_offset_get(void *param)
 
 	/* Compensate for the difference between ACL elapsed vs CIG elapsed */
 	offset_min_us += elapsed_cig_us - elapsed_acl_us;
-	while (offset_min_us >= (cig_interval_us + PDU_CIS_OFFSET_MIN_US)) {
+
+	/* Ensure that the minimum offset is not greater than ISO interval
+	 * considering the select CIS in the CIG meets the minimum CIS offset
+	 * requirement.
+	 */
+	offset_limit_us = cig_interval_us + cig->sync_delay - cis->sync_delay;
+	while (offset_min_us >= offset_limit_us) {
 		offset_min_us -= cig_interval_us;
 	}
 
 	/* Decrement event_count to compensate for offset_min_us greater than
-	 * CIG interval due to offset being atleast PDU_CIS_OFFSET_MIN_US.
+	 * CIG interval.
 	 */
 	if (offset_min_us > cig_interval_us) {
 		cis->lll.event_count--;
@@ -1126,43 +1213,77 @@ static void ticker_op_cb(uint32_t status, void *param)
 }
 #endif /* CONFIG_BT_CTLR_CENTRAL_SPACING  == 0 */
 
-static void set_bn_max_pdu(bool framed, uint32_t iso_interval,
-			   uint32_t sdu_interval, uint16_t max_sdu, uint8_t *bn,
-			   uint8_t *max_pdu)
+static uint32_t iso_interval_adjusted_bn_max_pdu_get(bool framed, uint32_t iso_interval,
+						     uint32_t iso_interval_cig,
+						     uint32_t sdu_interval,
+						     uint16_t max_sdu, uint8_t *bn,
+						     uint8_t *max_pdu)
 {
 	if (framed) {
-		uint32_t ceil_f_x_max_sdu;
-		uint16_t max_pdu_bn1;
-		uint32_t max_drift;
+		uint32_t max_drift_us;
 		uint32_t ceil_f;
 
-		/* Framed (From ES-18002):
+		/* BT Core 5.4 Vol 6, Part G, Section 2.2:
 		 *   Max_PDU >= ((ceil(F) x 5 + ceil(F x Max_SDU)) / BN) + 2
 		 *   F = (1 + MaxDrift) x ISO_Interval / SDU_Interval
 		 *   SegmentationHeader + TimeOffset = 5 bytes
 		 *   Continuation header = 2 bytes
 		 *   MaxDrift (Max. allowed SDU delivery timing drift) = 100 ppm
 		 */
-		max_drift = DIV_ROUND_UP(SDU_MAX_DRIFT_PPM * sdu_interval, 1000000U);
-		ceil_f = DIV_ROUND_UP(iso_interval + max_drift, sdu_interval);
-		ceil_f_x_max_sdu = DIV_ROUND_UP(max_sdu * (iso_interval + max_drift),
-						    sdu_interval);
-
-		/* Strategy: Keep lowest possible BN.
-		 * TODO: Implement other strategies, possibly as policies.
+		max_drift_us = DIV_ROUND_UP(SDU_MAX_DRIFT_PPM * sdu_interval, USEC_PER_SEC);
+		ceil_f = DIV_ROUND_UP((USEC_PER_SEC + max_drift_us) * (uint64_t)iso_interval,
+				       USEC_PER_SEC * (uint64_t)sdu_interval);
+		if (false) {
+#if defined(CONFIG_BT_CTLR_CONN_ISO_AVOID_SEGMENTATION)
+		/* To avoid segmentation according to HAP, if the ISO_Interval is less than
+		 * the SDU_Interval, we assume BN=1 and calculate the Max_PDU as:
+		 *     Max_PDU = celi(F / BN) x (5 / Max_SDU)
+		 *
+		 * This is in accordance with the "Core enhancement for ISOAL CR".
+		 *
+		 * This ensures that the drift can be contained in the difference between
+		 * SDU_Interval and link bandwidth. For BN=1, ceil(F) == ceil(F/BN).
 		 */
-		max_pdu_bn1 = ceil_f * 5 + ceil_f_x_max_sdu;
-		*bn = DIV_ROUND_UP(max_pdu_bn1, LL_CIS_OCTETS_TX_MAX);
-		*max_pdu = DIV_ROUND_UP(max_pdu_bn1, *bn) + 2;
+		} else if (iso_interval < sdu_interval) {
+			*bn = 1;
+			*max_pdu = ceil_f * (PDU_ISO_SEG_HDR_SIZE + PDU_ISO_SEG_TIMEOFFSET_SIZE +
+					     max_sdu);
+#endif
+		} else {
+			uint32_t ceil_f_x_max_sdu;
+			uint16_t max_pdu_bn1;
+
+			ceil_f_x_max_sdu = DIV_ROUND_UP(max_sdu * ((USEC_PER_SEC + max_drift_us) *
+								   (uint64_t)iso_interval),
+							USEC_PER_SEC * (uint64_t)sdu_interval);
+
+			/* Strategy: Keep lowest possible BN.
+			 * TODO: Implement other strategies, possibly as policies.
+			 */
+			max_pdu_bn1 = ceil_f * (PDU_ISO_SEG_HDR_SIZE +
+						PDU_ISO_SEG_TIMEOFFSET_SIZE) + ceil_f_x_max_sdu;
+			*bn = DIV_ROUND_UP(max_pdu_bn1, LL_CIS_OCTETS_TX_MAX);
+			*max_pdu = DIV_ROUND_UP(max_pdu_bn1, *bn) + PDU_ISO_SEG_HDR_SIZE;
+		}
 	} else {
 		/* For unframed, ISO_Interval must be N x SDU_Interval */
-		LL_ASSERT(iso_interval % sdu_interval == 0);
+		if ((iso_interval % sdu_interval) != 0) {
+			/* The requested ISO interval is doubled until it is multiple of
+			 * SDU_interval.
+			 * For example, between 7.5 and 10 ms, 7.5 is added in iterations to reach
+			 * 30 ms ISO interval; or between 10 and 7.5 ms, 10 is added in iterations
+			 * to reach the same 30 ms ISO interval.
+			 */
+			iso_interval += iso_interval_cig;
+		}
 
 		/* Core 5.3 Vol 6, Part G section 2.1:
 		 * BN >= ceil(Max_SDU/Max_PDU * ISO_Interval/SDU_Interval)
 		 */
 		*bn = DIV_ROUND_UP(max_sdu * iso_interval, (*max_pdu) * sdu_interval);
 	}
+
+	return iso_interval;
 }
 
 static uint8_t ll_cig_parameters_validate(void)

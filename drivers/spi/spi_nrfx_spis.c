@@ -5,6 +5,7 @@
  */
 
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/gpio.h>
 #include <soc.h>
@@ -170,6 +171,8 @@ static int transceive(const struct device *dev,
 {
 	struct spi_nrfx_data *dev_data = dev->data;
 	const struct spi_nrfx_config *dev_config = dev->config;
+	const struct spi_buf *tx_buf = tx_bufs ? tx_bufs->buffers : NULL;
+	const struct spi_buf *rx_buf = rx_bufs ? rx_bufs->buffers : NULL;
 	int error;
 
 	spi_context_lock(&dev_data->ctx, asynchronous, cb, userdata, spi_cfg);
@@ -181,8 +184,7 @@ static int transceive(const struct device *dev,
 		   (rx_bufs && rx_bufs->count > 1)) {
 		LOG_ERR("Scattered buffers are not supported");
 		error = -ENOTSUP;
-	} else if (tx_bufs && tx_bufs->buffers[0].len &&
-		   !nrfx_is_in_ram(tx_bufs->buffers[0].buf)) {
+	} else if (tx_buf && tx_buf->len && !nrfx_is_in_ram(tx_buf->buf)) {
 		LOG_ERR("Only buffers located in RAM are supported");
 		error = -ENOTSUP;
 	} else {
@@ -193,10 +195,10 @@ static int transceive(const struct device *dev,
 		}
 
 		error = prepare_for_transfer(dev,
-				tx_bufs ? tx_bufs->buffers[0].buf : NULL,
-				tx_bufs ? tx_bufs->buffers[0].len : 0,
-				rx_bufs ? rx_bufs->buffers[0].buf : NULL,
-				rx_bufs ? rx_bufs->buffers[0].len : 0);
+					     tx_buf ? tx_buf->buf : NULL,
+					     tx_buf ? tx_buf->len : 0,
+					     rx_buf ? rx_buf->buf : NULL,
+					     rx_buf ? rx_buf->len : 0);
 		if (error == 0) {
 			if (dev_config->wake_gpio.port) {
 				/* Set the WAKE line low (tie it to ground)
@@ -262,10 +264,13 @@ static int spi_nrfx_release(const struct device *dev,
 	return 0;
 }
 
-static const struct spi_driver_api spi_nrfx_driver_api = {
+static DEVICE_API(spi, spi_nrfx_driver_api) = {
 	.transceive = spi_nrfx_transceive,
 #ifdef CONFIG_SPI_ASYNC
 	.transceive_async = spi_nrfx_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = spi_nrfx_release,
 };
@@ -389,7 +394,7 @@ static int spi_nrfx_init(const struct device *dev)
 	BUILD_ASSERT(!DT_NODE_HAS_PROP(SPIS(idx), wake_gpios) ||	       \
 		     !(DT_GPIO_FLAGS(SPIS(idx), wake_gpios) & GPIO_ACTIVE_LOW),\
 		     "WAKE line must be configured as active high");	       \
-	DEVICE_DT_DEFINE(SPIS(idx),					       \
+	SPI_DEVICE_DT_DEFINE(SPIS(idx),					       \
 			    spi_nrfx_init,				       \
 			    NULL,					       \
 			    &spi_##idx##_data,				       \
@@ -398,18 +403,9 @@ static int spi_nrfx_init(const struct device *dev)
 			    CONFIG_SPI_INIT_PRIORITY,			       \
 			    &spi_nrfx_driver_api)
 
-#ifdef CONFIG_HAS_HW_NRF_SPIS0
-SPI_NRFX_SPIS_DEFINE(0);
-#endif
+/* Macro creates device instance if it is enabled in devicetree. */
+#define SPIS_DEVICE(periph, prefix, id, _) \
+	IF_ENABLED(CONFIG_HAS_HW_NRF_SPIS##prefix##id, (SPI_NRFX_SPIS_DEFINE(prefix##id);))
 
-#ifdef CONFIG_HAS_HW_NRF_SPIS1
-SPI_NRFX_SPIS_DEFINE(1);
-#endif
-
-#ifdef CONFIG_HAS_HW_NRF_SPIS2
-SPI_NRFX_SPIS_DEFINE(2);
-#endif
-
-#ifdef CONFIG_HAS_HW_NRF_SPIS3
-SPI_NRFX_SPIS_DEFINE(3);
-#endif
+/* Macro iterates over nrfx_spis instances enabled in the nrfx_config.h. */
+NRFX_FOREACH_ENABLED(SPIS, SPIS_DEVICE, (), (), _)

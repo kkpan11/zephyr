@@ -1,6 +1,6 @@
 /*
+ * Copyright (c) 2022 Intel Corporation
  * SPDX-License-Identifier: Apache-2.0
- * Copyright (c) 2022 Intel Corp.
  */
 
 #include <zephyr/logging/log.h>
@@ -10,11 +10,6 @@ LOG_MODULE_DECLARE(nvme, CONFIG_NVME_LOG_LEVEL);
 #include <zephyr/sys/byteorder.h>
 
 #include "nvme.h"
-
-static int nvme_disk_init(struct disk_info *disk)
-{
-	return 0;
-}
 
 static int nvme_disk_status(struct disk_info *disk)
 {
@@ -27,12 +22,17 @@ static int nvme_disk_read(struct disk_info *disk,
 			  uint32_t num_sector)
 {
 	struct nvme_namespace *ns = CONTAINER_OF(disk->name,
-						 struct nvme_namespace, name);
+						 struct nvme_namespace, name[0]);
 	struct nvme_completion_poll_status status =
 		NVME_CPL_STATUS_POLL_INIT(status);
 	struct nvme_request *request;
 	uint32_t payload_size;
 	int ret = 0;
+
+	if (!NVME_IS_BUFFER_DWORD_ALIGNED(data_buf)) {
+		LOG_WRN("Data buffer pointer needs to be 4-bytes aligned");
+		return -EINVAL;
+	}
 
 	nvme_lock(disk->dev);
 
@@ -57,6 +57,7 @@ static int nvme_disk_read(struct disk_info *disk,
 	if (nvme_cpl_status_is_error(&status)) {
 		LOG_WRN("Reading at sector %u (count %d) on disk %s failed",
 			start_sector, num_sector, ns->name);
+		nvme_completion_print(&status.cpl);
 		ret = -EIO;
 	}
 out:
@@ -70,12 +71,17 @@ static int nvme_disk_write(struct disk_info *disk,
 			   uint32_t num_sector)
 {
 	struct nvme_namespace *ns = CONTAINER_OF(disk->name,
-						 struct nvme_namespace, name);
+						 struct nvme_namespace, name[0]);
 	struct nvme_completion_poll_status status =
 		NVME_CPL_STATUS_POLL_INIT(status);
 	struct nvme_request *request;
 	uint32_t payload_size;
 	int ret = 0;
+
+	if (!NVME_IS_BUFFER_DWORD_ALIGNED(data_buf)) {
+		LOG_WRN("Data buffer pointer needs to be 4-bytes aligned");
+		return -EINVAL;
+	}
 
 	nvme_lock(disk->dev);
 
@@ -100,6 +106,7 @@ static int nvme_disk_write(struct disk_info *disk,
 	if (nvme_cpl_status_is_error(&status)) {
 		LOG_WRN("Writing at sector %u (count %d) on disk %s failed",
 			start_sector, num_sector, ns->name);
+		nvme_completion_print(&status.cpl);
 		ret = -EIO;
 	}
 out:
@@ -128,6 +135,7 @@ static int nvme_disk_flush(struct nvme_namespace *ns)
 	nvme_completion_poll(&status);
 	if (nvme_cpl_status_is_error(&status)) {
 		LOG_ERR("Flushing disk %s failed", ns->name);
+		nvme_completion_print(&status.cpl);
 		return -EIO;
 	}
 
@@ -137,7 +145,7 @@ static int nvme_disk_flush(struct nvme_namespace *ns)
 static int nvme_disk_ioctl(struct disk_info *disk, uint8_t cmd, void *buff)
 {
 	struct nvme_namespace *ns = CONTAINER_OF(disk->name,
-						 struct nvme_namespace, name);
+						 struct nvme_namespace, name[0]);
 	int ret = 0;
 
 	nvme_lock(disk->dev);
@@ -170,8 +178,12 @@ static int nvme_disk_ioctl(struct disk_info *disk, uint8_t cmd, void *buff)
 		*(uint32_t *)buff = nvme_namespace_get_sector_size(ns);
 
 		break;
+	case DISK_IOCTL_CTRL_DEINIT:
 	case DISK_IOCTL_CTRL_SYNC:
 		ret = nvme_disk_flush(ns);
+		break;
+	case DISK_IOCTL_CTRL_INIT:
+		ret = 0;
 		break;
 	default:
 		ret = -EINVAL;
@@ -179,6 +191,11 @@ static int nvme_disk_ioctl(struct disk_info *disk, uint8_t cmd, void *buff)
 
 	nvme_unlock(disk->dev);
 	return ret;
+}
+
+static int nvme_disk_init(struct disk_info *disk)
+{
+	return nvme_disk_ioctl(disk, DISK_IOCTL_CTRL_INIT, NULL);
 }
 
 static const struct disk_operations nvme_disk_ops = {

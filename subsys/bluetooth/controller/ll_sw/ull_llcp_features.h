@@ -9,6 +9,11 @@ static inline void feature_unmask_features(struct ll_conn *conn, uint64_t ll_fea
 	conn->llcp.fex.features_used &= ~ll_feat_mask;
 }
 
+static inline void feature_unmask_peer_features(struct ll_conn *conn, uint64_t ll_feat_mask)
+{
+	conn->llcp.fex.features_peer &= ~ll_feat_mask;
+}
+
 static inline bool feature_le_encryption(struct ll_conn *conn)
 {
 #if defined(CONFIG_BT_CTLR_LE_ENC)
@@ -177,6 +182,11 @@ static inline bool feature_peer_iso_peripheral(struct ll_conn *conn)
 static inline bool feature_iso_peripheral(struct ll_conn *conn)
 {
 	return LL_FEAT_BIT_CIS_PERIPHERAL != 0;
+}
+
+static inline bool feature_peer_periodic_sync_recv(struct ll_conn *conn)
+{
+	return (conn->llcp.fex.features_peer & BIT64(BT_LE_FEAT_BIT_PAST_RECV)) != 0;
 }
 
 /*

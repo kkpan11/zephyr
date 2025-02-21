@@ -1,35 +1,37 @@
 #!/usr/bin/env python3
 # vim: set syntax=python ts=4 :
 #
-# Copyright (c) 2018 Intel Corporation
+# Copyright (c) 2018-2025 Intel Corporation
 # Copyright 2022 NXP
+# Copyright (c) 2024 Arm Limited (or its affiliates). All rights reserved.
+#
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-import pkg_resources
-import sys
-from pathlib import Path
+import argparse
 import json
 import logging
-import subprocess
-import shutil
+import os
 import re
-import argparse
+import shutil
+import subprocess
+import sys
+from collections.abc import Generator
 from datetime import datetime, timezone
+from importlib import metadata
+from pathlib import Path
+
+import zephyr_module
+from twisterlib.constants import SUPPORTED_SIMS
+from twisterlib.coverage import supported_coverage_formats
+from twisterlib.error import TwisterRuntimeError
+from twisterlib.log_helper import log_command
 
 logger = logging.getLogger('twister')
 logger.setLevel(logging.DEBUG)
 
-from twisterlib.error import TwisterRuntimeError
-from twisterlib.log_helper import log_command
-
 ZEPHYR_BASE = os.getenv("ZEPHYR_BASE")
 if not ZEPHYR_BASE:
     sys.exit("$ZEPHYR_BASE environment variable undefined")
-
-sys.path.insert(0, os.path.join(ZEPHYR_BASE, "scripts/"))
-
-import zephyr_module
 
 # Use this for internal comparisons; that's what canonicalization is
 # for. Don't use it when invoking other components of the build system
@@ -39,11 +41,34 @@ import zephyr_module
 # Note "normalization" is different from canonicalization, see os.path.
 canonical_zephyr_base = os.path.realpath(ZEPHYR_BASE)
 
-installed_packages = [pkg.project_name for pkg in pkg_resources.working_set]  # pylint: disable=not-an-iterable
+
+def _get_installed_packages() -> Generator[str, None, None]:
+    """Return list of installed python packages."""
+    for dist in metadata.distributions():
+        yield dist.metadata['Name']
+
+
+def python_version_guard():
+    min_ver = (3, 10)
+    if sys.version_info < min_ver:
+        min_ver_str = '.'.join([str(v) for v in min_ver])
+        cur_ver_line = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        print(f"Unsupported Python version {cur_ver_line}.")
+        print(f"Currently, Twister requires at least Python {min_ver_str}.")
+        print("Install a newer Python version and retry.")
+        sys.exit(1)
+
+
+installed_packages: list[str] = list(_get_installed_packages())
 PYTEST_PLUGIN_INSTALLED = 'pytest-twister-harness' in installed_packages
 
 
-def add_parse_arguments(parser = None):
+def norm_path(astring):
+    newstring = os.path.normpath(astring).replace(os.sep, '/')
+    return newstring
+
+
+def add_parse_arguments(parser = None) -> argparse.ArgumentParser:
     if parser is None:
         parser = argparse.ArgumentParser(
             description=__doc__,
@@ -64,13 +89,18 @@ Artificially long but functional example:
                                  __/fifo_api/testcase.yaml
     """)
 
-    compare_group_option = parser.add_mutually_exclusive_group()
+    test_plan_report = parser.add_argument_group(
+        title="Test plan reporting",
+        description="Report the composed test plan details and exit (dry-run)."
+    )
+
+    test_plan_report_xor = test_plan_report.add_mutually_exclusive_group()
 
     platform_group_option = parser.add_mutually_exclusive_group()
 
     run_group_option = parser.add_mutually_exclusive_group()
 
-    device = parser.add_mutually_exclusive_group(required="--device-testing" in sys.argv)
+    device = parser.add_mutually_exclusive_group()
 
     test_or_build = parser.add_mutually_exclusive_group()
 
@@ -80,22 +110,36 @@ Artificially long but functional example:
 
     valgrind_asan_group = parser.add_mutually_exclusive_group()
 
-    case_select.add_argument(
+    footprint_group = parser.add_argument_group(
+       title="Memory footprint",
+       description="Collect and report ROM/RAM size footprint for the test instance images built.")
+
+    coverage_group = parser.add_argument_group(
+        title="Code coverage",
+        description="Build with code coverage support, collect code coverage statistics "
+                    "executing tests, compose code coverage report at the end.\n"
+                    "Effective for devices with 'HAS_COVERAGE_SUPPORT'.")
+
+    test_plan_report_xor.add_argument(
         "-E",
         "--save-tests",
         metavar="FILENAME",
         action="store",
-        help="Append list of tests and platforms to be run to file.")
+        help="Write a list of tests and platforms to be run to %(metavar)s file and stop execution."
+             " The resulting file will have the same content as 'testplan.json'."
+    )
 
     case_select.add_argument(
         "-F",
         "--load-tests",
         metavar="FILENAME",
         action="store",
-        help="Load list of tests and platforms to be run from file.")
+        help="Load a list of tests and platforms to be run"
+             "from a JSON file ('testplan.json' schema)."
+    )
 
     case_select.add_argument(
-        "-T", "--testsuite-root", action="append", default=[],
+        "-T", "--testsuite-root", action="append", default=[], type = norm_path,
         help="Base directory to recursively search for test cases. All "
              "testcase.yaml files under here will be processed. May be "
              "called multiple times. Defaults to the 'samples/' and "
@@ -108,25 +152,16 @@ Artificially long but functional example:
         help="Run only those tests that failed the previous twister run "
              "invocation.")
 
-    case_select.add_argument("--list-tests", action="store_true",
+    test_plan_report_xor.add_argument("--list-tests", action="store_true",
                              help="""List of all sub-test functions recursively found in
-        all --testsuite-root arguments. Note different sub-tests can share
-        the same section name and come from different directories.
-        The output is flattened and reports --sub-test names only,
-        not their directories. For instance net.socket.getaddrinfo_ok
-        and net.socket.fd_set belong to different directories.
+        all --testsuite-root arguments. The output is flattened and reports detailed
+        sub-test names without their directories.
+        Note: sub-test names can share the same test scenario identifier prefix
+        (section.subsection) even if they are from different test projects.
         """)
 
-    case_select.add_argument("--test-tree", action="store_true",
-                             help="""Output the test plan in a tree form""")
-
-    compare_group_option.add_argument("--compare-report",
-                        help="Use this report file for size comparison")
-
-    compare_group_option.add_argument(
-        "-m", "--last-metrics", action="store_true",
-        help="Compare with the results of the previous twister "
-             "invocation")
+    test_plan_report_xor.add_argument("--test-tree", action="store_true",
+                             help="""Output the test plan in a tree form.""")
 
     platform_group_option.add_argument(
         "-G",
@@ -148,6 +183,13 @@ Artificially long but functional example:
                         and create a hardware map file to be used with
                         --device-testing
                         """)
+
+    run_group_option.add_argument(
+        "--simulation", dest="sim_name", choices=SUPPORTED_SIMS,
+        help="Selects which simulation to use. Must match one of the names defined in the board's "
+             "manifest. If multiple simulator are specified in the selected board and this "
+             "argument is not passed, then the first simulator is selected.")
+
 
     device.add_argument("--device-serial",
                         help="""Serial device for accessing the board
@@ -177,9 +219,19 @@ Artificially long but functional example:
                         when flash operation also executes test case on the platform.
                         """)
 
+    parser.add_argument("--flash-before", action="store_true", default=False,
+                        help="""Flash device before attaching to serial port.
+                        This is useful for devices that share the same port for programming
+                        and serial console, or use soft-USB, where flash must come first.
+                        """)
+
     test_or_build.add_argument(
-        "-b", "--build-only", action="store_true", default="--prep-artifacts-for-testing" in sys.argv,
-        help="Only build the code, do not attempt to run the code on targets.")
+        "-b",
+        "--build-only",
+        action="store_true",
+        default="--prep-artifacts-for-testing" in sys.argv,
+        help="Only build the code, do not attempt to run the code on targets."
+    )
 
     test_or_build.add_argument(
         "--prep-artifacts-for-testing", action="store_true",
@@ -196,26 +248,50 @@ Artificially long but functional example:
         help="""Only run device tests with current artifacts, do not build
              the code""")
 
+    parser.add_argument("--timeout-multiplier", type=float, default=1,
+        help="""Globally adjust tests timeouts by specified multiplier. The resulting test
+        timeout would be multiplication of test timeout value, board-level timeout multiplier
+        and global timeout multiplier (this parameter)""")
+
     test_xor_subtest.add_argument(
-        "-s", "--test", action="append",
-        help="Run only the specified testsuite scenario. These are named by "
-             "<path/relative/to/Zephyr/base/section.name.in.testcase.yaml>")
+        "-s", "--test", "--scenario", action="append", type = norm_path,
+        help="""Run only the specified test suite scenario. These are named by
+        'path/relative/to/Zephyr/base/section.subsection_in_testcase_yaml',
+        or just 'section.subsection' identifier. With '--testsuite-root' option
+        the scenario will be found faster.
+        """)
 
     test_xor_subtest.add_argument(
         "--sub-test", action="append",
-        help="""Recursively find sub-test functions and run the entire
-        test section where they were found, including all sibling test
+        help="""Recursively find sub-test functions (test cases) and run the entire
+        test scenario (section.subsection) where they were found, including all sibling test
         functions. Sub-tests are named by:
-        section.name.in.testcase.yaml.function_name_without_test_prefix
-        Example: In kernel.fifo.fifo_loop: 'kernel.fifo' is a section name
-        and 'fifo_loop' is a name of a function found in main.c without test prefix.
+        'section.subsection_in_testcase_yaml.ztest_suite.ztest_without_test_prefix'.
+        Example_1: 'kernel.fifo.fifo_api_1cpu.fifo_loop' where 'kernel.fifo' is a test scenario
+        name (section.subsection) and 'fifo_api_1cpu.fifo_loop' is a Ztest 'suite_name.test_name'.
+        Example_2: 'debug.coredump.logging_backend' is a standalone test scenario name.
+        Note: This selection mechanism works only for Ztest suite and test function names in
+        the source files which are not generated by macro-substitutions.
+        Note: With --no-detailed-test-id use only Ztest names without scenario name.
+        """)
+
+    parser.add_argument(
+        "--pytest-args", action="append",
+        help="""Pass additional arguments to the pytest subprocess. This parameter
+        will extend the pytest_args from the harness_config in YAML file.
+        """)
+
+    parser.add_argument(
+        "--ctest-args", action="append",
+        help="""Pass additional arguments to the ctest subprocess. This parameter
+        will extend the ctest_args from the harness_config in YAML file.
         """)
 
     valgrind_asan_group.add_argument(
         "--enable-valgrind", action="store_true",
         help="""Run binary through valgrind and check for several memory access
         errors. Valgrind needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and is mutual exclusive with --enable-asan.
         """)
 
@@ -223,14 +299,13 @@ Artificially long but functional example:
         "--enable-asan", action="store_true",
         help="""Enable address sanitizer to check for several memory access
         errors. Libasan needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and is mutual exclusive with --enable-valgrind.
         """)
 
     # Start of individual args place them in alpha-beta order
 
-    board_root_list = ["%s/boards" % ZEPHYR_BASE,
-                       "%s/scripts/pylib/twister/boards" % ZEPHYR_BASE]
+    board_root_list = [f"{ZEPHYR_BASE}/boards", f"{ZEPHYR_BASE}/subsys/testsuite/boards"]
 
     modules = zephyr_module.parse_modules(ZEPHYR_BASE)
     for module in modules:
@@ -242,7 +317,7 @@ Artificially long but functional example:
         "-A", "--board-root", action="append", default=board_root_list,
         help="""Directory to search for board configuration files. All .yaml
 files in the directory will be processed. The directory should have the same
-structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
+structure in the main Zephyr tree: boards/<vendor>/<board_name>/""")
 
     parser.add_argument(
         "--allow-installed-plugin", action="store_true", default=None,
@@ -273,10 +348,6 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                 If not provided, seed in generated by system.
                 Used only when --shuffle-tests is provided.""")
 
-    parser.add_argument("-C", "--coverage", action="store_true",
-                        help="Generate coverage reports. Implies "
-                             "--enable-coverage.")
-
     parser.add_argument(
         "-c", "--clobber-output", action="store_true",
         help="Cleaning the output directory will simply delete it instead "
@@ -286,46 +357,66 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         "--cmake-only", action="store_true",
         help="Only run cmake, do not build or run.")
 
-    parser.add_argument("--coverage-basedir", default=ZEPHYR_BASE,
-                        help="Base source directory for coverage report.")
+    coverage_group.add_argument("--enable-coverage", action="store_true",
+                     help="Enable code coverage collection using gcov.")
 
-    parser.add_argument("--coverage-platform", action="append", default=[],
-                        help="Platforms to run coverage reports on. "
-                             "This option may be used multiple times. "
-                             "Default to what was selected with --platform.")
+    coverage_group.add_argument("-C", "--coverage", action="store_true",
+                     help="Generate coverage reports. Implies "
+                          "--enable-coverage to collect the coverage data first.")
 
-    parser.add_argument("--coverage-tool", choices=['lcov', 'gcovr'], default='lcov',
-                        help="Tool to use to generate coverage report.")
+    coverage_group.add_argument("--gcov-tool", type=Path, default=None,
+                     help="Path to the 'gcov' tool to use for code coverage reports. "
+                          "By default it will be chosen in the following order:"
+                          " using ZEPHYR_TOOLCHAIN_VARIANT ('llvm': from LLVM_TOOLCHAIN_PATH),"
+                          " gcov installed on the host - for 'native' or 'unit' platform types,"
+                          " using ZEPHYR_SDK_INSTALL_DIR.")
 
-    parser.add_argument("--coverage-formats", action="store", default=None, # default behavior is set in run_coverage
-                        help="Output formats to use for generated coverage reports, as a comma-separated list. "
-                             "Default to html. "
-                             "Valid options are html, xml, csv, txt, coveralls, sonarqube, lcov.")
+    coverage_group.add_argument("--coverage-basedir", default=ZEPHYR_BASE,
+                    help="Base source directory for coverage report.")
 
-    parser.add_argument("--test-config", action="store", default=os.path.join(ZEPHYR_BASE, "tests", "test_config.yaml"),
-        help="Path to file with plans and test configurations.")
+    coverage_group.add_argument("--coverage-platform", action="append", default=[],
+                    help="Platforms to run coverage reports on. "
+                         "This option may be used multiple times. "
+                         "Default to what was selected with --platform.")
+
+    coverage_group.add_argument("--coverage-tool", choices=['lcov', 'gcovr'], default='gcovr',
+                    help="Tool to use to generate coverage reports (%(default)s - default).")
+
+    coverage_group.add_argument("--coverage-formats", action="store", default=None,
+                    help="Output formats to use for generated coverage reports " +
+                         "as a comma-separated list without spaces. " +
+                         "Valid options for 'gcovr' tool are: " +
+                         ','.join(supported_coverage_formats['gcovr']) + " (html - default)." +
+                         " Valid options for 'lcov' tool are: " +
+                         ','.join(supported_coverage_formats['lcov']) + " (html,lcov - default).")
+
+    coverage_group.add_argument("--coverage-per-instance", action="store_true", default=False,
+                help="""Compose individual coverage reports for each test suite
+                        when coverage reporting is enabled; it might run in addition to
+                        the default aggregation mode which produces one coverage report for
+                        all executed test suites. Default: %(default)s""")
+
+    coverage_group.add_argument("--disable-coverage-aggregation",
+                action="store_true", default=False,
+                help="""Don't aggregate coverage report statistics for all the test suites
+                        selected to run with enabled coverage. Requires another reporting mode to be
+                        active (`--coverage-per-instance`) to have at least one of these reporting
+                        modes. Default: %(default)s""")
+
+    parser.add_argument(
+        "--test-config",
+        action="store",
+        default=os.path.join(ZEPHYR_BASE, "tests", "test_config.yaml"),
+        help="Path to file with plans and test configurations."
+    )
 
     parser.add_argument("--level", action="store",
         help="Test level to be used. By default, no levels are used for filtering"
              "and do the selection based on existing filters.")
 
     parser.add_argument(
-        "-D", "--all-deltas", action="store_true",
-        help="Show all footprint deltas, positive or negative. Implies "
-             "--footprint-threshold=0")
-
-    parser.add_argument(
         "--device-serial-baud", action="store", default=None,
         help="Serial device baud rate (default 115200)")
-
-    parser.add_argument("--disable-asserts", action="store_false",
-                        dest="enable_asserts",
-                        help="deprecated, left for compatibility")
-
-    parser.add_argument(
-        "--disable-unrecognized-section-test", action="store_true",
-        default=False,
-        help="Skip the 'unrecognized section' test.")
 
     parser.add_argument(
         "--disable-suite-name-check", action="store_true", default=False,
@@ -337,14 +428,11 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                         help="Specify tags of tests that should not run. "
                              "Default is to run all tests with all tags.")
 
-    parser.add_argument("--enable-coverage", action="store_true",
-                        help="Enable code coverage using gcov.")
-
     parser.add_argument(
         "--enable-lsan", action="store_true",
         help="""Enable leak sanitizer to check for heap memory leaks.
         Libasan needs to be installed on the host. This option only
-        works with host binaries such as those generated for the native_posix
+        works with host binaries such as those generated for the native_sim
         configuration and when --enable-asan is given.
         """)
 
@@ -353,15 +441,12 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         help="""Enable undefined behavior sanitizer to check for undefined
         behaviour during program execution. It uses an optional runtime library
         to provide better error diagnostics. This option only works with host
-        binaries such as those generated for the native_posix configuration.
+        binaries such as those generated for the native_sim configuration.
         """)
-
-    parser.add_argument("--enable-size-report", action="store_true",
-                        help="Enable expensive computation of RAM/ROM segment sizes.")
 
     parser.add_argument(
         "--filter", choices=['buildable', 'runnable'],
-        default='buildable',
+        default='runnable' if "--device-testing" in sys.argv else 'buildable',
         help="""Filter tests to be built and executed. By default everything is
         built and if a test is runnable (emulation or a connected device), it
         is run. This option allows for example to only build tests that can
@@ -375,16 +460,86 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                         help="Do not filter based on toolchain, use the set "
                              " toolchain unconditionally")
 
-    parser.add_argument("--gcov-tool", type=Path, default=None,
-                        help="Path to the gcov tool to use for code coverage "
-                             "reports")
+    footprint_group.add_argument(
+        "--create-rom-ram-report",
+        action="store_true",
+        help="Generate detailed json reports with ROM/RAM symbol sizes for each test image built "
+             "using additional build option `--target footprint`.")
+
+    footprint_group.add_argument(
+        "--footprint-report",
+        nargs="?",
+        default=None,
+        choices=['all', 'ROM', 'RAM'],
+        const="all",
+        help="Select which memory area symbols' data to collect as 'footprint' property "
+             "of each test suite built, and report in 'twister_footprint.json' together "
+             "with the relevant execution metadata the same way as in `twister.json`. "
+             "Implies '--create-rom-ram-report' to generate the footprint data files. "
+             "No value means '%(const)s'. Default: %(default)s""")
+
+    footprint_group.add_argument(
+        "--enable-size-report",
+        action="store_true",
+        help="Collect and report ROM/RAM section sizes for each test image built.")
 
     parser.add_argument(
-        "-H", "--footprint-threshold", type=float, default=5,
-        help="When checking test case footprint sizes, warn the user if "
-             "the new app size is greater then the specified percentage "
-             "from the last release. Default is 5. 0 to warn on any "
-             "increase on app size.")
+        "--disable-unrecognized-section-test",
+        action="store_true",
+        default=False,
+        help="Don't error on unrecognized sections in the binary images.")
+
+    footprint_group.add_argument(
+        "--footprint-from-buildlog",
+        action = "store_true",
+        help="Take ROM/RAM sections footprint summary values from the 'build.log' "
+             "instead of 'objdump' results used otherwise."
+             "Requires --enable-size-report or one of the baseline comparison modes."
+             "Warning: the feature will not work correctly with sysbuild.")
+
+    compare_group_option = footprint_group.add_mutually_exclusive_group()
+
+    compare_group_option.add_argument(
+        "-m", "--last-metrics",
+        action="store_true",
+        help="Compare footprints to the previous twister invocation as a baseline "
+             "running in the same output directory. "
+             "Implies --enable-size-report option.")
+
+    compare_group_option.add_argument(
+        "--compare-report",
+        help="Use this report file as a baseline for footprint comparison. "
+             "The file should be of 'twister.json' schema. "
+             "Implies --enable-size-report option.")
+
+    footprint_group.add_argument(
+        "--show-footprint",
+        action="store_true",
+        help="With footprint comparison to a baseline, log ROM/RAM section deltas. ")
+
+    footprint_group.add_argument(
+        "-H", "--footprint-threshold",
+        type=float,
+        default=5.0,
+        help="With footprint comparison to a baseline, "
+             "warn the user for any of the footprint metric change which is greater or equal "
+             "to the specified percentage value. "
+             "Default is %(default)s for %(default)s%% delta from the new footprint value. "
+             "Use zero to warn on any footprint metric increase.")
+
+    footprint_group.add_argument(
+        "-D", "--all-deltas",
+        action="store_true",
+        help="With footprint comparison to a baseline, "
+             "warn on any footprint change, increase or decrease. "
+             "Implies --footprint-threshold=0")
+
+    footprint_group.add_argument(
+        "-z", "--size",
+        action="append",
+        metavar='FILENAME',
+        help="Ignore all other command line options and just produce a report to "
+             "stdout with ROM/RAM section sizes on the specified binary images.")
 
     parser.add_argument(
         "-i", "--inline-logs", action="store_true",
@@ -410,7 +565,7 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         help="Build/test on all platforms. Any --platform arguments "
              "ignored.")
 
-    parser.add_argument("--list-tags", action="store_true",
+    test_plan_report_xor.add_argument("--list-tags", action="store_true",
                         help="List all tags occurring in selected tests.")
 
     parser.add_argument("--log-file", metavar="FILENAME", action="store",
@@ -423,6 +578,11 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         which only removes artifacts of passing tests. If you wish to
         remove all artificats including those of failed tests, use 'all'.""")
 
+    parser.add_argument(
+        "--keep-artifacts", action="append", default=[],
+        help="""Keep specified artifacts when cleaning up at runtime. Multiple invocations
+        are possible."""
+    )
     test_xor_generator.add_argument(
         "-N", "--ninja", action="store_true",
         default=not any(a in sys.argv for a in ("-k", "--make")),
@@ -437,11 +597,35 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         help="Re-use the outdir before building. Will result in "
              "faster compilation since builds will be incremental.")
 
-    # To be removed in favor of --detailed-skipped-report
     parser.add_argument(
-        "--no-skipped-report", action="store_true",
-        help="""Do not report skipped test cases in junit output. [Experimental]
-        """)
+        "--aggressive-no-clean", action="store_true",
+        help="Re-use the outdir before building and do not re-run cmake. Will result in "
+             "much faster compilation since builds will be incremental. This option might "
+             " result in build failures and inconsistencies if dependencies change or when "
+             " applied on a significantly changed code base. Use on your own "
+             " risk. It is recommended to only use this option for local "
+             " development and when testing localized change in a subsystem.")
+
+    parser.add_argument(
+        '--detailed-test-id', action='store_true',
+        help="Compose each test Suite name from its configuration path (relative to root) and "
+             "the appropriate Scenario name using PATH_TO_TEST_CONFIG/SCENARIO_NAME schema. "
+             "Also (for Ztest only), prefix each test Case name with its Scenario name. "
+             "For example: 'kernel.common.timing' Scenario with test Suite name "
+             "'tests/kernel/sleep/kernel.common.timing' and 'kernel.common.timing.sleep.usleep' "
+             "test Case (where 'sleep' is its Ztest suite name and 'usleep' is Ztest test name.")
+
+    parser.add_argument(
+        "--no-detailed-test-id", dest='detailed_test_id', action="store_false",
+        help="Don't prefix each test Suite name with its configuration path, "
+             "so it is the same as the appropriate Scenario name. "
+             "Also (for Ztest only), don't prefix each Ztest Case name with its Scenario name. "
+             "For example: 'kernel.common.timing' Scenario name, the same Suite name, "
+             "and 'sleep.usleep' test Case (where 'sleep' is its Ztest suite name "
+             "and 'usleep' is Ztest test name.")
+
+    # Include paths in names by default.
+    parser.set_defaults(detailed_test_id=True)
 
     parser.add_argument(
         "--detailed-skipped-report", action="store_true",
@@ -468,6 +652,8 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
     parser.add_argument("--overflow-as-errors", action="store_true",
                         help="Treat RAM/SRAM overflows as errors.")
 
+    parser.add_argument("--report-filtered", action="store_true",
+                        help="Include filtered tests in the reports.")
 
     parser.add_argument("-P", "--exclude-platform", action="append", default=[],
             help="""Exclude platforms and do not build or run any tests
@@ -480,6 +666,10 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                         persistent names for serial devices on platforms
                         that support this feature (currently only Linux).
                         """)
+
+    parser.add_argument(
+            "--vendor", action="append", default=[],
+            help="Vendor filter for testing")
 
     parser.add_argument(
         "-p", "--platform", action="append", default=[],
@@ -499,9 +689,6 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
                         before device handler open serial port and invoke runner.
                         """)
 
-    parser.add_argument("-Q", "--error-on-deprecations", action="store_false",
-                        help="Error on deprecation warnings.")
-
     parser.add_argument(
         "--quarantine-list",
         action="append",
@@ -517,15 +704,11 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         help="Use the list of test scenarios under quarantine and run them"
              "to verify their current status.")
 
-    parser.add_argument("-R", "--enable-asserts", action="store_true",
-                        default=True,
-                        help="deprecated, left for compatibility")
-
-    parser.add_argument("--report-excluded",
-                        action="store_true",
-                        help="""List all tests that are never run based on current scope and
-            coverage. If you are looking for accurate results, run this with
-            --all, but this will take a while...""")
+    parser.add_argument(
+        "--quit-on-failure",
+        action="store_true",
+        help="""quit twister once there is build / run failure
+        """)
 
     parser.add_argument(
         "--report-name",
@@ -533,9 +716,21 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         """)
 
     parser.add_argument(
+        "--report-summary", action="store", nargs='?', type=int, const=0,
+        help="Show failed/error report from latest run. Default shows all items found. "
+             "However, you can specify the number of items (e.g. --report-summary 15). "
+             "It also works well with the --outdir switch.")
+
+    parser.add_argument(
         "--report-suffix",
         help="""Add a suffix to all generated file names, for example to add a
         version or a commit ID.
+        """)
+
+    parser.add_argument(
+        "--report-all-options", action="store_true",
+        help="""Show all command line options applied, including defaults, as
+        environment.options object in twister.json. Default: show only non-default settings.
         """)
 
     parser.add_argument(
@@ -563,7 +758,7 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
 
     parser.add_argument(
         "--seed", type=int,
-        help="Seed for native posix pseudo-random number generator")
+        help="Seed for native_sim pseudo-random number generator")
 
     parser.add_argument(
         "--short-build-path",
@@ -574,13 +769,6 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
              "you experience build failures related to path length, for "
              "example on Windows OS. This option can be used only with "
              "'--ninja' argument (to use Ninja build generator).")
-
-    parser.add_argument(
-        "--show-footprint",
-        action="store_true",
-        required = "--footprint-from-buildlog" in sys.argv,
-        help="Show footprint statistics and deltas since last release."
-    )
 
     parser.add_argument(
         "-t", "--tag", action="append",
@@ -596,15 +784,26 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         "-u",
         "--no-update",
         action="store_true",
-         help="Do not update the results of the last run of twister.")
+         help="Do not update the results of the last run. This option "
+              "is only useful when reusing the same output directory of "
+              "twister, for example when re-running failed tests with --only-failed "
+              "or --no-clean. This option is for debugging purposes only.")
 
     parser.add_argument(
         "-v",
         "--verbose",
         action="count",
         default=0,
-        help="Emit debugging information, call multiple times to increase "
-             "verbosity.")
+        help="Call multiple times to increase verbosity.")
+
+    parser.add_argument(
+        "-ll",
+        "--log-level",
+        type=str.upper,
+        default='INFO',
+        choices=['NOTSET', 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help="Select the threshold event severity for which you'd like to receive logs in console."
+             " Default is INFO.")
 
     parser.add_argument("-W", "--disable-warnings-as-errors", action="store_true",
                         help="Do not treat warning conditions as errors.")
@@ -659,18 +858,6 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
         directory (testplan.json).
         """)
 
-    parser.add_argument(
-        "-z", "--size", action="append",
-        help="Don't run twister. Instead, produce a report to "
-             "stdout detailing RAM/ROM sizes on the specified filenames. "
-             "All other command line arguments ignored.")
-
-    parser.add_argument(
-        "--footprint-from-buildlog",
-        action = "store_true",
-        help="Get information about memory footprint from generated build.log. "
-             "Requires using --show-footprint option.")
-
     parser.add_argument("extra_test_args", nargs=argparse.REMAINDER,
         help="Additional args following a '--' are passed to the test binary")
 
@@ -684,7 +871,12 @@ structure in the main Zephyr tree: boards/<arch>/<board_name>/""")
     return parser
 
 
-def parse_arguments(parser, args, options = None):
+def parse_arguments(
+    parser: argparse.ArgumentParser,
+    args,
+    options = None,
+    on_init=True
+) -> argparse.Namespace:
     if options is None:
         options = parser.parse_args(args)
 
@@ -706,30 +898,88 @@ def parse_arguments(parser, args, options = None):
         sys.exit(1)
 
     if not options.testsuite_root:
-        options.testsuite_root = [os.path.join(ZEPHYR_BASE, "tests"),
-                                 os.path.join(ZEPHYR_BASE, "samples")]
+        # if we specify a test scenario which is part of a suite directly, do
+        # not set testsuite root to default, just point to the test directory
+        # directly.
+        if options.test:
+            for scenario in options.test:
+                if dirname := os.path.dirname(scenario):
+                    options.testsuite_root.append(dirname)
 
-    if options.show_footprint or options.compare_report:
+        # check again and make sure we have something set
+        if not options.testsuite_root:
+            options.testsuite_root = [os.path.join(ZEPHYR_BASE, "tests"),
+                                     os.path.join(ZEPHYR_BASE, "samples")]
+
+    if options.last_metrics or options.compare_report:
         options.enable_size_report = True
+
+    if options.footprint_report:
+        options.create_rom_ram_report = True
+
+    if options.aggressive_no_clean:
+        options.no_clean = True
 
     if options.coverage:
         options.enable_coverage = True
 
-    if not options.coverage_platform:
+    if options.enable_coverage and not options.coverage_platform:
         options.coverage_platform = options.platform
+
+    if (
+        (not options.coverage)
+        and (options.disable_coverage_aggregation or options.coverage_per_instance)
+    ):
+        logger.error("Enable coverage reporting to set its aggregation mode.")
+        sys.exit(1)
+
+    if (
+        options.coverage
+        and options.disable_coverage_aggregation and (not options.coverage_per_instance)
+    ):
+        logger.error("At least one coverage reporting mode should be enabled: "
+                     "either aggregation, or per-instance, or both.")
+        sys.exit(1)
+
+    if options.coverage_formats:
+        for coverage_format in options.coverage_formats.split(','):
+            if coverage_format not in supported_coverage_formats[options.coverage_tool]:
+                logger.error(f"Unsupported coverage report formats:'{options.coverage_formats}' "
+                             f"for {options.coverage_tool}")
+                sys.exit(1)
 
     if options.enable_valgrind and not shutil.which("valgrind"):
         logger.error("valgrind enabled but valgrind executable not found")
         sys.exit(1)
 
-    if options.device_testing and (options.device_serial or options.device_serial_pty) and len(options.platform) > 1:
-        logger.error("""When --device-testing is used with
-                        --device-serial or --device-serial-pty,
-                        only one platform is allowed""")
+    if (
+        (not options.device_testing)
+        and (options.device_serial or options.device_serial_pty or options.hardware_map)
+    ):
+        logger.error(
+            "Use --device-testing with --device-serial, or --device-serial-pty, or --hardware-map."
+        )
+        sys.exit(1)
+
+    if (
+        options.device_testing
+        and (options.device_serial or options.device_serial_pty) and len(options.platform) != 1
+    ):
+        logger.error("When --device-testing is used with --device-serial "
+                     "or --device-serial-pty, exactly one platform must "
+                     "be specified")
         sys.exit(1)
 
     if options.device_flash_with_test and not options.device_testing:
         logger.error("--device-flash-with-test requires --device_testing")
+        sys.exit(1)
+
+    if options.flash_before and options.device_flash_with_test:
+        logger.error("--device-flash-with-test does not apply when --flash-before is used")
+        sys.exit(1)
+
+    if options.flash_before and options.device_serial_pty:
+        logger.error("--device-serial-pty cannot be used when --flash-before is set (for now)")
         sys.exit(1)
 
     if options.shuffle_tests and options.subset is None:
@@ -747,6 +997,14 @@ def parse_arguments(parser, args, options = None):
             sc.size_report()
         sys.exit(0)
 
+    if options.footprint_from_buildlog:
+        logger.warning("WARNING: Using --footprint-from-buildlog will give inconsistent results "
+                       "for configurations using sysbuild. It is recommended to not use this flag "
+                       "when building configurations using sysbuild.")
+        if not options.enable_size_report:
+            logger.error("--footprint-from-buildlog requires --enable-size-report")
+            sys.exit(1)
+
     if len(options.extra_test_args) > 0:
         # extra_test_args is a list of CLI args that Twister did not recognize
         # and are intended to be passed through to the ztest executable. This
@@ -760,39 +1018,43 @@ def parse_arguments(parser, args, options = None):
                 double_dash = len(options.extra_test_args)
             unrecognized = " ".join(options.extra_test_args[0:double_dash])
 
-            logger.error("Unrecognized arguments found: '%s'. Use -- to "
-                         "delineate extra arguments for test binary or pass "
-                         "-h for help.",
-                         unrecognized)
+            logger.error(
+                f"Unrecognized arguments found: '{unrecognized}'."
+                " Use -- to delineate extra arguments for test binary or pass -h for help."
+            )
 
             sys.exit(1)
 
         # Strip off the initial "--" following validation.
         options.extra_test_args = options.extra_test_args[1:]
 
-    if not options.allow_installed_plugin and PYTEST_PLUGIN_INSTALLED:
+    if on_init and not options.allow_installed_plugin and PYTEST_PLUGIN_INSTALLED:
         logger.error("By default Twister should work without pytest-twister-harness "
                      "plugin being installed, so please, uninstall it by "
                      "`pip uninstall pytest-twister-harness` and `git clean "
                      "-dxf scripts/pylib/pytest-twister-harness`.")
         sys.exit(1)
-    elif options.allow_installed_plugin and PYTEST_PLUGIN_INSTALLED:
+    elif on_init and options.allow_installed_plugin and PYTEST_PLUGIN_INSTALLED:
         logger.warning("You work with installed version of "
                        "pytest-twister-harness plugin.")
 
     return options
 
+def strip_ansi_sequences(s: str) -> str:
+    """Remove ANSI escape sequences from a string."""
+    return re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', "", s)
 
 class TwisterEnv:
 
-    def __init__(self, options=None) -> None:
+    def __init__(self, options : argparse.Namespace, default_options=None) -> None:
         self.version = "Unknown"
         self.toolchain = None
         self.commit_date = "Unknown"
         self.run_date = None
         self.options = options
+        self.default_options = default_options
 
-        if options and options.ninja:
+        if options.ninja:
             self.generator_cmd = "ninja"
             self.generator = "Ninja"
         else:
@@ -800,23 +1062,54 @@ class TwisterEnv:
             self.generator = "Unix Makefiles"
         logger.info(f"Using {self.generator}..")
 
-        self.test_roots = options.testsuite_root if options else None
+        self.test_roots = options.testsuite_root
 
-        if options:
-            if not isinstance(options.board_root, list):
-                self.board_roots = [self.options.board_root]
-            else:
-                self.board_roots = self.options.board_root
-            self.outdir = os.path.abspath(options.outdir)
+        if not isinstance(options.board_root, list):
+            self.board_roots = [options.board_root]
         else:
-            self.board_roots = None
-            self.outdir = None
+            self.board_roots = options.board_root
+        self.outdir = os.path.abspath(options.outdir)
+
+        self.snippet_roots = [Path(ZEPHYR_BASE)]
+        modules = zephyr_module.parse_modules(ZEPHYR_BASE)
+        for module in modules:
+            snippet_root = module.meta.get("build", {}).get("settings", {}).get("snippet_root")
+            if snippet_root:
+                self.snippet_roots.append(Path(module.project) / snippet_root)
+
+
+        self.soc_roots = [Path(ZEPHYR_BASE), Path(ZEPHYR_BASE) / 'subsys' / 'testsuite']
+        self.dts_roots = [Path(ZEPHYR_BASE)]
+        self.arch_roots = [Path(ZEPHYR_BASE)]
+
+        for module in modules:
+            soc_root = module.meta.get("build", {}).get("settings", {}).get("soc_root")
+            if soc_root:
+                self.soc_roots.append(Path(module.project) / Path(soc_root))
+            dts_root = module.meta.get("build", {}).get("settings", {}).get("dts_root")
+            if dts_root:
+                self.dts_roots.append(Path(module.project) / Path(dts_root))
+            arch_root = module.meta.get("build", {}).get("settings", {}).get("arch_root")
+            if arch_root:
+                self.arch_roots.append(Path(module.project) / Path(arch_root))
 
         self.hwm = None
 
-        self.test_config = options.test_config if options else None
+        self.test_config = options.test_config
 
-        self.alt_config_root = options.alt_config_root if options else None
+        self.alt_config_root = options.alt_config_root
+
+    def non_default_options(self) -> dict:
+        """Returns current command line options which are set to non-default values."""
+        diff = {}
+        if not self.default_options:
+            return diff
+        dict_options = vars(self.options)
+        dict_default = vars(self.default_options)
+        for k in dict_options:
+            if k not in dict_default or dict_options[k] != dict_default[k]:
+                diff[k] = dict_options[k]
+        return diff
 
     def discover(self):
         self.check_zephyr_version()
@@ -827,7 +1120,7 @@ class TwisterEnv:
         try:
             subproc = subprocess.run(["git", "describe", "--abbrev=12", "--always"],
                                      stdout=subprocess.PIPE,
-                                     universal_newlines=True,
+                                     text=True,
                                      cwd=ZEPHYR_BASE)
             if subproc.returncode == 0:
                 _version = subproc.stdout.strip()
@@ -843,7 +1136,7 @@ class TwisterEnv:
         try:
             subproc = subprocess.run(["git", "show", "-s", "--format=%cI", "HEAD"],
                                         stdout=subprocess.PIPE,
-                                        universal_newlines=True,
+                                        text=True,
                                         cwd=ZEPHYR_BASE)
             if subproc.returncode == 0:
                 self.commit_date = subproc.stdout.strip()
@@ -851,10 +1144,12 @@ class TwisterEnv:
             logger.exception("Failure while reading head commit date.")
 
     @staticmethod
-    def run_cmake_script(args=[]):
+    def run_cmake_script(args=None):
+        if args is None:
+            args = []
         script = os.fspath(args[0])
 
-        logger.debug("Running cmake script %s", script)
+        logger.debug(f"Running cmake script {script}")
 
         cmake_args = ["-D{}".format(a.replace('"', '')) for a in args[1:]]
         cmake_args.extend(['-P', script])
@@ -879,16 +1174,15 @@ class TwisterEnv:
         # for instance if twister is executed from inside a makefile. In such a
         # scenario it is then necessary to remove them, as otherwise the JSON decoding
         # will fail.
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        out = ansi_escape.sub('', out.decode())
+        out = strip_ansi_sequences(out.decode())
 
         if p.returncode == 0:
-            msg = "Finished running %s" % (args[0])
+            msg = f"Finished running {args[0]}"
             logger.debug(msg)
             results = {"returncode": p.returncode, "msg": msg, "stdout": out}
 
         else:
-            logger.error("Cmake script failure: %s" % (args[0]))
+            logger.error(f"CMake script failure: {args[0]}")
             results = {"returncode": p.returncode, "returnmsg": out}
 
         return results

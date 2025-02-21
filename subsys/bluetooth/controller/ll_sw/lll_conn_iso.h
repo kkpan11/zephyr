@@ -15,9 +15,10 @@ struct lll_conn_iso_stream_rxtx {
 	uint64_t ft:8;             /* Flush timeout (FT) */
 	uint64_t bn:4;             /* Burst number (BN) */
 	uint64_t phy:3;            /* PHY */
-	uint64_t rfu:1;
-	uint8_t bn_curr:4;        /* Current burst number */
+	uint64_t rfu0:1;
 
+	uint8_t bn_curr:4;        /* Current burst number */
+	uint8_t rfu1:4;
 
 #if defined(CONFIG_BT_CTLR_LE_ENC)
 	struct ccm ccm;
@@ -35,11 +36,17 @@ struct lll_conn_iso_stream {
 	uint32_t offset;            /* Offset of CIS from start of CIG in us */
 	uint32_t sub_interval;      /* Interval between subevents in us */
 	uint8_t  nse:5;             /* Number of subevents */
+
+	/* Frame Spacing */
+	uint16_t tifs_us;
+
+	/* Stream parameters */
 	struct lll_conn_iso_stream_rxtx rx; /* RX parameters */
 	struct lll_conn_iso_stream_rxtx tx; /* TX parameters */
 
 	/* Event and payload counters */
-	uint64_t event_count:39;    /* cisEventCount */
+	uint64_t event_count_prepare:39; /* cisEventCount in overlapping CIG prepare */
+	uint64_t event_count:39;         /* cisEventCount in current CIG event */
 
 	/* Acknowledgment and flow control */
 	uint8_t sn:1;               /* Sequence number */
@@ -74,16 +81,26 @@ struct lll_conn_iso_group {
 	struct lll_hdr hdr;
 
 	uint16_t handle;      /* CIG handle (internal) */
-	uint8_t  num_cis:5;   /* Number of CISes in this CIG */
-	uint8_t  role:1;      /* 0: CENTRAL, 1: PERIPHERAL*/
-	uint8_t  paused:1;    /* 1: CIG is paused */
-
-	/* Accumulates LLL prepare callback latencies */
-	uint16_t latency_prepare;
-	uint16_t latency_event;
 
 	/* Resumption information */
 	uint16_t resume_cis;  /* CIS handle to schedule at resume */
+
+	/* ISO group information */
+	uint32_t num_cis:5;   /* Number of CISes in this CIG */
+	uint32_t role:1;      /* 0: CENTRAL, 1: PERIPHERAL*/
+	uint32_t paused:1;    /* 1: CIG is paused */
+	uint32_t rfu0:1;
+
+	/* ISO interval to calculate timestamp under FT > 1,
+	 * maximum ISO interval of 4 seconds can be represented in 22-bits.
+	 */
+	uint32_t iso_interval_us:22;
+	uint32_t rfu1:2;
+
+	/* Accumulates LLL prepare callback latencies */
+	uint16_t latency_prepare;
+	uint16_t lazy_prepare;
+	uint16_t latency_event;
 
 #if defined(CONFIG_BT_CTLR_PERIPHERAL_ISO)
 	/* Window widening. Relies on vendor specific conversion macros, e.g.
@@ -112,6 +129,9 @@ void lll_conn_iso_flush(uint16_t handle, struct lll_conn_iso_stream *lll);
 extern struct lll_conn_iso_stream *
 ull_conn_iso_lll_stream_get_by_group(struct lll_conn_iso_group *cig_lll,
 				     uint16_t *handle_iter);
+extern struct lll_conn_iso_stream *
+ull_conn_iso_lll_stream_sorted_get_by_group(struct lll_conn_iso_group *cig_lll,
+					    uint16_t *handle_iter);
 extern struct lll_conn_iso_group *
 ull_conn_iso_lll_group_get_by_stream(struct lll_conn_iso_stream *cis_lll);
 extern struct lll_conn_iso_stream *ull_conn_iso_lll_stream_get(uint16_t handle);

@@ -16,83 +16,56 @@
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/cache.h>
 
 #include "i2s_ll_stm32.h"
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 LOG_MODULE_REGISTER(i2s_ll_stm32);
 
-/* FIXME change to
- * #if __DCACHE_PRESENT == 1
- * when cache support is added
- */
-#if 0
-#define DCACHE_INVALIDATE(addr, size) \
-	SCB_InvalidateDCache_by_Addr((uint32_t *)addr, size)
-#define DCACHE_CLEAN(addr, size) \
-	SCB_CleanDCache_by_Addr((uint32_t *)addr, size)
-#else
-#define DCACHE_INVALIDATE(addr, size) {; }
-#define DCACHE_CLEAN(addr, size) {; }
-#endif
-
-#define MODULO_INC(val, max) { val = (++val < max) ? val : 0; }
-
 static unsigned int div_round_closest(uint32_t dividend, uint32_t divisor)
 {
 	return (dividend + (divisor / 2U)) / divisor;
 }
 
+static bool queue_is_empty(struct k_msgq *q)
+{
+	return (k_msgq_num_used_get(q) == 0) ? true : false;
+}
+
 /*
  * Get data from the queue
  */
-static int queue_get(struct ring_buf *rb, void **mem_block, size_t *size)
+static int queue_get(struct k_msgq *q, void **mem_block, size_t *size, int32_t timeout)
 {
-	unsigned int key;
+	struct queue_item item;
+	int result = k_msgq_get(q, &item, SYS_TIMEOUT_MS(timeout));
 
-	key = irq_lock();
-
-	if (rb->tail == rb->head) {
-		/* Ring buffer is empty */
-		irq_unlock(key);
-		return -ENOMEM;
+	if (result == 0) {
+		*mem_block = item.mem_block;
+		*size = item.size;
 	}
-
-	*mem_block = rb->buf[rb->tail].mem_block;
-	*size = rb->buf[rb->tail].size;
-	MODULO_INC(rb->tail, rb->len);
-
-	irq_unlock(key);
-
-	return 0;
+	return result;
 }
 
 /*
  * Put data in the queue
  */
-static int queue_put(struct ring_buf *rb, void *mem_block, size_t size)
+static int queue_put(struct k_msgq *q, void *mem_block, size_t size, int32_t timeout)
 {
-	uint16_t head_next;
-	unsigned int key;
+	struct queue_item item = {.mem_block = mem_block, .size = size};
 
-	key = irq_lock();
+	return k_msgq_put(q, &item, SYS_TIMEOUT_MS(timeout));
+}
 
-	head_next = rb->head;
-	MODULO_INC(head_next, rb->len);
+static void stream_queue_drop(struct stream *s)
+{
+	size_t size;
+	void *mem_block;
 
-	if (head_next == rb->tail) {
-		/* Ring buffer is full */
-		irq_unlock(key);
-		return -ENOMEM;
+	while (queue_get(s->msgq, &mem_block, &size, 0) == 0) {
+		k_mem_slab_free(s->cfg.mem_slab, mem_block);
 	}
-
-	rb->buf[rb->head].mem_block = mem_block;
-	rb->buf[rb->head].size = size;
-	rb->head = head_next;
-
-	irq_unlock(key);
-
-	return 0;
 }
 
 static int i2s_stm32_enable_clock(const struct device *dev)
@@ -136,10 +109,19 @@ static int i2s_stm32_set_clock(const struct device *dev,
 	uint8_t i2s_div, i2s_odd;
 
 	if (cfg->pclk_len > 1) {
+		/* Handle multiple clock sources */
 		if (clock_control_get_rate(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
 					   (clock_control_subsys_t)&cfg->pclken[1],
 					   &freq_in) < 0) {
 			LOG_ERR("Failed call clock_control_get_rate(pclken[1])");
+			return -EIO;
+		}
+	} else {
+		/* Handle single clock source */
+		if (clock_control_get_rate(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
+					   (clock_control_subsys_t)&cfg->pclken[0],
+					   &freq_in) < 0) {
+			LOG_ERR("Failed call clock_control_get_rate(pclken[0])");
 			return -EIO;
 		}
 	}
@@ -179,8 +161,10 @@ static int i2s_stm32_configure(const struct device *dev, enum i2s_dir dir,
 	 * When I2S data format is selected parameter channels is ignored,
 	 * number of words in a frame is always 2.
 	 */
-	const uint32_t num_channels = i2s_cfg->format & I2S_FMT_DATA_FORMAT_MASK
-				      ? 2U : i2s_cfg->channels;
+	const uint32_t num_channels =
+		((i2s_cfg->format & I2S_FMT_DATA_FORMAT_MASK) == I2S_FMT_DATA_FORMAT_I2S)
+			? 2U
+			: i2s_cfg->channels;
 	struct stream *stream;
 	uint32_t bit_clk_freq;
 	bool enable_mck;
@@ -210,7 +194,7 @@ static int i2s_stm32_configure(const struct device *dev, enum i2s_dir dir,
 	}
 
 	if (i2s_cfg->frame_clk_freq == 0U) {
-		stream->queue_drop(stream);
+		stream_queue_drop(stream);
 		memset(&stream->cfg, 0, sizeof(struct i2s_config));
 		stream->state = I2S_STATE_NOT_READY;
 		return 0;
@@ -303,6 +287,7 @@ static int i2s_stm32_trigger(const struct device *dev, enum i2s_dir dir,
 			     enum i2s_trigger_cmd cmd)
 {
 	struct i2s_stm32_data *const dev_data = dev->data;
+	const struct i2s_stm32_cfg *const cfg = dev->config;
 	struct stream *stream;
 	unsigned int key;
 	int ret;
@@ -345,11 +330,20 @@ static int i2s_stm32_trigger(const struct device *dev, enum i2s_dir dir,
 			LOG_ERR("STOP trigger: invalid state");
 			return -EIO;
 		}
+do_trigger_stop:
+		if (ll_func_i2s_dma_busy(cfg->i2s)) {
+			stream->state = I2S_STATE_STOPPING;
+			/*
+			 * Indicate that the transition to I2S_STATE_STOPPING
+			 * is triggered by STOP command
+			 */
+			stream->tx_stop_for_drain = false;
+		} else {
+			stream->stream_disable(stream, dev);
+			stream->state = I2S_STATE_READY;
+			stream->last_block = true;
+		}
 		irq_unlock(key);
-		stream->stream_disable(stream, dev);
-		stream->queue_drop(stream);
-		stream->state = I2S_STATE_READY;
-		stream->last_block = true;
 		break;
 
 	case I2S_TRIGGER_DRAIN:
@@ -359,9 +353,26 @@ static int i2s_stm32_trigger(const struct device *dev, enum i2s_dir dir,
 			LOG_ERR("DRAIN trigger: invalid state");
 			return -EIO;
 		}
-		stream->stream_disable(stream, dev);
-		stream->queue_drop(stream);
-		stream->state = I2S_STATE_READY;
+
+		if (dir == I2S_DIR_TX) {
+			if ((queue_is_empty(stream->msgq) == false) ||
+						(ll_func_i2s_dma_busy(cfg->i2s))) {
+				stream->state = I2S_STATE_STOPPING;
+				/*
+				 * Indicate that the transition to I2S_STATE_STOPPING
+				 * is triggered by DRAIN command
+				 */
+				stream->tx_stop_for_drain = true;
+			} else {
+				stream->stream_disable(stream, dev);
+				stream->state = I2S_STATE_READY;
+			}
+		} else if (dir == I2S_DIR_RX) {
+			goto do_trigger_stop;
+		} else {
+			LOG_ERR("Unavailable direction");
+			return -EINVAL;
+		}
 		irq_unlock(key);
 		break;
 
@@ -371,7 +382,7 @@ static int i2s_stm32_trigger(const struct device *dev, enum i2s_dir dir,
 			return -EIO;
 		}
 		stream->stream_disable(stream, dev);
-		stream->queue_drop(stream);
+		stream_queue_drop(stream);
 		stream->state = I2S_STATE_READY;
 		break;
 
@@ -381,7 +392,7 @@ static int i2s_stm32_trigger(const struct device *dev, enum i2s_dir dir,
 			return -EIO;
 		}
 		stream->state = I2S_STATE_READY;
-		stream->queue_drop(stream);
+		stream_queue_drop(stream);
 		break;
 
 	default:
@@ -403,16 +414,8 @@ static int i2s_stm32_read(const struct device *dev, void **mem_block,
 		return -EIO;
 	}
 
-	if (dev_data->rx.state != I2S_STATE_ERROR) {
-		ret = k_sem_take(&dev_data->rx.sem,
-				 SYS_TIMEOUT_MS(dev_data->rx.cfg.timeout));
-		if (ret < 0) {
-			return ret;
-		}
-	}
-
 	/* Get data from the beginning of RX queue */
-	ret = queue_get(&dev_data->rx.mem_block_queue, mem_block, size);
+	ret = queue_get(dev_data->rx.msgq, mem_block, size, dev_data->rx.cfg.timeout);
 	if (ret < 0) {
 		return -EIO;
 	}
@@ -424,7 +427,6 @@ static int i2s_stm32_write(const struct device *dev, void *mem_block,
 			   size_t size)
 {
 	struct i2s_stm32_data *const dev_data = dev->data;
-	int ret;
 
 	if (dev_data->tx.state != I2S_STATE_RUNNING &&
 	    dev_data->tx.state != I2S_STATE_READY) {
@@ -432,19 +434,11 @@ static int i2s_stm32_write(const struct device *dev, void *mem_block,
 		return -EIO;
 	}
 
-	ret = k_sem_take(&dev_data->tx.sem,
-			 SYS_TIMEOUT_MS(dev_data->tx.cfg.timeout));
-	if (ret < 0) {
-		return ret;
-	}
-
 	/* Add data to the end of the TX queue */
-	queue_put(&dev_data->tx.mem_block_queue, mem_block, size);
-
-	return 0;
+	return queue_put(dev_data->tx.msgq, mem_block, size, dev_data->tx.cfg.timeout);
 }
 
-static const struct i2s_driver_api i2s_stm32_driver_api = {
+static DEVICE_API(i2s, i2s_stm32_driver_api) = {
 	.configure = i2s_stm32_configure,
 	.read = i2s_stm32_read,
 	.write = i2s_stm32_write,
@@ -549,7 +543,11 @@ static void dma_rx_callback(const struct device *dma_dev, void *arg,
 
 	ret = reload_dma(stream->dev_dma, stream->dma_channel,
 			&stream->dma_cfg,
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+			(void *)LL_SPI_DMA_GetRxRegAddr(cfg->i2s),
+#else
 			(void *)LL_SPI_DMA_GetRegAddr(cfg->i2s),
+#endif
 			stream->mem_block,
 			stream->cfg.block_size);
 	if (ret < 0) {
@@ -558,16 +556,15 @@ static void dma_rx_callback(const struct device *dma_dev, void *arg,
 	}
 
 	/* Assure cache coherency after DMA write operation */
-	DCACHE_INVALIDATE(mblk_tmp, stream->cfg.block_size);
+	sys_cache_data_invd_range(mblk_tmp, stream->cfg.block_size);
 
 	/* All block data received */
-	ret = queue_put(&stream->mem_block_queue, mblk_tmp,
-			stream->cfg.block_size);
+	ret = queue_put(stream->msgq, mblk_tmp,
+			stream->cfg.block_size, 0);
 	if (ret < 0) {
 		stream->state = I2S_STATE_ERROR;
 		goto rx_disable;
 	}
-	k_sem_give(&stream->sem);
 
 	/* Stop reception if we were requested */
 	if (stream->state == I2S_STATE_STOPPING) {
@@ -600,13 +597,35 @@ static void dma_tx_callback(const struct device *dma_dev, void *arg,
 	__ASSERT_NO_MSG(stream->mem_block != NULL);
 
 	/* All block data sent */
-	k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+	k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 	stream->mem_block = NULL;
 
 	/* Stop transmission if there was an error */
 	if (stream->state == I2S_STATE_ERROR) {
 		LOG_ERR("TX error detected");
 		goto tx_disable;
+	}
+
+	/* Check if we finished transferring one block and stopping is requested */
+	if ((stream->state == I2S_STATE_STOPPING) && (status == DMA_STATUS_COMPLETE)) {
+		/*
+		 * Check if all tx samples have been completely handled
+		 * as stated in zephyr i2s specification, in case of DRAIN command
+		 * send all data in the transmit queue and stop the transmission.
+		 */
+		if (queue_is_empty(stream->msgq) == true) {
+			stream_queue_drop(stream);
+			stream->state = I2S_STATE_READY;
+			goto tx_disable;
+		} else if (stream->tx_stop_for_drain == false) {
+			/*
+			 * In case of STOP command, just stop the transmission
+			 * at the current. The transmission can be resumed.
+			 */
+			stream->state = I2S_STATE_READY;
+			goto tx_disable;
+		}
+		/* else: DRAIN trigger -> continue TX normally until queue is empty */
 	}
 
 	/* Stop transmission if we were requested */
@@ -616,8 +635,8 @@ static void dma_tx_callback(const struct device *dma_dev, void *arg,
 	}
 
 	/* Prepare to send the next data block */
-	ret = queue_get(&stream->mem_block_queue, &stream->mem_block,
-			&mem_block_size);
+	ret = queue_get(stream->msgq, &stream->mem_block,
+			&mem_block_size, 0);
 	if (ret < 0) {
 		if (stream->state == I2S_STATE_STOPPING) {
 			stream->state = I2S_STATE_READY;
@@ -626,16 +645,19 @@ static void dma_tx_callback(const struct device *dma_dev, void *arg,
 		}
 		goto tx_disable;
 	}
-	k_sem_give(&stream->sem);
 
 	/* Assure cache coherency before DMA read operation */
-	DCACHE_CLEAN(stream->mem_block, mem_block_size);
+	sys_cache_data_flush_range(stream->mem_block, mem_block_size);
 
 	ret = reload_dma(stream->dev_dma, stream->dma_channel,
 			&stream->dma_cfg,
 			stream->mem_block,
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+			(void *)LL_SPI_DMA_GetTxRegAddr(cfg->i2s),
+#else
 			(void *)LL_SPI_DMA_GetRegAddr(cfg->i2s),
-			stream->cfg.block_size);
+#endif
+			mem_block_size);
 	if (ret < 0) {
 		LOG_DBG("Failed to start TX DMA transfer: %d", ret);
 		goto tx_disable;
@@ -649,20 +671,22 @@ tx_disable:
 
 static uint32_t i2s_stm32_irq_count;
 static uint32_t i2s_stm32_irq_ovr_count;
+static uint32_t i2s_stm32_irq_udr_count;
 
 static void i2s_stm32_isr(const struct device *dev)
 {
 	const struct i2s_stm32_cfg *cfg = dev->config;
-	struct i2s_stm32_data *const dev_data = dev->data;
-	struct stream *stream = &dev_data->rx;
-
-	LOG_ERR("%s: err=%d", __func__, (int)LL_I2S_ReadReg(cfg->i2s, SR));
-	stream->state = I2S_STATE_ERROR;
 
 	/* OVR error must be explicitly cleared */
 	if (LL_I2S_IsActiveFlag_OVR(cfg->i2s)) {
 		i2s_stm32_irq_ovr_count++;
 		LL_I2S_ClearFlag_OVR(cfg->i2s);
+	}
+
+	/* NOTE: UDR error must be explicitly cleared on STM32H7 */
+	if (LL_I2S_IsActiveFlag_UDR(cfg->i2s)) {
+		i2s_stm32_irq_udr_count++;
+		LL_I2S_ClearFlag_UDR(cfg->i2s);
 	}
 
 	i2s_stm32_irq_count++;
@@ -672,7 +696,11 @@ static int i2s_stm32_initialize(const struct device *dev)
 {
 	const struct i2s_stm32_cfg *cfg = dev->config;
 	struct i2s_stm32_data *const dev_data = dev->data;
+	struct stream *stream = &dev_data->tx;
 	int ret, i;
+
+	/* Initialize the variable used to handle the TX */
+	stream->tx_stop_for_drain = false;
 
 	/* Enable I2S clock propagation */
 	ret = i2s_stm32_enable_clock(dev);
@@ -689,10 +717,6 @@ static int i2s_stm32_initialize(const struct device *dev)
 	}
 
 	cfg->irq_config(dev);
-
-	k_sem_init(&dev_data->rx.sem, 0, CONFIG_I2S_STM32_RX_BLOCK_COUNT);
-	k_sem_init(&dev_data->tx.sem, CONFIG_I2S_STM32_TX_BLOCK_COUNT,
-		   CONFIG_I2S_STM32_TX_BLOCK_COUNT);
 
 	for (i = 0; i < STM32_DMA_NUM_CHANNELS; i++) {
 		active_dma_rx_channel[i] = NULL;
@@ -736,7 +760,11 @@ static int rx_stream_start(struct stream *stream, const struct device *dev)
 
 	ret = start_dma(stream->dev_dma, stream->dma_channel,
 			&stream->dma_cfg,
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+			(void *)LL_SPI_DMA_GetRxRegAddr(cfg->i2s),
+#else
 			(void *)LL_SPI_DMA_GetRegAddr(cfg->i2s),
+#endif
 			stream->src_addr_increment, stream->mem_block,
 			stream->dst_addr_increment, stream->fifo_threshold,
 			stream->cfg.block_size);
@@ -747,8 +775,17 @@ static int rx_stream_start(struct stream *stream, const struct device *dev)
 
 	LL_I2S_EnableDMAReq_RX(cfg->i2s);
 
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+	LL_I2S_EnableIT_OVR(cfg->i2s);
+	LL_I2S_EnableIT_UDR(cfg->i2s);
+	LL_I2S_EnableIT_FRE(cfg->i2s);
+	LL_I2S_Enable(cfg->i2s);
+	LL_SPI_StartMasterTransfer(cfg->i2s);
+#else
 	LL_I2S_EnableIT_ERR(cfg->i2s);
 	LL_I2S_Enable(cfg->i2s);
+#endif
+
 
 	return 0;
 }
@@ -759,15 +796,14 @@ static int tx_stream_start(struct stream *stream, const struct device *dev)
 	size_t mem_block_size;
 	int ret;
 
-	ret = queue_get(&stream->mem_block_queue, &stream->mem_block,
-			&mem_block_size);
+	ret = queue_get(stream->msgq, &stream->mem_block,
+			&mem_block_size, 0);
 	if (ret < 0) {
 		return ret;
 	}
-	k_sem_give(&stream->sem);
 
 	/* Assure cache coherency before DMA read operation */
-	DCACHE_CLEAN(stream->mem_block, mem_block_size);
+	sys_cache_data_flush_range(stream->mem_block, mem_block_size);
 
 	if (stream->master) {
 		LL_I2S_SetTransferMode(cfg->i2s, LL_I2S_MODE_MASTER_TX);
@@ -781,7 +817,11 @@ static int tx_stream_start(struct stream *stream, const struct device *dev)
 	ret = start_dma(stream->dev_dma, stream->dma_channel,
 			&stream->dma_cfg,
 			stream->mem_block, stream->src_addr_increment,
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+			(void *)LL_SPI_DMA_GetTxRegAddr(cfg->i2s),
+#else
 			(void *)LL_SPI_DMA_GetRegAddr(cfg->i2s),
+#endif
 			stream->dst_addr_increment, stream->fifo_threshold,
 			stream->cfg.block_size);
 	if (ret < 0) {
@@ -791,8 +831,17 @@ static int tx_stream_start(struct stream *stream, const struct device *dev)
 
 	LL_I2S_EnableDMAReq_TX(cfg->i2s);
 
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+	LL_I2S_EnableIT_OVR(cfg->i2s);
+	LL_I2S_EnableIT_UDR(cfg->i2s);
+	LL_I2S_EnableIT_FRE(cfg->i2s);
+
+	LL_I2S_Enable(cfg->i2s);
+	LL_SPI_StartMasterTransfer(cfg->i2s);
+#else
 	LL_I2S_EnableIT_ERR(cfg->i2s);
 	LL_I2S_Enable(cfg->i2s);
+#endif
 
 	return 0;
 }
@@ -802,11 +851,17 @@ static void rx_stream_disable(struct stream *stream, const struct device *dev)
 	const struct i2s_stm32_cfg *cfg = dev->config;
 
 	LL_I2S_DisableDMAReq_RX(cfg->i2s);
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+	LL_I2S_DisableIT_OVR(cfg->i2s);
+	LL_I2S_DisableIT_UDR(cfg->i2s);
+	LL_I2S_DisableIT_FRE(cfg->i2s);
+#else
 	LL_I2S_DisableIT_ERR(cfg->i2s);
+#endif
 
 	dma_stop(stream->dev_dma, stream->dma_channel);
 	if (stream->mem_block != NULL) {
-		k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 		stream->mem_block = NULL;
 	}
 
@@ -820,45 +875,25 @@ static void tx_stream_disable(struct stream *stream, const struct device *dev)
 	const struct i2s_stm32_cfg *cfg = dev->config;
 
 	LL_I2S_DisableDMAReq_TX(cfg->i2s);
+#if DT_HAS_COMPAT_STATUS_OKAY(st_stm32h7_i2s)
+	LL_I2S_DisableIT_OVR(cfg->i2s);
+	LL_I2S_DisableIT_UDR(cfg->i2s);
+	LL_I2S_DisableIT_FRE(cfg->i2s);
+#else
 	LL_I2S_DisableIT_ERR(cfg->i2s);
+#endif
 
 	dma_stop(stream->dev_dma, stream->dma_channel);
 	if (stream->mem_block != NULL) {
-		k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 		stream->mem_block = NULL;
 	}
 
+	/* Wait for TX queue to drain before disabling */
+	k_busy_wait(100);
 	LL_I2S_Disable(cfg->i2s);
 
 	active_dma_tx_channel[stream->dma_channel] = NULL;
-}
-
-static void rx_queue_drop(struct stream *stream)
-{
-	size_t size;
-	void *mem_block;
-
-	while (queue_get(&stream->mem_block_queue, &mem_block, &size) == 0) {
-		k_mem_slab_free(stream->cfg.mem_slab, &mem_block);
-	}
-
-	k_sem_reset(&stream->sem);
-}
-
-static void tx_queue_drop(struct stream *stream)
-{
-	size_t size;
-	void *mem_block;
-	unsigned int n = 0U;
-
-	while (queue_get(&stream->mem_block_queue, &mem_block, &size) == 0) {
-		k_mem_slab_free(stream->cfg.mem_slab, &mem_block);
-		n++;
-	}
-
-	for (; n > 0; n--) {
-		k_sem_give(&stream->sem);
-	}
 }
 
 static const struct device *get_dev_from_rx_dma_channel(uint32_t dma_channel)
@@ -896,9 +931,7 @@ static const struct device *get_dev_from_tx_dma_channel(uint32_t dma_channel)
 				STM32_DMA_FEATURES(index, dir)),	\
 	.stream_start = dir##_stream_start,				\
 	.stream_disable = dir##_stream_disable,				\
-	.queue_drop = dir##_queue_drop,					\
-	.mem_block_queue.buf = dir##_##index##_ring_buf,		\
-	.mem_block_queue.len = ARRAY_SIZE(dir##_##index##_ring_buf)	\
+	.msgq = &dir##_##index##_queue,		\
 }
 
 #define I2S_STM32_INIT(index)							\
@@ -919,8 +952,8 @@ static const struct i2s_stm32_cfg i2s_stm32_config_##index = {		\
 	.master_clk_sel = DT_INST_PROP(index, mck_enabled)		\
 };									\
 									\
-struct queue_item rx_##index##_ring_buf[CONFIG_I2S_STM32_RX_BLOCK_COUNT + 1];\
-struct queue_item tx_##index##_ring_buf[CONFIG_I2S_STM32_TX_BLOCK_COUNT + 1];\
+K_MSGQ_DEFINE(rx_##index##_queue, sizeof(struct queue_item), CONFIG_I2S_STM32_RX_BLOCK_COUNT, 4);\
+K_MSGQ_DEFINE(tx_##index##_queue, sizeof(struct queue_item), CONFIG_I2S_STM32_TX_BLOCK_COUNT, 4);\
 									\
 static struct i2s_stm32_data i2s_stm32_data_##index = {			\
 	UTIL_AND(DT_INST_DMAS_HAS_NAME(index, rx),			\

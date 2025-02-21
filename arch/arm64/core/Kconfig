@@ -23,6 +23,7 @@ config CPU_AARCH64_CORTEX_R
 	select HAS_FLASH_LOAD_OFFSET
 	select CPU_HAS_DCACHE
 	select CPU_HAS_ICACHE
+	select ARCH_HAS_STACK_PROTECTION
 	select CPU_HAS_FPU
 	imply FPU
 	imply FPU_SHARING
@@ -142,14 +143,20 @@ config ARM64_SAFE_EXCEPTION_STACK
 	  used for user stack overflow checking, because kernel stack support
 	  the checking work.
 
-config ARM64_ENABLE_FRAME_POINTER
+config ARM64_EXCEPTION_STACK_TRACE
 	bool
 	default y
-	depends on OVERRIDE_FRAME_POINTER_DEFAULT && !OMIT_FRAME_POINTER
+	depends on FRAME_POINTER
 	help
-	  Hidden option to simplify access to OVERRIDE_FRAME_POINTER_DEFAULT
-	  and OMIT_FRAME_POINTER. It is automatically enabled when the frame
-	  pointer unwinding is enabled.
+	  Internal config to enable runtime stack traces on fatal exceptions.
+
+config ARCH_HAS_STACKWALK
+	bool
+	default y
+	depends on FRAME_POINTER
+	help
+	  Internal config to indicate that the arch_stack_walk() API is implemented
+	  and it can be enabled.
 
 config ARM64_SAFE_EXCEPTION_STACK_SIZE
 	int "The stack size of the safe exception stack"
@@ -167,6 +174,17 @@ config ARM64_FALLBACK_ON_RESERVED_CORES
 	  become reserved.  If there is an issue powering on a core during boot
 	  then that core will be skipped and the next core in the device tree
 	  will be used.
+
+config ARM64_STACK_PROTECTION
+	bool
+	default y if HW_STACK_PROTECTION
+	depends on ARM_MPU
+	select THREAD_STACK_INFO
+	select ARM64_SAFE_EXCEPTION_STACK
+	help
+	  This option leverages the MMU or MPU to cause a system fatal error if
+	  the bounds of the current process stack are overflowed. This is done
+	  by preceding all stack areas with a fixed guard region.
 
 if CPU_CORTEX_A
 
@@ -196,6 +214,8 @@ config ARMV8_A
 	  compatibility with the Armv7-A architecture and enhances that profile
 	  so that it can support some features included in the AArch64 state.
 	  It supports the T32 and A32 instruction sets.
+
+rsource "xen/Kconfig"
 
 endif # CPU_CORTEX_A
 
@@ -238,15 +258,6 @@ config ARM_MMU
 	select ARCH_MEM_DOMAIN_DATA if USERSPACE
 	help
 	  Memory Management Unit support.
-
-config EXCEPTION_DEBUG
-	bool "Unhandled exception debugging information"
-	default y
-	depends on LOG
-	help
-	  Print human-readable information about exception vectors, cause codes,
-	  and parameters, at a cost of code/data size for the human-readable
-	  strings.
 
 config XIP
 	select AARCH64_IMAGE_HEADER

@@ -58,7 +58,7 @@ struct queue_item {
 };
 
 /* Minimal ring buffer implementation */
-struct ring_buf {
+struct ring_buffer {
 	struct queue_item *buf;
 	uint16_t len;
 	uint16_t head;
@@ -83,7 +83,7 @@ struct stream {
 	uint8_t word_size_bytes;
 	bool last_block;
 	struct i2s_config cfg;
-	struct ring_buf mem_block_queue;
+	struct ring_buffer mem_block_queue;
 	void *mem_block;
 	int (*stream_start)(struct stream *, Ssc *const,
 			    const struct device *);
@@ -113,7 +113,7 @@ static void tx_stream_disable(struct stream *, Ssc *const,
 /*
  * Get data from the queue
  */
-static int queue_get(struct ring_buf *rb, void **mem_block, size_t *size)
+static int queue_get(struct ring_buffer *rb, void **mem_block, size_t *size)
 {
 	unsigned int key;
 
@@ -137,7 +137,7 @@ static int queue_get(struct ring_buf *rb, void **mem_block, size_t *size)
 /*
  * Put data in the queue
  */
-static int queue_put(struct ring_buf *rb, void *mem_block, size_t size)
+static int queue_put(struct ring_buffer *rb, void *mem_block, size_t size)
 {
 	uint16_t head_next;
 	unsigned int key;
@@ -277,7 +277,7 @@ static void dma_tx_callback(const struct device *dma_dev, void *user_data,
 	__ASSERT_NO_MSG(stream->mem_block != NULL);
 
 	/* All block data sent */
-	k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+	k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 	stream->mem_block = NULL;
 
 	/* Stop transmission if there was an error */
@@ -736,7 +736,7 @@ static void rx_stream_disable(struct stream *stream, Ssc *const ssc,
 	ssc->SSC_IDR = SSC_IDR_OVRUN;
 	dma_stop(dev_dma, stream->dma_channel);
 	if (stream->mem_block != NULL) {
-		k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 		stream->mem_block = NULL;
 	}
 }
@@ -748,7 +748,7 @@ static void tx_stream_disable(struct stream *stream, Ssc *const ssc,
 	ssc->SSC_IDR = SSC_IDR_TXEMPTY;
 	dma_stop(dev_dma, stream->dma_channel);
 	if (stream->mem_block != NULL) {
-		k_mem_slab_free(stream->cfg.mem_slab, &stream->mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, stream->mem_block);
 		stream->mem_block = NULL;
 	}
 }
@@ -759,7 +759,7 @@ static void rx_queue_drop(struct stream *stream)
 	void *mem_block;
 
 	while (queue_get(&stream->mem_block_queue, &mem_block, &size) == 0) {
-		k_mem_slab_free(stream->cfg.mem_slab, &mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, mem_block);
 	}
 
 	k_sem_reset(&stream->sem);
@@ -772,7 +772,7 @@ static void tx_queue_drop(struct stream *stream)
 	unsigned int n = 0U;
 
 	while (queue_get(&stream->mem_block_queue, &mem_block, &size) == 0) {
-		k_mem_slab_free(stream->cfg.mem_slab, &mem_block);
+		k_mem_slab_free(stream->cfg.mem_slab, mem_block);
 		n++;
 	}
 
@@ -990,7 +990,7 @@ static int i2s_sam_initialize(const struct device *dev)
 	return 0;
 }
 
-static const struct i2s_driver_api i2s_sam_driver_api = {
+static DEVICE_API(i2s, i2s_sam_driver_api) = {
 	.configure = i2s_sam_configure,
 	.config_get = i2s_sam_config_get,
 	.read = i2s_sam_read,

@@ -58,6 +58,40 @@ typedef int (*pm_s2ram_system_off_fn_t)(void);
 int arch_pm_s2ram_suspend(pm_s2ram_system_off_fn_t system_off);
 
 /**
+ * @brief Mark that core is entering suspend-to-RAM state.
+ *
+ * Function is called when system state is stored to RAM, just before going to system
+ * off.
+ *
+ * Default implementation is setting a magic word in RAM. CONFIG_PM_S2RAM_CUSTOM_MARKING
+ * allows custom implementation.
+ * The following requirements must be fulfilled:
+ * - the function cannot use stack (asm function or function with 'naked' attribute)
+ * - the content of the R1 and R4 registers must remain unchanged
+ * - returning from the function should be performed with the `bx lr` instruction
+ *
+ */
+void pm_s2ram_mark_set(void);
+
+/**
+ * @brief Check suspend-to-RAM marking and clear its state.
+ *
+ * Function is used to determine if resuming after suspend-to-RAM shall be performed
+ * or standard boot code shall be executed.
+ *
+ * Default implementation is checking a magic word in RAM. CONFIG_PM_S2RAM_CUSTOM_MARKING
+ * allows custom implementation.
+ * The following requirements must be fulfilled:
+ * - the function cannot use stack (most likely asm function)
+ * - the content of the R1 and R4 registers must remain unchanged
+ * - the function's return value is passed by R0 register
+ * - returning from the function should be performed with the `bx lr` instruction
+ *
+ * @retval true if marking is found which indicates resuming after suspend-to-RAM.
+ * @retval false if marking is not found which indicates standard boot.
+ */
+bool pm_s2ram_mark_check_and_clear(void);
+/**
  * @}
  */
 

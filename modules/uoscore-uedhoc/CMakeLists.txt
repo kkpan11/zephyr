@@ -29,7 +29,7 @@ if (CONFIG_UOSCORE OR CONFIG_UEDHOC)
 
   if (CONFIG_BUILD_WITH_TFM)
     zephyr_library_include_directories(
-      $<TARGET_PROPERTY:tfm,TFM_BINARY_DIR>/install/interface/include
+      $<TARGET_PROPERTY:tfm,TFM_BINARY_DIR>/api_ns/interface/include
     )
   endif()
 
@@ -107,7 +107,8 @@ if (CONFIG_UOSCORE OR CONFIG_UEDHOC)
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_message_1.c
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_message_2.c
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_message_3.c
-      ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_plaintext.c
+      ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_plaintext2.c
+      ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_decode_plaintext3.c
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_encode_bstr_type.c
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_encode_data_2.c
       ${UOSCORE_UEDHOC_SRC_DIR}/cbor/edhoc_encode_enc_structure.c

@@ -21,6 +21,9 @@
 	_CONCAT(_##struct_type, _list_start) = .; \
 	KEEP(*(SORT(._##struct_type.static.*_?_*))); \
 	KEEP(*(SORT(._##struct_type.static.*_??_*))); \
+	KEEP(*(SORT(._##struct_type.static.*_???_*))); \
+	KEEP(*(SORT(._##struct_type.static.*_????_*))); \
+	KEEP(*(SORT(._##struct_type.static.*_?????_*))); \
 	_CONCAT(_##struct_type, _list_end) = .
 
 #define Z_LINK_ITERABLE_ALIGNED(struct_type, align) \
@@ -31,6 +34,8 @@
 	_CONCAT(_##struct_type, _list_start) = .; \
 	*(SORT_BY_NAME(._##struct_type.static.*)); \
 	_CONCAT(_##struct_type, _list_end) = .
+
+#define Z_LINK_ITERABLE_SUBALIGN CONFIG_LINKER_ITERABLE_SUBALIGN
 
 /**
  * @brief Define a read-only iterable section output.

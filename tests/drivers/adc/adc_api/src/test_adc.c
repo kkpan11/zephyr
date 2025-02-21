@@ -7,8 +7,17 @@
 
 
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/counter.h>
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
+
+#if CONFIG_ADC_32_BITS_DATA
+typedef int32_t adc_data_size_t;
+#define INVALID_ADC_VALUE INT_MIN
+#else
+typedef int16_t adc_data_size_t;
+#endif
 
 /* Invalid value that is not supposed to be written by the driver. It is used
  * to mark the sample buffer entries as empty. If needed, it can be overridden
@@ -18,8 +27,18 @@
 #define INVALID_ADC_VALUE SHRT_MIN
 #endif
 
+#if CONFIG_NOCACHE_MEMORY
+#define __NOCACHE	__attribute__((__section__(".nocache")))
+#else /* CONFIG_NOCACHE_MEMORY */
+#define __NOCACHE
+#endif /* CONFIG_NOCACHE_MEMORY */
+
 #define BUFFER_SIZE  6
-static ZTEST_BMEM int16_t m_sample_buffer[BUFFER_SIZE];
+#ifdef CONFIG_TEST_USERSPACE
+static ZTEST_BMEM adc_data_size_t m_sample_buffer[BUFFER_SIZE];
+#else
+static __aligned(32) adc_data_size_t m_sample_buffer[BUFFER_SIZE] __NOCACHE;
+#endif
 
 #define DT_SPEC_AND_COMMA(node_id, prop, idx) ADC_DT_SPEC_GET_BY_IDX(node_id, idx),
 
@@ -43,6 +62,26 @@ const struct device *get_adc_device(void)
 	return adc_channels[0].dev;
 }
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(test_counter)) && \
+	defined(CONFIG_COUNTER)
+static void init_counter(void)
+{
+	int err;
+	const struct device *const dev = DEVICE_DT_GET(DT_NODELABEL(test_counter));
+	struct counter_top_cfg top_cfg = { .callback = NULL,
+					   .user_data = NULL,
+					   .flags = 0 };
+
+	zassert_true(device_is_ready(dev), "Counter device is not ready");
+
+	counter_start(dev);
+	top_cfg.ticks = counter_us_to_ticks(dev, CONFIG_ADC_API_SAMPLE_INTERVAL_US);
+	err = counter_set_top_value(dev, &top_cfg);
+	zassert_equal(0, err, "%s: Counter failed to set top value (err: %d)",
+		      dev->name, err);
+}
+#endif
+
 static void init_adc(void)
 {
 	int i, ret;
@@ -57,6 +96,11 @@ static void init_adc(void)
 	for (i = 0; i < BUFFER_SIZE; ++i) {
 		m_sample_buffer[i] = INVALID_ADC_VALUE;
 	}
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(test_counter)) && \
+	defined(CONFIG_COUNTER)
+	init_counter();
+#endif
 }
 
 static void check_samples(int expected_count)
@@ -65,9 +109,13 @@ static void check_samples(int expected_count)
 
 	TC_PRINT("Samples read: ");
 	for (i = 0; i < BUFFER_SIZE; i++) {
-		int16_t sample_value = m_sample_buffer[i];
+		adc_data_size_t sample_value = m_sample_buffer[i];
 
-		TC_PRINT("0x%04x ", sample_value);
+#if CONFIG_ADC_32_BITS_DATA
+		TC_PRINT("0x%08x ", sample_value);
+#else
+		TC_PRINT("0x%04hx ", sample_value);
+#endif
 		if (i < expected_count) {
 			zassert_not_equal(INVALID_ADC_VALUE, sample_value,
 				"[%u] should be filled", i);
@@ -93,7 +141,7 @@ static int test_task_one_channel(void)
 	init_adc();
 	(void)adc_sequence_init_dt(&adc_channels[0], &sequence);
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	zassert_equal(ret, 0, "adc_read() failed with code %d", ret);
 
 	check_samples(1);
@@ -124,7 +172,7 @@ static int test_task_multiple_channels(void)
 		sequence.channels |= BIT(adc_channels[i].channel_id);
 	}
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	if (ret == -ENOTSUP) {
 		ztest_test_skip();
 	}
@@ -156,7 +204,7 @@ static int test_task_asynchronous_call(void)
 	const struct adc_sequence_options options = {
 		.extra_samplings = 4,
 		/* Start consecutive samplings as fast as possible. */
-		.interval_us     = 0,
+		.interval_us     = CONFIG_ADC_API_SAMPLE_INTERVAL_US,
 	};
 	struct adc_sequence sequence = {
 		.options     = &options,
@@ -230,7 +278,7 @@ static int test_task_with_interval(void)
 
 	(void)adc_sequence_init_dt(&adc_channels[0], &sequence);
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	if (ret == -ENOTSUP) {
 		ztest_test_skip();
 	}
@@ -261,12 +309,12 @@ static enum adc_action repeated_samplings_callback(const struct device *dev,
 	++m_samplings_done;
 	TC_PRINT("%s: done %d\n", __func__, m_samplings_done);
 	if (m_samplings_done == 1U) {
-		check_samples(adc_channels_count);
+		check_samples(MIN(adc_channels_count, 2));
 
 		/* After first sampling continue normally. */
 		return ADC_ACTION_CONTINUE;
 	} else {
-		check_samples(2 * adc_channels_count);
+		check_samples(2 * MIN(adc_channels_count, 2));
 
 		/*
 		 * The second sampling is repeated 9 times (the samples are
@@ -295,7 +343,7 @@ static int test_task_repeated_samplings(void)
 		 */
 		.extra_samplings = 2,
 		/* Start consecutive samplings as fast as possible. */
-		.interval_us     = 0,
+		.interval_us     = CONFIG_ADC_API_SAMPLE_INTERVAL_US,
 	};
 	struct adc_sequence sequence = {
 		.options     = &options,
@@ -310,7 +358,7 @@ static int test_task_repeated_samplings(void)
 		sequence.channels |=  BIT(adc_channels[1].channel_id);
 	}
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	if (ret == -ENOTSUP) {
 		ztest_test_skip();
 	}
@@ -339,7 +387,7 @@ static int test_task_invalid_request(void)
 
 	init_adc();
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	zassert_not_equal(ret, 0, "adc_read() unexpectedly succeeded");
 
 #if defined(CONFIG_ADC_ASYNC)
@@ -352,7 +400,7 @@ static int test_task_invalid_request(void)
 	 */
 	sequence.resolution = adc_channels[0].resolution;
 
-	ret = adc_read(adc_channels[0].dev, &sequence);
+	ret = adc_read_dt(&adc_channels[0], &sequence);
 	zassert_equal(ret, 0, "adc_read() failed with code %d", ret);
 
 	check_samples(1);

@@ -10,6 +10,7 @@ from zspdx.walker import WalkerConfig, Walker
 from zspdx.scanner import ScannerConfig, scanDocument
 from zspdx.writer import writeSPDX
 
+
 # SBOMConfig contains settings that will be passed along to the various
 # SBOM maker subcomponents.
 class SBOMConfig:
@@ -30,6 +31,7 @@ class SBOMConfig:
 
         # should also add an SPDX document for the SDK?
         self.includeSDK = False
+
 
 # create Cmake file-based API directories and query file
 # Arguments:
@@ -59,6 +61,7 @@ def setupCmakeQuery(build_dir):
         cm_fd = open(queryFilePath, "w")
         cm_fd.close()
         return True
+
 
 # main entry point for SBOM maker
 # Arguments:
@@ -119,6 +122,12 @@ def makeSPDX(cfg):
     writeSPDX(os.path.join(cfg.spdxDir, "build.spdx"), w.docBuild)
     if not retval:
         log.err("SPDX writer failed for build document; bailing")
+        return False
+
+    # write modules document
+    writeSPDX(os.path.join(cfg.spdxDir, "modules-deps.spdx"), w.docModulesExtRefs)
+    if not retval:
+        log.err("SPDX writer failed for modules-deps document; bailing")
         return False
 
     return True

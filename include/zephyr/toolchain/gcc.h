@@ -7,6 +7,10 @@
 #ifndef ZEPHYR_INCLUDE_TOOLCHAIN_GCC_H_
 #define ZEPHYR_INCLUDE_TOOLCHAIN_GCC_H_
 
+#ifndef ZEPHYR_INCLUDE_TOOLCHAIN_H_
+#error Please do not include toolchain-specific headers directly, use <zephyr/toolchain.h> instead
+#endif
+
 /**
  * @file
  * @brief GCC toolchain abstraction
@@ -29,6 +33,8 @@
 #if !defined(TOOLCHAIN_HAS_C_AUTO_TYPE) && (TOOLCHAIN_GCC_VERSION >= 40900)
 #define TOOLCHAIN_HAS_C_AUTO_TYPE 1
 #endif
+
+#define TOOLCHAIN_HAS_ZLA 1
 
 /*
  * Older versions of GCC do not define __BYTE_ORDER__, so it must be manually
@@ -76,9 +82,9 @@
  * static_assert() is not available)
  */
 #elif !defined(__cplusplus) && \
-	((__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6)) ||	\
+	(((__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 6))) ||	\
 	 (__STDC_VERSION__) >= 201100)
-#define BUILD_ASSERT(EXPR, MSG...) _Static_assert(EXPR, "" MSG)
+#define BUILD_ASSERT(EXPR, MSG...) _Static_assert((EXPR), "" MSG)
 #else
 #define BUILD_ASSERT(EXPR, MSG...)
 #endif
@@ -97,7 +103,11 @@
 #define FUNC_ALIAS(real_func, new_alias, return_type) \
 	return_type new_alias() ALIAS_OF(real_func)
 
-#if defined(CONFIG_ARCH_POSIX)
+#if TOOLCHAIN_GCC_VERSION < 40500
+#define __builtin_unreachable() __builtin_trap()
+#endif
+
+#if defined(CONFIG_ARCH_POSIX) && !defined(_ASMLANGUAGE)
 #include <zephyr/arch/posix/posix_trace.h>
 
 /*let's not segfault if this were to happen for some reason*/
@@ -132,7 +142,7 @@ __extension__ ({							\
 })
 
 
-#if __GNUC__ >= 7 && (defined(CONFIG_ARM) || defined(CONFIG_ARM64))
+#if (__GNUC__ >= 7) && (defined(CONFIG_ARM) || defined(CONFIG_ARM64))
 
 /* Version of UNALIGNED_PUT() which issues a compiler_barrier() after
  * the store. It is required to workaround an apparent optimization
@@ -180,10 +190,14 @@ do {                                                                    \
 				"." Z_STRINGIFY(c))))
 #define __in_section(a, b, c) ___in_section(a, b, c)
 
+#ifndef __in_section_unique
 #define __in_section_unique(seg) ___in_section(seg, __FILE__, __COUNTER__)
+#endif
 
+#ifndef __in_section_unique_named
 #define __in_section_unique_named(seg, name) \
 	___in_section(seg, __FILE__, name)
+#endif
 
 /* When using XIP, using '__ramfunc' places a function into RAM instead
  * of FLASH. Make sure '__ramfunc' is defined only when
@@ -194,8 +208,13 @@ do {                                                                    \
 #if !defined(CONFIG_XIP)
 #define __ramfunc
 #elif defined(CONFIG_ARCH_HAS_RAMFUNC_SUPPORT)
+#if defined(CONFIG_ARM)
 #define __ramfunc	__attribute__((noinline))			\
 			__attribute__((long_call, section(".ramfunc")))
+#else
+#define __ramfunc	__attribute__((noinline))			\
+			__attribute__((section(".ramfunc")))
+#endif
 #endif /* !CONFIG_XIP */
 
 #ifndef __fallthrough
@@ -212,6 +231,10 @@ do {                                                                    \
 
 #ifndef __aligned
 #define __aligned(x)	__attribute__((__aligned__(x)))
+#endif
+
+#ifndef __noinline
+#define __noinline      __attribute__((noinline))
 #endif
 
 #define __may_alias     __attribute__((__may_alias__))
@@ -239,6 +262,9 @@ do {                                                                    \
 
 #ifndef __deprecated
 #define __deprecated	__attribute__((deprecated))
+/* When adding this, remember to follow the instructions in
+ * https://docs.zephyrproject.org/latest/develop/api/api_lifecycle.html#deprecated
+ */
 #endif
 
 #ifndef __attribute_const__
@@ -261,6 +287,10 @@ do {                                                                    \
 
 #ifndef __weak
 #define __weak __attribute__((__weak__))
+#endif
+
+#ifndef __attribute_nonnull
+#define __attribute_nonnull(...) __attribute__((nonnull(__VA_ARGS__)))
 #endif
 
 /* Builtins with availability that depend on the compiler version. */
@@ -297,6 +327,9 @@ do {                                                                    \
 /* Generic message */
 #ifndef __DEPRECATED_MACRO
 #define __DEPRECATED_MACRO __WARN("Macro is deprecated")
+/* When adding this, remember to follow the instructions in
+ * https://docs.zephyrproject.org/latest/develop/api/api_lifecycle.html#deprecated
+ */
 #endif
 
 /* These macros allow having ARM asm functions callable from thumb */
@@ -575,7 +608,7 @@ do {                                                                    \
 		/* random suffix to avoid naming conflict */ \
 		__typeof__(a) _value_a_ = (a); \
 		__typeof__(b) _value_b_ = (b); \
-		_value_a_ > _value_b_ ? _value_a_ : _value_b_; \
+		(_value_a_ > _value_b_) ? _value_a_ : _value_b_; \
 	})
 
 /** @brief Return smaller value of two provided expressions.
@@ -587,7 +620,7 @@ do {                                                                    \
 		/* random suffix to avoid naming conflict */ \
 		__typeof__(a) _value_a_ = (a); \
 		__typeof__(b) _value_b_ = (b); \
-		_value_a_ < _value_b_ ? _value_a_ : _value_b_; \
+		(_value_a_ < _value_b_) ? _value_a_ : _value_b_; \
 	})
 
 /** @brief Return a value clamped to a given range.
@@ -628,12 +661,19 @@ do {                                                                    \
 #define __noasan /**/
 #endif
 
+#if defined(CONFIG_UBSAN)
+#define __noubsan __attribute__((no_sanitize("undefined")))
+#else
+#define __noubsan
+#endif
+
 /**
  * @brief Function attribute to disable stack protector.
  *
  * @note Only supported for GCC >= 11.0.0 or Clang >= 7.
  */
-#if (TOOLCHAIN_GCC_VERSION >= 110000) || (TOOLCHAIN_CLANG_VERSION >= 70000)
+#if (TOOLCHAIN_GCC_VERSION >= 110000) || \
+	(defined(TOOLCHAIN_CLANG_VERSION) && (TOOLCHAIN_CLANG_VERSION >= 70000))
 #define FUNC_NO_STACK_PROTECTOR __attribute__((no_stack_protector))
 #else
 #define FUNC_NO_STACK_PROTECTOR
@@ -647,4 +687,19 @@ do {                                                                    \
 	_Pragma("GCC diagnostic pop")
 
 #endif /* !_LINKER */
+
+#define _TOOLCHAIN_DISABLE_WARNING(compiler, warning)                                              \
+	TOOLCHAIN_PRAGMA(compiler diagnostic push)                                                 \
+	TOOLCHAIN_PRAGMA(compiler diagnostic ignored warning)
+
+#define _TOOLCHAIN_ENABLE_WARNING(compiler, warning) TOOLCHAIN_PRAGMA(compiler diagnostic pop)
+
+#define TOOLCHAIN_DISABLE_WARNING(warning) _TOOLCHAIN_DISABLE_WARNING(GCC, warning)
+#define TOOLCHAIN_ENABLE_WARNING(warning) _TOOLCHAIN_ENABLE_WARNING(GCC, warning)
+
+#if defined(__GNUC__) && !defined(__clang__)
+#define TOOLCHAIN_DISABLE_GCC_WARNING(warning) _TOOLCHAIN_DISABLE_WARNING(GCC, warning)
+#define TOOLCHAIN_ENABLE_GCC_WARNING(warning)  _TOOLCHAIN_ENABLE_WARNING(GCC, warning)
+#endif
+
 #endif /* ZEPHYR_INCLUDE_TOOLCHAIN_GCC_H_ */

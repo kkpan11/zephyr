@@ -9,9 +9,16 @@
 #include <stdlib.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 
 #include <zephyr/tc_util.h>
 #include <zephyr/ztest.h>
+
+#ifdef CONFIG_TIMER_EXTERNAL_TEST
+#define TIMER_OUT_NODE DT_INST(0, test_kernel_timer_behavior_external)
+static const struct gpio_dt_spec timer_out = GPIO_DT_SPEC_GET(TIMER_OUT_NODE,
+		timerout_gpios);
+#endif
 
 static uint32_t periodic_idx;
 static uint64_t periodic_data[CONFIG_TIMER_TEST_SAMPLES + 1];
@@ -27,6 +34,10 @@ static struct k_sem periodic_sem;
 static void timer_period_fn(struct k_timer *t)
 {
 	uint64_t curr_cycle;
+
+#ifdef CONFIG_TIMER_EXTERNAL_TEST
+	gpio_pin_toggle_dt(&timer_out);
+#endif
 
 #ifdef CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER
 	curr_cycle = k_cycle_get_64();
@@ -61,6 +72,10 @@ static void collect_timer_period_time_samples(void)
 static void timer_startdelay_fn(struct k_timer *t)
 {
 	uint64_t curr_cycle;
+
+#ifdef CONFIG_TIMER_EXTERNAL_TEST
+	gpio_pin_toggle_dt(&timer_out);
+#endif
 
 #ifdef CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER
 	curr_cycle = k_cycle_get_64();
@@ -111,7 +126,7 @@ static double cycles_to_us(uint64_t cycles)
 /**
  * @brief Test a timers jitter and drift over time
  */
-static void do_test_using(void (*sample_collection_fn)(void))
+static void do_test_using(void (*sample_collection_fn)(void), const char *mechanism)
 {
 	k_timeout_t actual_timeout = K_USEC(CONFIG_TIMER_TEST_PERIOD);
 	uint64_t expected_duration = (uint64_t)actual_timeout.ticks * CONFIG_TIMER_TEST_SAMPLES;
@@ -121,6 +136,17 @@ static void do_test_using(void (*sample_collection_fn)(void))
 
 	periodic_idx = 0;
 	k_sem_init(&periodic_sem, 0, 1);
+
+	/* Align to tick boundary. Otherwise the first handler execution
+	 * might turn out to be significantly late and cause the test to
+	 * fail. This can happen if k_timer_start() is called right before
+	 * the upcoming tick boundary and in consequence the tick passes
+	 * between the moment when the kernel decides what tick to use for
+	 * the next timeout and the moment when the system timer actually
+	 * sets up that timeout.
+	 */
+	k_sleep(K_TICKS(1));
+
 	sample_collection_fn();
 	k_sem_take(&periodic_sem, K_FOREVER);
 
@@ -183,8 +209,8 @@ static void do_test_using(void (*sample_collection_fn)(void))
 	variance_cyc = variance_cyc / (double)(CONFIG_TIMER_TEST_SAMPLES - periodic_rollovers);
 
 	/* A measure of timer precision, ideal is 0 */
-	double stddev_us = sqrtf(variance_us);
-	double stddev_cyc = sqrtf(variance_cyc);
+	double stddev_us = sqrt(variance_us);
+	double stddev_cyc = sqrt(variance_cyc);
 
 	/* Use double precision math here as integer overflows are possible in doing all the
 	 * conversions otherwise
@@ -209,6 +235,10 @@ static void do_test_using(void (*sample_collection_fn)(void))
 		* CONFIG_TIMER_TEST_SAMPLES;
 	double time_diff_us = actual_time_us - expected_time_us
 		- expected_time_drift_us;
+	double time_diff_us_abs = time_diff_us >= 0.0 ? time_diff_us : -time_diff_us;
+
+	/* If max stddev is lower than a single clock cycle then round it up. */
+	uint32_t max_stddev = MAX(k_cyc_to_us_ceil32(1), CONFIG_TIMER_TEST_MAX_STDDEV);
 
 	TC_PRINT("timer clock rate %d, kernel tick rate %d\n",
 		 sys_clock_hw_cycles_per_sec(), CONFIG_SYS_CLOCK_TICKS_PER_SEC);
@@ -236,6 +266,51 @@ static void do_test_using(void (*sample_collection_fn)(void))
 		 periodic_start, periodic_end, actual_time_us, expected_time_us,
 		 expected_time_drift_us, time_diff_us);
 
+	/* Record the stats gathered as a JSON object including related CONFIG_* params. */
+	TC_PRINT("RECORD: {"
+		 "\"testcase\":\"jitter_drift_timer\", \"mechanism\":\"%s\""
+		 ", \"stats_count\":%d, \"rollovers\":%d"
+		 ", \"mean_us\":%.6f, \"mean_cycles\":%.0f"
+		 ", \"stddev_us\":%.6f, \"stddev_cycles\":%.0f"
+		 ", \"var_us\":%.6f, \"var_cycles\":%.0f"
+		 ", \"min_us\":%.6f, \"min_cycles\":%llu"
+		 ", \"max_us\":%.6f, \"max_cycles\":%llu"
+		 ", \"timer_start_cycle\": %llu, \"timer_end_cycle\": %llu"
+		 ", \"total_time_us\":%.6f"
+		 ", \"expected_total_time_us\":%.6f"
+		 ", \"expected_total_drift_us\":%.6f"
+		 ", \"total_drift_us\":%.6f"
+		 ", \"expected_period_cycles\":%.0f"
+		 ", \"expected_period_drift_us\":%.6f"
+		 ", \"sys_clock_hw_cycles_per_sec\":%d"
+		 ", \"CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC\":%d"
+		 ", \"CONFIG_SYS_CLOCK_TICKS_PER_SEC\":%d"
+		 ", \"CONFIG_TIMER_TEST_PERIOD\":%d"
+		 ", \"CONFIG_TIMER_TEST_SAMPLES\":%d"
+		 ", \"MAX_STD_DEV\":%d"
+		 "}\n",
+		 mechanism,
+		 CONFIG_TIMER_TEST_SAMPLES - periodic_rollovers, periodic_rollovers,
+		 mean_us, mean_cyc,
+		 stddev_us, stddev_cyc,
+		 variance_us, variance_cyc,
+		 min_us, min_cyc,
+		 max_us, max_cyc,
+		 periodic_start, periodic_end,
+		 actual_time_us,
+		 expected_time_us,
+		 expected_time_drift_us,
+		 time_diff_us,
+		 expected_period,
+		 expected_period_drift,
+		 sys_clock_hw_cycles_per_sec(),
+		 CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC,
+		 CONFIG_SYS_CLOCK_TICKS_PER_SEC,
+		 CONFIG_TIMER_TEST_PERIOD,
+		 CONFIG_TIMER_TEST_SAMPLES,
+		 max_stddev
+		 );
+
 	/* Validate the maximum/minimum timer period is off by no more than 10% */
 	double test_period = (double)CONFIG_TIMER_TEST_PERIOD;
 	double period_max_drift_percentage =
@@ -252,27 +327,44 @@ static void do_test_using(void (*sample_collection_fn)(void))
 		"Longest timer period too long (off by more than expected %d%)",
 		CONFIG_TIMER_TEST_PERIOD_MAX_DRIFT_PERCENT);
 
+
 	/* Validate the timer deviation (precision/jitter of the timer) is within a configurable
 	 * bound
 	 */
-	zassert_true(stddev_us < (double)CONFIG_TIMER_TEST_MAX_STDDEV,
+	zassert_true(stddev_us < (double)max_stddev,
 		     "Standard deviation (in microseconds) outside expected bound");
 
 	/* Validate the timer drift (accuracy over time) is within a configurable bound */
-	zassert_true(abs(time_diff_us) < CONFIG_TIMER_TEST_MAX_DRIFT,
+	zassert_true(time_diff_us_abs < CONFIG_TIMER_TEST_MAX_DRIFT,
 		     "Drift (in microseconds) outside expected bound");
 }
 
 ZTEST(timer_jitter_drift, test_jitter_drift_timer_period)
 {
 	TC_PRINT("periodic timer behavior test using built-in restart mechanism\n");
-	do_test_using(collect_timer_period_time_samples);
+#ifdef CONFIG_TIMER_EXTERNAL_TEST
+	TC_PRINT("===== External Tool Sync Point =====\n");
+	TC_PRINT("===== builtin =====\n");
+	TC_PRINT("===== Waiting %d seconds =====\n",
+		 CONFIG_TIMER_EXTERNAL_TEST_SYNC_DELAY);
+	k_sleep(K_SECONDS(CONFIG_TIMER_EXTERNAL_TEST_SYNC_DELAY));
+	gpio_pin_configure_dt(&timer_out, GPIO_OUTPUT_LOW);
+#endif
+	do_test_using(collect_timer_period_time_samples, "builtin");
 }
 
 ZTEST(timer_jitter_drift, test_jitter_drift_timer_startdelay)
 {
 	TC_PRINT("periodic timer behavior test using explicit start with delay\n");
-	do_test_using(collect_timer_startdelay_time_samples);
+#ifdef CONFIG_TIMER_EXTERNAL_TEST
+	TC_PRINT("===== External Tool Sync Point =====\n");
+	TC_PRINT("===== startdelay =====\n");
+	TC_PRINT("===== Waiting %d seconds =====\n",
+		 CONFIG_TIMER_EXTERNAL_TEST_SYNC_DELAY);
+	k_sleep(K_SECONDS(CONFIG_TIMER_EXTERNAL_TEST_SYNC_DELAY));
+	gpio_pin_configure_dt(&timer_out, GPIO_OUTPUT_LOW);
+#endif
+	do_test_using(collect_timer_startdelay_time_samples, "startdelay");
 }
 
 ZTEST_SUITE(timer_jitter_drift, NULL, NULL, NULL, NULL, NULL);

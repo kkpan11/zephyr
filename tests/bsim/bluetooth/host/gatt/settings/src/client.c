@@ -11,10 +11,12 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/settings/settings.h>
-#include <zephyr/toolchain/gcc.h>
+#include <zephyr/toolchain.h>
 
 #include <stdint.h>
 #include <string.h>
+
+#include "babblekit/testcase.h"
 
 void client_round_0(void)
 {
@@ -168,5 +170,5 @@ void client_procedure(void)
 	client_round_5();
 	client_round_6();
 
-	PASS("PASS\n");
+	TEST_PASS("PASS");
 }

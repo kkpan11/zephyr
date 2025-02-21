@@ -8,16 +8,18 @@
 #include "gatt_utils.h"
 #include <zephyr/sys/__assert.h>
 #include <zephyr/bluetooth/hci.h>
+#include "babblekit/testcase.h"
+#include "babblekit/flags.h"
 
-DEFINE_FLAG(flag_is_connected);
-DEFINE_FLAG(flag_test_end);
+static struct bt_conn *default_conn;
+
+DEFINE_FLAG_STATIC(flag_is_connected);
 
 void wait_connected(void)
 {
 	UNSET_FLAG(flag_is_connected);
 	WAIT_FOR_FLAG(flag_is_connected);
 	printk("connected\n");
-
 }
 
 void wait_disconnected(void)
@@ -29,18 +31,34 @@ void wait_disconnected(void)
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	bt_conn_unref(conn);
+	__ASSERT_NO_MSG(default_conn == conn);
+
+	bt_conn_unref(default_conn);
+	default_conn = NULL;
+
 	UNSET_FLAG(flag_is_connected);
 	gatt_clear_flags();
 }
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
+	struct bt_conn_info info = { 0 };
+	int ret;
+
 	if (err != 0) {
 		return;
 	}
 
-	bt_conn_ref(conn);
+	ret = bt_conn_get_info(conn, &info);
+	__ASSERT_NO_MSG(ret == 0);
+
+	if (info.role == BT_CONN_ROLE_PERIPHERAL) {
+		__ASSERT_NO_MSG(default_conn == NULL);
+		default_conn = bt_conn_ref(conn);
+	}
+
+	__ASSERT_NO_MSG(default_conn != NULL);
+
 	SET_FLAG(flag_is_connected);
 }
 
@@ -64,13 +82,12 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 static void scan_connect_to_first_result_device_found(const bt_addr_le_t *addr, int8_t rssi,
 						      uint8_t type, struct net_buf_simple *ad)
 {
-	struct bt_conn *conn;
 	char addr_str[BT_ADDR_LE_STR_LEN];
 	int err;
 
 	/* We're only interested in connectable events */
 	if (type != BT_HCI_ADV_IND && type != BT_HCI_ADV_DIRECT_IND) {
-		FAIL("Unexpected advertisement type.");
+		TEST_FAIL("Unexpected advertisement type.");
 	}
 
 	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
@@ -82,7 +99,7 @@ static void scan_connect_to_first_result_device_found(const bt_addr_le_t *addr, 
 
 	err = bt_conn_le_create(addr,
 				BT_CONN_LE_CREATE_CONN, BT_LE_CONN_PARAM_DEFAULT,
-				&conn);
+				&default_conn);
 	__ASSERT(!err, "Err bt_conn_le_create %d", err);
 }
 
@@ -104,8 +121,7 @@ void advertise_connectable(void)
 
 	param.interval_min = 0x0020;
 	param.interval_max = 0x4000;
-	param.options |= BT_LE_ADV_OPT_ONE_TIME;
-	param.options |= BT_LE_ADV_OPT_CONNECTABLE;
+	param.options |= BT_LE_ADV_OPT_CONN;
 
 	err = bt_le_adv_start(&param, NULL, 0, NULL, 0);
 	__ASSERT(err == 0, "Advertising failed to start (err %d)\n", err);
@@ -122,25 +138,16 @@ void disconnect(struct bt_conn *conn)
 	WAIT_FOR_FLAG_UNSET(flag_is_connected);
 }
 
-static void get_active_conn_cb(struct bt_conn *src, void *dst)
-{
-	*(struct bt_conn **)dst = src;
-}
-
 struct bt_conn *get_conn(void)
 {
-	struct bt_conn *ret;
-
-	bt_conn_foreach(BT_CONN_TYPE_LE, get_active_conn_cb, &ret);
-
-	return ret;
+	return default_conn;
 }
 
 DEFINE_FLAG(flag_pairing_complete);
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 {
-	FAIL("Pairing failed (unexpected): reason %u", reason);
+	TEST_FAIL("Pairing failed (unexpected): reason %u", reason);
 }
 
 static void pairing_complete(struct bt_conn *conn, bool bonded)

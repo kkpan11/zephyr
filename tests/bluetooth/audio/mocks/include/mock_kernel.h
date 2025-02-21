@@ -10,12 +10,13 @@
 
 #include <zephyr/fff.h>
 #include <zephyr/kernel.h>
+#include <zephyr/kernel_structs.h>
+#include <zephyr/sys_clock.h>
 
 void mock_kernel_init(void);
 void mock_kernel_cleanup(void);
 
 DECLARE_FAKE_VALUE_FUNC(k_ticks_t, z_timeout_remaining, const struct _timeout *);
-DECLARE_FAKE_VALUE_FUNC(int, k_work_schedule, struct k_work_delayable *, k_timeout_t);
 DECLARE_FAKE_VALUE_FUNC(bool, k_work_cancel_delayable_sync, struct k_work_delayable *,
 			struct k_work_sync *);
 DECLARE_FAKE_VALUE_FUNC(int, k_sem_take, struct k_sem *, k_timeout_t);

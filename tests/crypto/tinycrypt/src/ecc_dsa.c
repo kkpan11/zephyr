@@ -67,7 +67,7 @@
 #include <zephyr/test_utils.h>
 #include "test_ecc_utils.h"
 #include <zephyr/sys/util.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -616,14 +616,7 @@ int default_CSPRNG(uint8_t *dest, unsigned int size)
 	/* This is not a CSPRNG, but it's the only thing available in the
 	 * system at this point in time.  */
 
-	while (size) {
-		uint32_t len = size >= sizeof(uint32_t) ? sizeof(uint32_t) : size;
-		uint32_t rv = sys_rand32_get();
-
-		memcpy(dest, &rv, len);
-		dest += len;
-		size -= len;
-	}
+	sys_rand_get(dest, size);
 
 	return 1;
 }

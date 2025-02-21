@@ -15,6 +15,7 @@
 LOG_MODULE_REGISTER(host_cmd_spi, CONFIG_EC_HC_LOG_LEVEL);
 
 #include <stm32_ll_spi.h>
+#include <zephyr/device.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/dma/dma_stm32.h>
 #include <zephyr/drivers/dma.h>
@@ -23,6 +24,9 @@ LOG_MODULE_REGISTER(host_cmd_spi, CONFIG_EC_HC_LOG_LEVEL);
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/mgmt/ec_host_cmd/backend.h>
 #include <zephyr/mgmt/ec_host_cmd/ec_host_cmd.h>
+#include <zephyr/pm/policy.h>
+#include <zephyr/pm/device.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/time_units.h>
 
 /* The default compatible string of a SPI devicetree node has to be replaced with the one
@@ -96,6 +100,22 @@ BUILD_ASSERT(DT_NODE_HAS_COMPAT_STATUS(DT_CHOSEN(zephyr_host_cmd_spi_backend),
 #define EC_HOST_CMD_ST_STM32_FIFO
 #endif /* st_stm32_spi_fifo */
 
+#define STM32_DMA_FEATURES_ID(id, dir) DT_DMAS_CELL_BY_NAME_OR(id, dir, features, 0)
+
+#if DT_CLOCKS_HAS_IDX(DT_CHOSEN(zephyr_host_cmd_spi_backend), 1)
+#define STM32_EC_HOST_CMD_SPI_DOMAIN_CLOCK_SUPPORT 1
+#else
+#define STM32_EC_HOST_CMD_SPI_DOMAIN_CLOCK_SUPPORT 0
+#endif
+
+/*
+ * Max data size for a version 3 request/response packet.  This is big enough
+ * to handle a request/response header, flash write offset/size, and 512 bytes
+ * of flash data.
+ */
+#define SPI_MAX_REQ_SIZE  0x220
+#define SPI_MAX_RESP_SIZE 0x220
+
 /* Enumeration to maintain different states of incoming request from
  * host
  */
@@ -136,8 +156,8 @@ struct dma_stream {
 struct ec_host_cmd_spi_cfg {
 	SPI_TypeDef *spi;
 	const struct pinctrl_dev_config *pcfg;
-	size_t pclk_len;
 	const struct stm32_pclken *pclken;
+	size_t pclk_len;
 };
 
 struct ec_host_cmd_spi_ctx {
@@ -151,6 +171,9 @@ struct ec_host_cmd_spi_ctx {
 	struct dma_stream *dma_tx;
 	enum spi_host_command_state state;
 	int prepare_rx_later;
+#ifdef CONFIG_PM
+	ATOMIC_DEFINE(pm_policy_lock_on, 1);
+#endif /* CONFIG_PM */
 };
 
 static const uint8_t out_preamble[4] = {
@@ -180,8 +203,7 @@ static int prepare_rx(struct ec_host_cmd_spi_ctx *hc_spi);
 			.dma_callback = dma_callback,                                              \
 			.block_count = 2,                                                          \
 	},                                                                                         \
-	.fifo_threshold =                                                                          \
-		STM32_DMA_FEATURES_FIFO_THRESHOLD(DT_DMAS_CELL_BY_NAME(id, dir, features)),
+	.fifo_threshold = STM32_DMA_FEATURES_FIFO_THRESHOLD(STM32_DMA_FEATURES_ID(id, dir)),
 
 #define STM32_SPI_INIT(id)                                                                         \
 	PINCTRL_DT_DEFINE(id);                                                                     \
@@ -189,9 +211,9 @@ static int prepare_rx(struct ec_host_cmd_spi_ctx *hc_spi);
                                                                                                    \
 	static struct ec_host_cmd_spi_cfg ec_host_cmd_spi_cfg = {                                  \
 		.spi = (SPI_TypeDef *)DT_REG_ADDR(id),                                             \
+		.pcfg = PINCTRL_DT_DEV_CONFIG_GET(id),                                             \
 		.pclken = pclken,                                                                  \
 		.pclk_len = DT_NUM_CLOCKS(id),                                                     \
-		.pcfg = PINCTRL_DT_DEV_CONFIG_GET(id),                                             \
 	};                                                                                         \
                                                                                                    \
 	static struct dma_stream dma_rx = {SPI_DMA_CHANNEL_INIT(id, rx, RX, PERIPHERAL, MEMORY)};  \
@@ -235,6 +257,9 @@ static inline void tx_status(SPI_TypeDef *spi, uint8_t status)
 	 * families than need to bypass the DMA threshold.
 	 */
 	LL_SPI_TransmitData8(spi, status);
+#ifdef EC_HOST_CMD_ST_STM32H7
+	LL_SPI_SetUDRPattern(spi, status);
+#endif /* EC_HOST_CMD_ST_STM32H7 */
 }
 
 static int expected_size(const struct ec_host_cmd_request_header *header)
@@ -251,6 +276,32 @@ static int expected_size(const struct ec_host_cmd_request_header *header)
 
 	return sizeof(*header) + header->data_len;
 }
+
+#ifdef CONFIG_PM
+static void ec_host_cmd_pm_policy_state_lock_get(struct ec_host_cmd_spi_ctx *hc_spi)
+{
+	if (!atomic_test_and_set_bit(hc_spi->pm_policy_lock_on, 0)) {
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+
+static void ec_host_cmd_pm_policy_state_lock_put(struct ec_host_cmd_spi_ctx *hc_spi)
+{
+	if (atomic_test_and_clear_bit(hc_spi->pm_policy_lock_on, 0)) {
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+#else
+static inline void ec_host_cmd_pm_policy_state_lock_get(struct ec_host_cmd_spi_ctx *hc_spi)
+{
+	ARG_UNUSED(hc_spi);
+}
+
+static void ec_host_cmd_pm_policy_state_lock_put(struct ec_host_cmd_spi_ctx *hc_spi)
+{
+	ARG_UNUSED(hc_spi);
+}
+#endif /* CONFIG_PM */
 
 static void dma_callback(const struct device *dev, void *arg, uint32_t channel, int status)
 {
@@ -293,7 +344,8 @@ static int spi_init(const struct ec_host_cmd_spi_ctx *hc_spi)
 		return err;
 	}
 
-	if (IS_ENABLED(STM32_SPI_DOMAIN_CLOCK_SUPPORT) && (hc_spi->spi_config->pclk_len > 1)) {
+	if (IS_ENABLED(STM32_EC_HOST_CMD_SPI_DOMAIN_CLOCK_SUPPORT) &&
+	    hc_spi->spi_config->pclk_len > 1) {
 		err = clock_control_configure(
 			DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
 			(clock_control_subsys_t)&hc_spi->spi_config->pclken[1], NULL);
@@ -346,6 +398,11 @@ static int spi_configure(const struct ec_host_cmd_spi_ctx *hc_spi)
 	LL_SPI_SetNSSMode(spi, LL_SPI_NSS_HARD_INPUT);
 	LL_SPI_SetMode(spi, LL_SPI_MODE_SLAVE);
 
+#ifdef EC_HOST_CMD_ST_STM32H7
+	LL_SPI_SetUDRConfiguration(spi, LL_SPI_UDR_CONFIG_REGISTER_PATTERN);
+	LL_SPI_SetUDRDetection(spi, LL_SPI_UDR_DETECT_END_DATA_FRAME);
+#endif /* EC_HOST_CMD_ST_STM32H7 */
+
 #ifdef EC_HOST_CMD_ST_STM32_FIFO
 #ifdef EC_HOST_CMD_ST_STM32H7
 	LL_SPI_SetFIFOThreshold(spi, LL_SPI_FIFO_TH_01DATA);
@@ -375,6 +432,9 @@ static int reload_dma_tx(struct ec_host_cmd_spi_ctx *hc_spi, size_t len)
 	if (ret != 0) {
 		return ret;
 	}
+#ifdef EC_HOST_CMD_ST_STM32H7
+	LL_SPI_ClearFlag_UDR(spi);
+#endif
 
 	return 0;
 }
@@ -476,6 +536,20 @@ static int prepare_rx(struct ec_host_cmd_spi_ctx *hc_spi)
 	int ret;
 
 	hc_spi->prepare_rx_later = 0;
+
+#ifdef EC_HOST_CMD_ST_STM32H7
+	/* As described in RM0433 "To restart the internal state machine
+	 * properly, SPI is strongly suggested to be disabled and re-enabled
+	 * before next transaction starts despite its setting is not changed.",
+	 * disable and re-enable the SPI module. Without that, the SPI module
+	 * receives the first byte on a next transaction incorrently - it is
+	 * always 0x00.
+	 * It also clears RX FIFO, so there is no needed to read the remianing
+	 * bytes manually.
+	 */
+	LL_SPI_Disable(spi);
+	LL_SPI_Enable(spi);
+#else  /* EC_HOST_CMD_ST_STM32H7 */
 	/* Flush RX buffer. It clears the RXNE(RX not empty) flag not to trigger
 	 * the DMA transfer at the beginning of a new SPI transfer. The flag is
 	 * set while sending response to host. The number of bytes to read can
@@ -483,6 +557,7 @@ static int prepare_rx(struct ec_host_cmd_spi_ctx *hc_spi)
 	 * threshold.
 	 */
 	LL_SPI_ReceiveData8(spi);
+#endif /* EC_HOST_CMD_ST_STM32H7 */
 
 	ret = reload_dma_rx(hc_spi);
 	if (!ret) {
@@ -506,7 +581,7 @@ static int spi_setup_dma(struct ec_host_cmd_spi_ctx *hc_spi)
 	LL_SPI_EnableDMAReq_TX(spi);
 
 	LL_SPI_Enable(spi);
-#else /* EC_HOST_CMD_ST_STM32H7 */
+#else  /* EC_HOST_CMD_ST_STM32H7 */
 	LL_SPI_Enable(spi);
 #endif /* !EC_HOST_CMD_ST_STM32H7 */
 
@@ -580,8 +655,10 @@ void gpio_cb_nss(const struct device *port, struct gpio_callback *cb, gpio_port_
 	SPI_TypeDef *spi = cfg->spi;
 	int ret;
 
-	/* CS deasserted. Setup fo the next transaction */
+	/* CS deasserted. Setup for the next transaction */
 	if (gpio_pin_get(hc_spi->cs.port, hc_spi->cs.pin)) {
+		ec_host_cmd_pm_policy_state_lock_put(hc_spi);
+
 		/* CS asserted during processing a command. Prepare for receiving after
 		 * sending response.
 		 */
@@ -608,6 +685,8 @@ void gpio_cb_nss(const struct device *port, struct gpio_callback *cb, gpio_port_
 		int exp_size;
 
 		hc_spi->state = SPI_HOST_CMD_STATE_RECEIVING;
+		/* Don't allow system to suspend until the end of transfer. */
+		ec_host_cmd_pm_policy_state_lock_get(hc_spi);
 
 		/* Set TX register to send status */
 		tx_status(spi, EC_SPI_RECEIVING);
@@ -649,13 +728,9 @@ static int ec_host_cmd_spi_init(const struct ec_host_cmd_backend *backend,
 	hc_spi->state = SPI_HOST_CMD_STATE_DISABLED;
 
 	/* SPI backend needs rx and tx buffers provided by the handler */
-	if (!rx_ctx->buf || !tx->buf) {
+	if (!rx_ctx->buf || !tx->buf || !hc_spi->cs.port) {
 		return -EIO;
 	}
-
-	gpio_init_callback(&hc_spi->cs_callback, gpio_cb_nss, BIT(hc_spi->cs.pin));
-	gpio_add_callback(hc_spi->cs.port, &hc_spi->cs_callback);
-	gpio_pin_interrupt_configure(hc_spi->cs.port, hc_spi->cs.pin, GPIO_INT_EDGE_BOTH);
 
 	hc_spi->rx_ctx = rx_ctx;
 	hc_spi->rx_ctx->len = 0;
@@ -666,6 +741,14 @@ static int ec_host_cmd_spi_init(const struct ec_host_cmd_backend *backend,
 	/* Buffer for response from HC handler. Make space for preamble */
 	hc_spi->tx->buf = (uint8_t *)hc_spi->tx->buf + sizeof(out_preamble);
 	hc_spi->tx->len_max = hc_spi->tx->len_max - sizeof(out_preamble) - EC_SPI_PAST_END_LENGTH;
+
+	/* Limit the requset/response max sizes */
+	if (hc_spi->rx_ctx->len_max > SPI_MAX_REQ_SIZE) {
+		hc_spi->rx_ctx->len_max = SPI_MAX_REQ_SIZE;
+	}
+	if (hc_spi->tx->len_max > SPI_MAX_RESP_SIZE) {
+		hc_spi->tx->len_max = SPI_MAX_RESP_SIZE;
+	}
 
 	ret = spi_init(hc_spi);
 	if (ret) {
@@ -684,6 +767,11 @@ static int ec_host_cmd_spi_init(const struct ec_host_cmd_backend *backend,
 
 	tx_status(spi, EC_SPI_RX_READY);
 	hc_spi->state = SPI_HOST_CMD_STATE_READY_TO_RX;
+
+	/* Configure CS interrupt once everything is ready. */
+	gpio_init_callback(&hc_spi->cs_callback, gpio_cb_nss, BIT(hc_spi->cs.pin));
+	gpio_add_callback(hc_spi->cs.port, &hc_spi->cs_callback);
+	gpio_pin_interrupt_configure(hc_spi->cs.port, hc_spi->cs.pin, GPIO_INT_EDGE_BOTH);
 
 	return ret;
 }
@@ -728,6 +816,75 @@ struct ec_host_cmd_backend *ec_host_cmd_backend_get_spi(struct gpio_dt_spec *cs)
 
 	return &ec_host_cmd_spi;
 }
+
+#ifdef CONFIG_PM_DEVICE
+static int ec_host_cmd_spi_stm32_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	const struct ec_host_cmd_backend *backend = (struct ec_host_cmd_backend *)dev->data;
+	struct ec_host_cmd_spi_ctx *hc_spi = (struct ec_host_cmd_spi_ctx *)backend->ctx;
+	const struct ec_host_cmd_spi_cfg *cfg = hc_spi->spi_config;
+	int err;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		/* Set pins to active state */
+		err = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
+		if (err < 0) {
+			return err;
+		}
+
+		/* Enable device clock */
+		err = clock_control_on(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
+				       (clock_control_subsys_t)&cfg->pclken[0]);
+		if (err < 0) {
+			return err;
+		}
+		/* Enable CS interrupts. */
+		if (hc_spi->cs.port) {
+			gpio_pin_interrupt_configure_dt(&hc_spi->cs, GPIO_INT_EDGE_BOTH);
+		}
+
+		break;
+	case PM_DEVICE_ACTION_SUSPEND:
+#ifdef SPI_SR_BSY
+		/* Wait 10ms for the end of transaction to prevent corruption of the last
+		 * transfer
+		 */
+		WAIT_FOR((LL_SPI_IsActiveFlag_BSY(cfg->spi) == 0), 10 * USEC_PER_MSEC, NULL);
+#endif
+		/* Disable unnecessary interrupts. */
+		if (hc_spi->cs.port) {
+			gpio_pin_interrupt_configure_dt(&hc_spi->cs, GPIO_INT_DISABLE);
+		}
+
+		/* Stop device clock. */
+		err = clock_control_off(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
+					(clock_control_subsys_t)&cfg->pclken[0]);
+		if (err != 0) {
+			return err;
+		}
+
+		/* Move pins to sleep state */
+		err = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_SLEEP);
+		if ((err < 0) && (err != -ENOENT)) {
+			/* If returning -ENOENT, no pins where defined for sleep mode. */
+			return err;
+		}
+
+		break;
+	default:
+		return -ENOTSUP;
+	}
+
+	return 0;
+}
+#endif /* CONFIG_PM_DEVICE */
+
+PM_DEVICE_DT_DEFINE(DT_CHOSEN(zephyr_host_cmd_spi_backend), ec_host_cmd_spi_stm32_pm_action);
+
+DEVICE_DT_DEFINE(DT_CHOSEN(zephyr_host_cmd_spi_backend), NULL,
+		 PM_DEVICE_DT_GET(DT_CHOSEN(zephyr_host_cmd_spi_backend)), &ec_host_cmd_spi, NULL,
+		 PRE_KERNEL_1, CONFIG_EC_HOST_CMD_INIT_PRIORITY, NULL);
 
 #ifdef CONFIG_EC_HOST_CMD_INITIALIZE_AT_BOOT
 static int host_cmd_init(void)

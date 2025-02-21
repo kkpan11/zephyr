@@ -22,7 +22,6 @@ config PWM_INIT_PRIORITY
 
 config PWM_SHELL
 	bool "PWM shell"
-	default y
 	depends on SHELL
 	help
 	  Enable the PWM related shell commands.
@@ -51,6 +50,8 @@ source "drivers/pwm/Kconfig.imx"
 
 source "drivers/pwm/Kconfig.it8xxx2"
 
+source "drivers/pwm/Kconfig.it8801"
+
 source "drivers/pwm/Kconfig.esp32"
 
 source "drivers/pwm/Kconfig.sam"
@@ -59,15 +60,21 @@ source "drivers/pwm/Kconfig.mcux"
 
 source "drivers/pwm/Kconfig.mcux_sctimer"
 
+source "drivers/pwm/Kconfig.mcux_qtmr"
+
 source "drivers/pwm/Kconfig.xec"
 
 source "drivers/pwm/Kconfig.litex"
 
 source "drivers/pwm/Kconfig.rv32m1_tpm"
 
+source "drivers/pwm/Kconfig.max32"
+
 source "drivers/pwm/Kconfig.mcux_tpm"
 
 source "drivers/pwm/Kconfig.sam0"
+
+source "drivers/pwm/Kconfig.sam0_tc"
 
 source "drivers/pwm/Kconfig.npcx"
 
@@ -96,5 +103,21 @@ source "drivers/pwm/Kconfig.xmc4xxx_ccu4"
 source "drivers/pwm/Kconfig.xmc4xxx_ccu8"
 
 source "drivers/pwm/Kconfig.mcux_ctimer"
+
+source "drivers/pwm/Kconfig.numaker"
+
+source "drivers/pwm/Kconfig.nxp_s32_emios"
+
+source "drivers/pwm/Kconfig.nxp_flexio"
+
+source "drivers/pwm/Kconfig.ene"
+
+source "drivers/pwm/Kconfig.renesas_ra"
+
+source "drivers/pwm/Kconfig.ifx_cat1"
+
+source "drivers/pwm/Kconfig.fake"
+
+source "drivers/pwm/Kconfig.renesas_rz"
 
 endif # PWM

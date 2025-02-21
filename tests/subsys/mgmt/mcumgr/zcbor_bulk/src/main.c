@@ -60,7 +60,7 @@ ZTEST(zcbor_bulk, test_correct)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -71,7 +71,7 @@ ZTEST(zcbor_bulk, test_correct)
 	zassert_equal(sizeof("world") - 1, world.len, "Expected length %d",
 		sizeof("world") - 1);
 	zassert_equal(0, memcmp(world.value, "world", world.len),
-		"Expected \"world\", got %.*s", world.len, world.value);
+		"Expected \"world\", got %.*s", (int)world.len, world.value);
 	zassert_true(bool_val, "Expected bool val == true");
 }
 
@@ -101,7 +101,7 @@ ZTEST(zcbor_bulk, test_correct_out_of_order)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -112,7 +112,7 @@ ZTEST(zcbor_bulk, test_correct_out_of_order)
 	zassert_equal(sizeof("world") - 1, world.len, "Expected length %d",
 		sizeof("world") - 1);
 	zassert_equal(0, memcmp(world.value, "world", world.len),
-		"Expected \"world\", got %.*s", world.len, world.value);
+		"Expected \"world\", got %.*s", (int)world.len, world.value);
 	zassert_true(bool_val, "Expected bool val == true");
 }
 
@@ -140,7 +140,7 @@ ZTEST(zcbor_bulk, test_not_map)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -175,7 +175,7 @@ ZTEST(zcbor_bulk, test_bad_type)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -211,7 +211,7 @@ ZTEST(zcbor_bulk, test_bad_type_2)
 	     zcbor_tstr_put_lit(zsd, "bool val") && zcbor_true_put(zsd)			&&
 	     zcbor_map_end_encode(zsd, 10);
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -222,7 +222,7 @@ ZTEST(zcbor_bulk, test_bad_type_2)
 	zassert_equal(sizeof("world") - 1, world.len, "Expected length %d",
 		sizeof("world") - 1);
 	zassert_equal(0, memcmp(world.value, "world", world.len),
-		"Expected \"world\", got %.*s", world.len, world.value);
+		"Expected \"world\", got %.*s", (int)world.len, world.value);
 	zassert_false(bool_val, "Expected bool val unmodified");
 }
 
@@ -252,7 +252,7 @@ ZTEST(zcbor_bulk, test_bad_type_encoded)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -287,7 +287,7 @@ ZTEST(zcbor_bulk, test_duplicate)
 	     zcbor_tstr_put_lit(zsd, "hello") && zcbor_tstr_put_lit(zsd, "world")	&&
 	     zcbor_map_end_encode(zsd, 10);
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -298,7 +298,7 @@ ZTEST(zcbor_bulk, test_duplicate)
 	zassert_equal(sizeof("world") - 1, world.len, "Expected length %d",
 		sizeof("world") - 1);
 	zassert_equal(0, memcmp(world.value, "world", world.len),
-		"Expected \"world\", got %.*s", world.len, world.value);
+		"Expected \"world\", got %.*s", (int)world.len, world.value);
 	zassert_false(bool_val, "Expected bool val unmodified");
 }
 
@@ -366,7 +366,7 @@ ZTEST(zcbor_bulk, test_map_in_map_correct)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -377,7 +377,7 @@ ZTEST(zcbor_bulk, test_map_in_map_correct)
 	zassert_equal(sizeof("world") - 1, world.len, "Expected length %d",
 		sizeof("world") - 1);
 	zassert_equal(0, memcmp(world.value, "world", world.len),
-		"Expected \"world\", got %.*s", world.len, world.value);
+		"Expected \"world\", got %.*s", (int)world.len, world.value);
 	zassert_true(bool_val, "Expected bool_val == true");
 
 	/* Map within map */
@@ -445,7 +445,7 @@ ZTEST(zcbor_bulk, test_map_in_map_bad)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -486,7 +486,7 @@ ZTEST(zcbor_bulk, test_key_found)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 
@@ -528,7 +528,7 @@ ZTEST(zcbor_bulk, test_reset)
 
 	zassert_true(ok, "Expected to be successful in encoding test pattern");
 
-	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1);
+	zcbor_new_decode_state(zsd, 4, buffer, ARRAY_SIZE(buffer), 1, NULL, 0);
 
 	int rc = zcbor_map_decode_bulk(zsd, dm, ARRAY_SIZE(dm), &decoded);
 

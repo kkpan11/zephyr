@@ -8,7 +8,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/entropy.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 
@@ -66,7 +66,7 @@ static int entropy_mcux_caam_get_entropy(const struct device *dev,
 	return 0;
 }
 
-static const struct entropy_driver_api entropy_mcux_caam_api_funcs = {
+static DEVICE_API(entropy, entropy_mcux_caam_api_funcs) = {
 	.get_entropy = entropy_mcux_caam_get_entropy
 };
 

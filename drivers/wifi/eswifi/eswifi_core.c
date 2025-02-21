@@ -10,6 +10,8 @@
 #define DT_DRV_COMPAT inventek_eswifi
 #endif
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "eswifi_log.h"
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
@@ -23,6 +25,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/net_offload.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/net/conn_mgr/connectivity_wifi_mgmt.h>
 
 #include <zephyr/net/ethernet.h>
 #include <net_private.h>
@@ -138,6 +141,13 @@ int eswifi_at_cmd_rsp(struct eswifi_dev *eswifi, char *cmd, char **rsp)
 			     sizeof(eswifi->buf));
 	if (len < 0) {
 		return -EIO;
+	}
+
+	if (len >= CONFIG_WIFI_ESWIFI_MAX_DATA_SIZE) {
+		LOG_WRN("Buffer might be too small for response!");
+		LOG_WRN("Data length %d", len);
+		LOG_WRN("See CONFIG_WIFI_ESWIFI_MAX_DATA_SIZE (in build: %d)",
+			CONFIG_WIFI_ESWIFI_MAX_DATA_SIZE);
 	}
 
 	/*
@@ -490,8 +500,8 @@ int eswifi_mgmt_iface_status(const struct device *dev,
 	}
 
 	status->state = WIFI_STATE_COMPLETED;
-	strcpy(status->ssid, sta->ssid);
-	status->ssid_len = strlen(sta->ssid);
+	status->ssid_len = strnlen(sta->ssid, WIFI_SSID_MAX_LEN);
+	strncpy(status->ssid, sta->ssid, status->ssid_len);
 	status->band = WIFI_FREQ_BAND_2_4_GHZ;
 	status->channel = 0;
 
@@ -676,8 +686,8 @@ static int eswifi_mgmt_ap_enable(const struct device *dev,
 
 	/* Set IP Address */
 	for (i = 0; ipv4 && i < NET_IF_MAX_IPV4_ADDR; i++) {
-		if (ipv4->unicast[i].is_used) {
-			unicast = &ipv4->unicast[i];
+		if (ipv4->unicast[i].ipv4.is_used) {
+			unicast = &ipv4->unicast[i].ipv4;
 			break;
 		}
 	}
@@ -806,3 +816,5 @@ NET_DEVICE_DT_INST_OFFLOAD_DEFINE(0, eswifi_init, NULL,
 				  CONFIG_WIFI_INIT_PRIORITY,
 				  &eswifi_offload_api,
 				  1500);
+
+CONNECTIVITY_WIFI_MGMT_BIND(Z_DEVICE_DT_DEV_ID(DT_DRV_INST(0)));

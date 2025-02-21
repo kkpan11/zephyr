@@ -8,10 +8,17 @@
 #define H_SMP_CLIENT_
 
 #include <zephyr/kernel.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <mgmt/mcumgr/transport/smp_internal.h>
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/transport/smp.h>
+
+/**
+ * @brief MCUmgr SMP client API
+ * @defgroup mcumgr_smp_client SMP client API
+ * @ingroup mcumgr
+ * @{
+ */
 
 /**
  * @brief SMP client object
@@ -101,6 +108,10 @@ void smp_client_buf_free(struct net_buf *nb);
  */
 int smp_client_send_cmd(struct smp_client_object *smp_client, struct net_buf *nb,
 			smp_client_res_fn cb, void *user_data, int timeout_in_sec);
+
+/**
+ * @}
+ */
 
 #ifdef __cplusplus
 }

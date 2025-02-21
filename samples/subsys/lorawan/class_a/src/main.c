@@ -27,11 +27,11 @@ LOG_MODULE_REGISTER(lorawan_class_a);
 
 char data[] = {'h', 'e', 'l', 'l', 'o', 'w', 'o', 'r', 'l', 'd'};
 
-static void dl_callback(uint8_t port, bool data_pending,
-			int16_t rssi, int8_t snr,
-			uint8_t len, const uint8_t *hex_data)
+static void dl_callback(uint8_t port, uint8_t flags, int16_t rssi, int8_t snr, uint8_t len,
+			const uint8_t *hex_data)
 {
-	LOG_INF("Port %d, Pending %d, RSSI %ddB, SNR %ddBm", port, data_pending, rssi, snr);
+	LOG_INF("Port %d, Pending %d, RSSI %ddB, SNR %ddBm, Time %d", port,
+		flags & LORAWAN_DATA_PENDING, rssi, snr, !!(flags & LORAWAN_TIME_UPDATED));
 	if (hex_data) {
 		LOG_HEXDUMP_INF(hex_data, len, "Payload: ");
 	}
@@ -90,6 +90,7 @@ int main(void)
 	join_cfg.otaa.join_eui = join_eui;
 	join_cfg.otaa.app_key = app_key;
 	join_cfg.otaa.nwk_key = app_key;
+	join_cfg.otaa.dev_nonce = 0u;
 
 	LOG_INF("Joining network over OTAA");
 	ret = lorawan_join(&join_cfg);
@@ -97,10 +98,6 @@ int main(void)
 		LOG_ERR("lorawan_join_network failed: %d", ret);
 		return 0;
 	}
-
-#ifdef CONFIG_LORAWAN_APP_CLOCK_SYNC
-	lorawan_clock_sync_run();
-#endif
 
 	LOG_INF("Sending data...");
 	while (1) {

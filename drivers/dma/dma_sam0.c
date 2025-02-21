@@ -125,7 +125,7 @@ static int dma_sam0_config(const struct device *dev, uint32_t channel,
 
 	/* Enable the interrupts */
 	DMA_REGS->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
-	if (!config->error_callback_en) {
+	if (!config->error_callback_dis) {
 		DMA_REGS->CHINTENSET.reg = DMAC_CHINTENSET_TERR;
 	} else {
 		DMA_REGS->CHINTENCLR.reg = DMAC_CHINTENSET_TERR;
@@ -179,7 +179,7 @@ static int dma_sam0_config(const struct device *dev, uint32_t channel,
 
 	/* Enable the interrupts */
 	chcfg->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
-	if (!config->error_callback_en) {
+	if (!config->error_callback_dis) {
 		chcfg->CHINTENSET.reg = DMAC_CHINTENSET_TERR;
 	} else {
 		chcfg->CHINTENCLR.reg = DMAC_CHINTENSET_TERR;
@@ -413,6 +413,15 @@ static int dma_sam0_init(const struct device *dev)
 	PM->APBBMASK.bit.DMAC_ = 1;
 #endif
 
+	/* Reset the DMA controller */
+	DMAC->CTRL.bit.DMAENABLE = 0;
+#ifdef DMAC_CTRL_CRCENABLE
+	DMAC->CTRL.bit.CRCENABLE = 0;
+#endif
+	DMAC->CTRL.bit.SWRST = 1;
+	while (DMAC->CTRL.bit.SWRST) {
+	}
+
 	/* Set up the descriptor and write back addresses */
 	DMA_REGS->BASEADDR.reg = (uintptr_t)&data->descriptors;
 	DMA_REGS->WRBADDR.reg = (uintptr_t)&data->descriptors_wb;
@@ -446,7 +455,7 @@ static int dma_sam0_init(const struct device *dev)
 
 static struct dma_sam0_data dmac_data;
 
-static const struct dma_driver_api dma_sam0_api = {
+static DEVICE_API(dma, dma_sam0_api) = {
 	.config = dma_sam0_config,
 	.start = dma_sam0_start,
 	.stop = dma_sam0_stop,

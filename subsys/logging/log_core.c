@@ -18,10 +18,14 @@
 #include <zephyr/sys/iterable_sections.h>
 #include <ctype.h>
 #include <zephyr/logging/log_frontend.h>
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #include <zephyr/logging/log_output_dict.h>
 #include <zephyr/logging/log_output_custom.h>
 #include <zephyr/linker/utils.h>
+
+#ifdef CONFIG_LOG_TIMESTAMP_USE_REALTIME
+#include <zephyr/posix/time.h>
+#endif
 
 LOG_MODULE_REGISTER(log);
 
@@ -65,9 +69,11 @@ LOG_MODULE_REGISTER(log);
 
 #ifndef CONFIG_LOG_ALWAYS_RUNTIME
 BUILD_ASSERT(!IS_ENABLED(CONFIG_NO_OPTIMIZATIONS),
-	     "Option must be enabled when CONFIG_NO_OPTIMIZATIONS is set");
+	     "CONFIG_LOG_ALWAYS_RUNTIME must be enabled when "
+	     "CONFIG_NO_OPTIMIZATIONS is set");
 BUILD_ASSERT(!IS_ENABLED(CONFIG_LOG_MODE_IMMEDIATE),
-	     "Option must be enabled when CONFIG_LOG_MODE_IMMEDIATE is set");
+	     "CONFIG_LOG_ALWAYS_RUNTIME must be enabled when "
+	     "CONFIG_LOG_MODE_IMMEDIATE is set");
 #endif
 
 static const log_format_func_t format_table[] = {
@@ -108,6 +114,7 @@ static log_timestamp_t proc_latency;
 static log_timestamp_t prev_timestamp;
 static atomic_t unordered_cnt;
 static uint64_t last_failure_report;
+static struct k_spinlock process_lock;
 
 static STRUCT_SECTION_ITERABLE(log_msg_ptr, log_msg_ptr);
 static STRUCT_SECTION_ITERABLE_ALTERNATE(log_mpsc_pbuf, mpsc_pbuf_buffer, log_buffer);
@@ -157,25 +164,35 @@ static void z_log_msg_post_finalize(void)
 	atomic_val_t cnt = atomic_inc(&buffered_cnt);
 
 	if (panic_mode) {
-		static struct k_spinlock process_lock;
 		k_spinlock_key_t key = k_spin_lock(&process_lock);
 		(void)log_process();
 
 		k_spin_unlock(&process_lock, key);
 	} else if (proc_tid != NULL) {
-		if (cnt == 0) {
-			k_timer_start(&log_process_thread_timer,
-				      K_MSEC(CONFIG_LOG_PROCESS_THREAD_SLEEP_MS),
-				      K_NO_WAIT);
-		} else if (CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD &&
-			   (cnt + 1) == CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD) {
-			k_timer_stop(&log_process_thread_timer);
-			k_sem_give(&log_process_thread_sem);
+		/*
+		 * If CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD == 1,
+		 * timer is never needed. We release the processing
+		 * thread after every message is posted.
+		 */
+		if (CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD == 1) {
+			if (cnt == 0) {
+				k_sem_give(&log_process_thread_sem);
+			}
 		} else {
-			/* No action needed. Message processing will be triggered by the
-			 * timeout or when number of upcoming messages exceeds the
-			 * threshold.
-			 */
+			if (cnt == 0) {
+				k_timer_start(&log_process_thread_timer,
+					      K_MSEC(CONFIG_LOG_PROCESS_THREAD_SLEEP_MS),
+					      K_NO_WAIT);
+			} else if (CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD &&
+				   (cnt + 1) == CONFIG_LOG_PROCESS_TRIGGER_THRESHOLD) {
+				k_timer_stop(&log_process_thread_timer);
+				k_sem_give(&log_process_thread_sem);
+			} else {
+				/* No action needed. Message processing will be triggered by the
+				 * timeout or when number of upcoming messages exceeds the
+				 * threshold.
+				 */
+			}
 		}
 	}
 }
@@ -208,6 +225,7 @@ void z_log_vprintk(const char *fmt, va_list ap)
 				   fmt, ap);
 }
 
+#ifndef CONFIG_LOG_TIMESTAMP_USE_REALTIME
 static log_timestamp_t default_get_timestamp(void)
 {
 	return IS_ENABLED(CONFIG_LOG_TIMESTAMP_64BIT) ?
@@ -219,6 +237,16 @@ static log_timestamp_t default_lf_get_timestamp(void)
 	return IS_ENABLED(CONFIG_LOG_TIMESTAMP_64BIT) ?
 		k_uptime_get() : k_uptime_get_32();
 }
+#else
+static log_timestamp_t default_rt_get_timestamp(void)
+{
+	struct timespec tspec;
+
+	clock_gettime(CLOCK_REALTIME, &tspec);
+
+	return ((uint64_t)tspec.tv_sec * MSEC_PER_SEC) + (tspec.tv_nsec / NSEC_PER_MSEC);
+}
+#endif /* CONFIG_LOG_TIMESTAMP_USE_REALTIME */
 
 void log_core_init(void)
 {
@@ -228,18 +256,30 @@ void log_core_init(void)
 
 	if (IS_ENABLED(CONFIG_LOG_FRONTEND)) {
 		log_frontend_init();
+
+		if (IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING)) {
+			for (uint16_t s = 0; s < log_src_cnt_get(0); s++) {
+				log_frontend_filter_set(s, CONFIG_LOG_MAX_LEVEL);
+			}
+		}
+
 		if (IS_ENABLED(CONFIG_LOG_FRONTEND_ONLY)) {
 			return;
 		}
 	}
 
 	/* Set default timestamp. */
+#ifdef CONFIG_LOG_TIMESTAMP_USE_REALTIME
+	log_set_timestamp_func(default_rt_get_timestamp, 1000U);
+#else
 	if (sys_clock_hw_cycles_per_sec() > 1000000) {
 		log_set_timestamp_func(default_lf_get_timestamp, 1000U);
 	} else {
-		log_set_timestamp_func(default_get_timestamp,
-				       sys_clock_hw_cycles_per_sec());
+		uint32_t freq = IS_ENABLED(CONFIG_LOG_TIMESTAMP_64BIT) ?
+			CONFIG_SYS_CLOCK_TICKS_PER_SEC : sys_clock_hw_cycles_per_sec();
+		log_set_timestamp_func(default_get_timestamp, freq);
 	}
+#endif /* CONFIG_LOG_TIMESTAMP_USE_REALTIME */
 
 	if (IS_ENABLED(CONFIG_LOG_MODE_DEFERRED)) {
 		z_log_msg_init();
@@ -278,20 +318,26 @@ static uint32_t z_log_init(bool blocking, bool can_sleep)
 		return 0;
 	}
 
-	__ASSERT_NO_MSG(log_backend_count_get() < LOG_FILTERS_NUM_OF_SLOTS);
+	__ASSERT_NO_MSG(log_backend_count_get() < LOG_FILTERS_MAX_BACKENDS);
 
 	if (atomic_inc(&initialized) != 0) {
 		return 0;
 	}
 
-	int i = 0;
 	if (IS_ENABLED(CONFIG_LOG_MULTIDOMAIN)) {
 		z_log_links_initiate();
 	}
 
+	int backend_index = 0;
 
-	/* Assign ids to backends. */
 	STRUCT_SECTION_FOREACH(log_backend, backend) {
+		uint32_t id;
+		/* As first slot in filtering mask is reserved, backend ID has offset.*/
+		id = LOG_FILTER_FIRST_BACKEND_SLOT_IDX;
+		id += backend - log_backend_get(0);
+		log_backend_id_set(backend, id);
+
+		/* Activate autostart backends */
 		if (backend->autostart) {
 			log_backend_init(backend);
 
@@ -303,11 +349,11 @@ static uint32_t z_log_init(bool blocking, bool can_sleep)
 						   backend->cb->ctx,
 						   CONFIG_LOG_MAX_LEVEL);
 			} else {
-				mask |= BIT(i);
+				mask |= BIT(backend_index);
 			}
-
-			i++;
 		}
+
+		++backend_index;
 	}
 
 	/* If blocking init, wait until all backends are activated. */
@@ -326,6 +372,16 @@ static uint32_t z_log_init(bool blocking, bool can_sleep)
 void log_init(void)
 {
 	(void)z_log_init(true, true);
+}
+
+void log_thread_trigger(void)
+{
+	if (IS_ENABLED(CONFIG_LOG_MODE_IMMEDIATE)) {
+		return;
+	}
+
+	k_timer_stop(&log_process_thread_timer);
+	k_sem_give(&log_process_thread_sem);
 }
 
 static void thread_set(k_tid_t process_tid)
@@ -410,7 +466,7 @@ void z_vrfy_log_panic(void)
 {
 	z_impl_log_panic();
 }
-#include <syscalls/log_panic_mrsh.c>
+#include <zephyr/syscalls/log_panic_mrsh.c>
 #endif
 
 static bool msg_filter_check(struct log_backend const *backend,
@@ -428,18 +484,16 @@ static bool msg_filter_check(struct log_backend const *backend,
 	uint8_t level;
 	uint8_t domain_id;
 	int16_t source_id;
-	struct log_source_dynamic_data *source;
 
-	source = (struct log_source_dynamic_data *)log_msg_get_source(&msg->log);
 	level = log_msg_get_level(&msg->log);
 	domain_id = log_msg_get_domain(&msg->log);
+	source_id = log_msg_get_source_id(&msg->log);
 
 	/* Accept all non-logging messages. */
 	if (level == LOG_LEVEL_NONE) {
 		return true;
 	}
-	if (source) {
-		source_id = log_dynamic_source_id(source);
+	if (source_id >= 0) {
 		backend_level = log_filter_get(backend, domain_id, source_id, true);
 
 		return (level <= backend_level);
@@ -509,9 +563,9 @@ bool z_impl_log_process(void)
 	msg = z_log_msg_claim(&backoff);
 
 	if (msg) {
-		atomic_dec(&buffered_cnt);
 		msg_process(msg);
 		z_log_msg_free(msg);
+		atomic_dec(&buffered_cnt);
 	} else if (CONFIG_LOG_PROCESSING_LATENCY_US > 0 && !K_TIMEOUT_EQ(backoff, K_NO_WAIT)) {
 		/* If backoff is requested, it means that there are pending
 		 * messages but they are too new and processing shall back off
@@ -548,7 +602,7 @@ bool z_vrfy_log_process(void)
 {
 	return z_impl_log_process();
 }
-#include <syscalls/log_process_mrsh.c>
+#include <zephyr/syscalls/log_process_mrsh.c>
 #endif
 
 uint32_t z_impl_log_buffered_cnt(void)
@@ -561,7 +615,7 @@ uint32_t z_vrfy_log_buffered_cnt(void)
 {
 	return z_impl_log_buffered_cnt();
 }
-#include <syscalls/log_buffered_cnt_mrsh.c>
+#include <zephyr/syscalls/log_buffered_cnt_mrsh.c>
 #endif
 
 void z_log_dropped(bool buffered)
@@ -569,6 +623,11 @@ void z_log_dropped(bool buffered)
 	atomic_inc(&dropped_cnt);
 	if (buffered) {
 		atomic_dec(&buffered_cnt);
+	}
+
+	if (IS_ENABLED(CONFIG_LOG_PROCESS_THREAD)) {
+		k_timer_stop(&log_process_thread_timer);
+		k_sem_give(&log_process_thread_sem);
 	}
 }
 
@@ -596,8 +655,11 @@ static struct log_msg *msg_alloc(struct mpsc_pbuf_buffer *buffer, uint32_t wlen)
 		return NULL;
 	}
 
-	return (struct log_msg *)mpsc_pbuf_alloc(buffer, wlen,
-				K_MSEC(CONFIG_LOG_BLOCK_IN_THREAD_TIMEOUT_MS));
+	return (struct log_msg *)mpsc_pbuf_alloc(
+		buffer, wlen,
+		(CONFIG_LOG_BLOCK_IN_THREAD_TIMEOUT_MS == -1)
+			? K_FOREVER
+			: K_MSEC(CONFIG_LOG_BLOCK_IN_THREAD_TIMEOUT_MS));
 }
 
 struct log_msg *z_log_msg_alloc(uint32_t wlen)
@@ -610,7 +672,17 @@ static void msg_commit(struct mpsc_pbuf_buffer *buffer, struct log_msg *msg)
 	union log_msg_generic *m = (union log_msg_generic *)msg;
 
 	if (IS_ENABLED(CONFIG_LOG_MODE_IMMEDIATE)) {
+		k_spinlock_key_t key;
+
+		if (IS_ENABLED(CONFIG_LOG_IMMEDIATE_CLEAN_OUTPUT)) {
+			key = k_spin_lock(&process_lock);
+		}
+
 		msg_process(m);
+
+		if (IS_ENABLED(CONFIG_LOG_IMMEDIATE_CLEAN_OUTPUT)) {
+			k_spin_unlock(&process_lock, key);
+		}
 
 		return;
 	}
@@ -641,7 +713,7 @@ union log_msg_generic *z_log_msg_local_claim(void)
 union log_msg_generic *z_log_msg_claim_oldest(k_timeout_t *backoff)
 {
 	union log_msg_generic *msg = NULL;
-	struct log_msg_ptr *chosen;
+	struct log_msg_ptr *chosen = NULL;
 	log_timestamp_t t_min = sizeof(log_timestamp_t) > sizeof(uint32_t) ?
 				UINT64_MAX : UINT32_MAX;
 	int i = 0;
@@ -925,5 +997,19 @@ static int enable_logger(void)
 
 	return 0;
 }
+
+#ifdef CONFIG_LOG_MODE_DEFERRED
+void log_flush(void)
+{
+	if (IS_ENABLED(CONFIG_LOG_PROCESS_THREAD)) {
+		while (atomic_get(&buffered_cnt)) {
+			k_sleep(K_MSEC(10));
+		}
+	} else {
+		while (LOG_PROCESS()) {
+		}
+	}
+}
+#endif
 
 SYS_INIT(enable_logger, POST_KERNEL, CONFIG_LOG_CORE_INIT_PRIORITY);

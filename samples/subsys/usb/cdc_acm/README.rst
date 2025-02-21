@@ -1,7 +1,8 @@
-.. _usb_cdc-acm:
+.. zephyr:code-sample:: usb-cdc-acm
+   :name: USB CDC-ACM
+   :relevant-api: usbd_api _usb_device_core_api uart_interface
 
-USB CDC ACM Sample Application
-####################################
+   Use USB CDC-ACM driver to implement a serial port echo.
 
 Overview
 ********
@@ -92,6 +93,3 @@ For this example, it would look like this:
 .. code-block:: none
 
    ATTRS{idVendor}=="8086" ATTRS{idProduct}=="f8a1", ENV{ID_MM_DEVICE_IGNORE}="1"
-
-You can use
-``/lib/udev/rules.d/77-mm-usb-device-blacklist.rules`` as reference.

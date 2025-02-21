@@ -47,7 +47,8 @@ struct net_pkt *net_arp_prepare(struct net_pkt *pkt,
 				struct in_addr *request_ip,
 				struct in_addr *current_ip);
 enum net_verdict net_arp_input(struct net_pkt *pkt,
-			       struct net_eth_hdr *eth_hdr);
+			       struct net_eth_addr *src,
+			       struct net_eth_addr *dst);
 
 int net_arp_clear_pending(struct net_if *iface,
 				struct in_addr *dst);
@@ -67,6 +68,9 @@ int net_arp_foreach(net_arp_cb_t cb, void *user_data);
 
 void net_arp_clear_cache(struct net_if *iface);
 void net_arp_init(void);
+void net_arp_update(struct net_if *iface, struct in_addr *src,
+		    struct net_eth_addr *hwaddr, bool gratuitous,
+		    bool force);
 
 /**
  * @}
@@ -83,6 +87,7 @@ void net_arp_init(void);
 #define net_arp_foreach(...) 0
 #define net_arp_init(...)
 #define net_arp_clear_pending(...) 0
+#define net_arp_update(...)
 
 #endif /* CONFIG_NET_ARP */
 

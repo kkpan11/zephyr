@@ -10,6 +10,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/dt-bindings/gpio/ite-it8xxx2-gpio.h>
 #include <zephyr/dt-bindings/interrupt-controller/ite-intc.h>
+#include <zephyr/init.h>
 #include <zephyr/irq.h>
 #include <zephyr/types.h>
 #include <zephyr/sys/util.h>
@@ -148,7 +149,7 @@ static const struct {
 	[IT8XXX2_IRQ_WU63] = {BIT(3), 6, BIT(3)},
 	[IT8XXX2_IRQ_WU64] = {BIT(4), 6, BIT(4)},
 	[IT8XXX2_IRQ_WU65] = {BIT(5), 6, BIT(5)},
-	[IT8XXX2_IRQ_WU65] = {BIT(6), 6, BIT(6)},
+	[IT8XXX2_IRQ_WU66] = {BIT(6), 6, BIT(6)},
 	[IT8XXX2_IRQ_WU67] = {BIT(7), 6, BIT(7)},
 	[IT8XXX2_IRQ_WU70] = {BIT(0), 7, BIT(0)},
 	[IT8XXX2_IRQ_WU71] = {BIT(1), 7, BIT(1)},
@@ -432,12 +433,13 @@ static int gpio_ite_configure(const struct device *dev,
 	}
 
 	/* Set input or output. */
-	if (flags & GPIO_OUTPUT)
+	if (flags & GPIO_OUTPUT) {
 		*reg_gpcr = (*reg_gpcr | GPCR_PORT_PIN_MODE_OUTPUT) &
 				~GPCR_PORT_PIN_MODE_INPUT;
-	else
+	} else {
 		*reg_gpcr = (*reg_gpcr | GPCR_PORT_PIN_MODE_INPUT) &
 				~GPCR_PORT_PIN_MODE_OUTPUT;
+	}
 
 	/* Handle pullup / pulldown */
 	if (flags & GPIO_PULL_UP) {
@@ -474,8 +476,9 @@ static int gpio_ite_get_config(const struct device *dev,
 		"Invalid GPIO group index");
 
 	/* push-pull or open-drain */
-	if (*reg_gpotr & mask)
+	if (*reg_gpotr & mask) {
 		flags |= GPIO_OPEN_DRAIN;
+	}
 
 	/* 1.8V or 3.3V */
 	reg_1p8v = &IT8XXX2_GPIO_GCRX(
@@ -670,7 +673,7 @@ static int gpio_ite_pin_interrupt_configure(const struct device *dev,
 	return 0;
 }
 
-static const struct gpio_driver_api gpio_ite_driver_api = {
+static DEVICE_API(gpio, gpio_ite_driver_api) = {
 	.pin_configure = gpio_ite_configure,
 #ifdef CONFIG_GPIO_GET_CONFIG
 	.pin_get_config = gpio_ite_get_config,

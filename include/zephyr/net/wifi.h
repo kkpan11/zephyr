@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2018 Texas Instruments, Incorporated
+ * Copyright (c) 2023 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -10,8 +11,10 @@
  */
 
 /**
+ * @brief Wi-Fi Management API.
  * @defgroup wifi_mgmt Wi-Fi Management
- * Wi-Fi Management API.
+ * @since 1.12
+ * @version 0.8.0
  * @ingroup networking
  * @{
  */
@@ -21,12 +24,21 @@
 
 #include <zephyr/sys/util.h>  /* for ARRAY_SIZE */
 
+/** Length of the country code string */
 #define WIFI_COUNTRY_CODE_LEN 2
+
+/** @cond INTERNAL_HIDDEN */
 
 #define WIFI_LISTEN_INTERVAL_MIN 0
 #define WIFI_LISTEN_INTERVAL_MAX 65535
 
-/** IEEE 802.11 security types. */
+/** @endcond */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @brief IEEE 802.11 security types. */
 enum wifi_security_type {
 	/** No security. */
 	WIFI_SECURITY_TYPE_NONE = 0,
@@ -36,47 +48,167 @@ enum wifi_security_type {
 	WIFI_SECURITY_TYPE_PSK_SHA256,
 	/** WPA3-SAE security. */
 	WIFI_SECURITY_TYPE_SAE,
+	/** WPA3-SAE security with hunting-and-pecking loop. */
+	WIFI_SECURITY_TYPE_SAE_HNP = WIFI_SECURITY_TYPE_SAE,
+	/** WPA3-SAE security with hash-to-element. */
+	WIFI_SECURITY_TYPE_SAE_H2E,
+	/** WPA3-SAE security with both hunting-and-pecking loop and hash-to-element enabled. */
+	WIFI_SECURITY_TYPE_SAE_AUTO,
 	/** GB 15629.11-2003 WAPI security. */
 	WIFI_SECURITY_TYPE_WAPI,
 	/** EAP security - Enterprise. */
 	WIFI_SECURITY_TYPE_EAP,
+	/** EAP TLS security - Enterprise. */
+	WIFI_SECURITY_TYPE_EAP_TLS = WIFI_SECURITY_TYPE_EAP,
 	/** WEP security. */
 	WIFI_SECURITY_TYPE_WEP,
 	/** WPA-PSK security. */
 	WIFI_SECURITY_TYPE_WPA_PSK,
+	/** WPA/WPA2/WPA3 PSK security. */
+	WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL,
+	/** DPP security */
+	WIFI_SECURITY_TYPE_DPP,
+	/** EAP PEAP MSCHAPV2 security - Enterprise. */
+	WIFI_SECURITY_TYPE_EAP_PEAP_MSCHAPV2,
+	/** EAP PEAP GTC security - Enterprise. */
+	WIFI_SECURITY_TYPE_EAP_PEAP_GTC,
+	/** EAP TTLS MSCHAPV2 security - Enterprise. */
+	WIFI_SECURITY_TYPE_EAP_TTLS_MSCHAPV2,
+	/** EAP PEAP security - Enterprise. */
+	WIFI_SECURITY_TYPE_EAP_PEAP_TLS,
+	/** FT-PSK security */
+	WIFI_SECURITY_TYPE_FT_PSK,
+	/** FT-SAE security */
+	WIFI_SECURITY_TYPE_FT_SAE,
+	/** FT-EAP security */
+	WIFI_SECURITY_TYPE_FT_EAP,
+	/** FT-EAP-SHA384 security */
+	WIFI_SECURITY_TYPE_FT_EAP_SHA384,
+	/** SAE Extended key (uses group-dependent hashing) */
+	WIFI_SECURITY_TYPE_SAE_EXT_KEY,
 
+	/** @cond INTERNAL_HIDDEN */
 	__WIFI_SECURITY_TYPE_AFTER_LAST,
 	WIFI_SECURITY_TYPE_MAX = __WIFI_SECURITY_TYPE_AFTER_LAST - 1,
 	WIFI_SECURITY_TYPE_UNKNOWN
+	/** @endcond */
+};
+
+/** @brief EPA method Types. */
+enum wifi_eap_type {
+	/** No EPA  security. */
+	WIFI_EAP_TYPE_NONE = 0,
+	/** EPA GTC security, refer to rfc3748 chapter 5. */
+	WIFI_EAP_TYPE_GTC = 6,
+	/** EPA TLS security, refer to rfc5216. */
+	WIFI_EAP_TYPE_TLS = 13,
+	/** EPA TTLS security, refer to rfc5281. */
+	WIFI_EAP_TYPE_TTLS = 21,
+	/** EPA PEAP security, refer to draft-josefsson-pppext-eap-tls-eap-06.txt. */
+	WIFI_EAP_TYPE_PEAP = 25,
+	/** EPA MSCHAPV2 security, refer to draft-kamath-pppext-eap-mschapv2-00.txt. */
+	WIFI_EAP_TYPE_MSCHAPV2 = 26,
+};
+
+/** @brief WPA3 Enterprise security types.
+ *
+ * See Section#3 in WFA WPA3 specification v3.4:
+ * https://www.wi-fi.org/file/wpa3-specification for details.
+ */
+enum wifi_wpa3_enterprise_type {
+	/** No WPA3 enterprise, either WPA2 Enterprise or personal mode */
+	WIFI_WPA3_ENTERPRISE_NA = 0,
+	/** WPA3 enterprise Suite-B (PMFR + WPA3-Suite-B). */
+	WIFI_WPA3_ENTERPRISE_SUITEB = 1,
+	/** WPA3 enterprise Suite-B-192 (PMFR + WPA3-Suite-B-192). */
+	WIFI_WPA3_ENTERPRISE_SUITEB_192,
+	/** WPA3 enterprise only (PMFR + WPA2-ENT disabled). */
+	WIFI_WPA3_ENTERPRISE_ONLY,
+
+	/** @cond INTERNAL_HIDDEN */
+	__WIFI_WPA3_ENTERPRISE_AFTER_LAST,
+	WIFI_WPA3_ENTERPRISE_MAX = __WIFI_WPA3_ENTERPRISE_AFTER_LAST - 1,
+	WIFI_WPA3_ENTERPRISE_UNKNOWN
+	/** @endcond */
+};
+
+enum wifi_eap_tls_cipher_type {
+	/** EAP TLS with NONE */
+	WIFI_EAP_TLS_NONE,
+	/** EAP TLS with ECDH & ECDSA with p384 */
+	WIFI_EAP_TLS_ECC_P384,
+	/** EAP TLS with ECDH & RSA with > 3K */
+	WIFI_EAP_TLS_RSA_3K,
+};
+
+/** @brief Group cipher and pairwise cipher types. */
+enum wifi_cipher_type {
+	/** AES in counter mode with CBC-MAC (CCMP-128). */
+	WPA_CAPA_ENC_CCMP,
+	/** 128-bit Galois/Counter Mode Protocol. */
+	WPA_CAPA_ENC_GCMP,
+	/** 256-bit Galois/Counter Mode Protocol. */
+	WPA_CAPA_ENC_GCMP_256,
+};
+
+/** @brief group mgmt cipher types. */
+enum wifi_group_mgmt_cipher_type {
+	/** 128-bit Broadcast/Multicast Integrity Protocol
+	 * Cipher-based Message Authentication Code .
+	 */
+	WPA_CAPA_ENC_BIP,
+	/** 128-bit Broadcast/Multicast Integrity Protocol
+	 * Galois Message Authentication Code .
+	 */
+	WPA_CAPA_ENC_BIP_GMAC_128,
+	/** 256-bit Broadcast/Multicast Integrity Protocol
+	 * Galois Message Authentication Code .
+	 */
+	WPA_CAPA_ENC_BIP_GMAC_256,
+};
+
+struct wifi_cipher_desc {
+	/** Cipher capability. */
+	unsigned int capa;
+	/** Cipher name string. */
+	char *name;
+};
+
+struct wifi_eap_cipher_config {
+	/** Key management type string. */
+	char *key_mgmt;
+	/** OpenSSL cipher string. */
+	char *openssl_ciphers;
+	/** Group cipher cipher string. */
+	char *group_cipher;
+	/** Pairwise_cipher cipher string. */
+	char *pairwise_cipher;
+	/** Group management cipher string. */
+	char *group_mgmt_cipher;
+	/** Used to confiure TLS features. */
+	char *tls_flags;
+};
+
+struct wifi_eap_config {
+	/**  Security type. */
+	enum wifi_security_type type;
+	/** EAP method type of phase1. */
+	enum wifi_eap_type eap_type_phase1;
+	/** EAP method type of phase2. */
+	enum wifi_eap_type eap_type_phase2;
+	/** EAP method string. */
+	char *method;
+	/** Phase2 setting string. */
+	char *phase2;
 };
 
 /** Helper function to get user-friendly security type name. */
-static inline const char *wifi_security_txt(enum wifi_security_type security)
-{
-	switch (security) {
-	case WIFI_SECURITY_TYPE_NONE:
-		return "OPEN";
-	case WIFI_SECURITY_TYPE_WEP:
-		return "WEP";
-	case WIFI_SECURITY_TYPE_WPA_PSK:
-		return "WPA-PSK";
-	case WIFI_SECURITY_TYPE_PSK:
-		return "WPA2-PSK";
-	case WIFI_SECURITY_TYPE_PSK_SHA256:
-		return "WPA2-PSK-SHA256";
-	case WIFI_SECURITY_TYPE_SAE:
-		return "WPA3-SAE";
-	case WIFI_SECURITY_TYPE_WAPI:
-		return "WAPI";
-	case WIFI_SECURITY_TYPE_EAP:
-		return "EAP";
-	case WIFI_SECURITY_TYPE_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+const char *wifi_security_txt(enum wifi_security_type security);
 
-/** IEEE 802.11w - Management frame protection. */
+/** Helper function to get user-friendly wpa3 enterprise security type name. */
+const char *wifi_wpa3_enterprise_txt(enum wifi_wpa3_enterprise_type wpa3_ent);
+
+/** @brief IEEE 802.11w - Management frame protection. */
 enum wifi_mfp_options {
 	/** MFP disabled. */
 	WIFI_MFP_DISABLE = 0,
@@ -85,26 +217,15 @@ enum wifi_mfp_options {
 	/** MFP required. */
 	WIFI_MFP_REQUIRED,
 
+/** @cond INTERNAL_HIDDEN */
 	__WIFI_MFP_AFTER_LAST,
 	WIFI_MFP_MAX = __WIFI_MFP_AFTER_LAST - 1,
 	WIFI_MFP_UNKNOWN
+/** @endcond */
 };
 
 /** Helper function to get user-friendly MFP name.*/
-static inline const char *wifi_mfp_txt(enum wifi_mfp_options mfp)
-{
-	switch (mfp) {
-	case WIFI_MFP_DISABLE:
-		return "Disable";
-	case WIFI_MFP_OPTIONAL:
-		return "Optional";
-	case WIFI_MFP_REQUIRED:
-		return "Required";
-	case WIFI_MFP_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+const char *wifi_mfp_txt(enum wifi_mfp_options mfp);
 
 /**
  * @brief IEEE 802.11 operational frequency bands (not exhaustive).
@@ -126,31 +247,52 @@ enum wifi_frequency_bands {
 };
 
 /** Helper function to get user-friendly frequency band name. */
-static inline const char *wifi_band_txt(enum wifi_frequency_bands band)
-{
-	switch (band) {
-	case WIFI_FREQ_BAND_2_4_GHZ:
-		return "2.4GHz";
-	case WIFI_FREQ_BAND_5_GHZ:
-		return "5GHz";
-	case WIFI_FREQ_BAND_6_GHZ:
-		return "6GHz";
-	case WIFI_FREQ_BAND_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+const char *wifi_band_txt(enum wifi_frequency_bands band);
 
+/**
+ * @brief IEEE 802.11 operational frequency bandwidths (not exhaustive).
+ */
+enum wifi_frequency_bandwidths {
+	/** 20 MHz. */
+	WIFI_FREQ_BANDWIDTH_20MHZ = 1,
+	/** 40 MHz. */
+	WIFI_FREQ_BANDWIDTH_40MHZ,
+	/** 80 MHz. */
+	WIFI_FREQ_BANDWIDTH_80MHZ,
+
+	/** Number of frequency bandwidths available. */
+	__WIFI_FREQ_BANDWIDTH_AFTER_LAST,
+	/** Highest frequency bandwidth available. */
+	WIFI_FREQ_BANDWIDTH_MAX = __WIFI_FREQ_BANDWIDTH_AFTER_LAST - 1,
+	/** Invalid frequency bandwidth */
+	WIFI_FREQ_BANDWIDTH_UNKNOWN
+};
+
+const char *const wifi_bandwidth_txt(enum wifi_frequency_bandwidths bandwidth);
+
+/** Max SSID length */
 #define WIFI_SSID_MAX_LEN 32
+/** Minimum PSK length */
 #define WIFI_PSK_MIN_LEN 8
+/** Maximum PSK length */
 #define WIFI_PSK_MAX_LEN 64
+/** Max SAW password length */
 #define WIFI_SAE_PSWD_MAX_LEN 128
+/** MAC address length */
 #define WIFI_MAC_ADDR_LEN 6
+/** Max enterprise identity length */
+#define WIFI_ENT_IDENTITY_MAX_LEN 64
+/** Max enterprise password length */
+#define WIFI_ENT_PSWD_MAX_LEN 128
 
+/** Minimum channel number */
+#define WIFI_CHANNEL_MIN 1
+/** Maximum channel number */
 #define WIFI_CHANNEL_MAX 233
+/** Any channel number */
 #define WIFI_CHANNEL_ANY 255
 
-/** Wi-Fi interface states.
+/** @brief Wi-Fi interface states.
  *
  * Based on https://w1.fi/wpa_supplicant/devel/defs_8h.html#a4aeb27c1e4abd046df3064ea9756f0bc
  */
@@ -176,42 +318,29 @@ enum wifi_iface_state {
 	/** All authentication completed, ready to pass data. */
 	WIFI_STATE_COMPLETED,
 
+/** @cond INTERNAL_HIDDEN */
 	__WIFI_STATE_AFTER_LAST,
 	WIFI_STATE_MAX = __WIFI_STATE_AFTER_LAST - 1,
 	WIFI_STATE_UNKNOWN
+/** @endcond */
 };
 
-/** Helper function to get user-friendly interface state name. */
-static inline const char *wifi_state_txt(enum wifi_iface_state state)
-{
-	switch (state) {
-	case WIFI_STATE_DISCONNECTED:
-		return "DISCONNECTED";
-	case WIFI_STATE_INACTIVE:
-		return "INACTIVE";
-	case WIFI_STATE_INTERFACE_DISABLED:
-		return "INTERFACE_DISABLED";
-	case WIFI_STATE_SCANNING:
-		return "SCANNING";
-	case WIFI_STATE_AUTHENTICATING:
-		return "AUTHENTICATING";
-	case WIFI_STATE_ASSOCIATING:
-		return "ASSOCIATING";
-	case WIFI_STATE_ASSOCIATED:
-		return "ASSOCIATED";
-	case WIFI_STATE_4WAY_HANDSHAKE:
-		return "4WAY_HANDSHAKE";
-	case WIFI_STATE_GROUP_HANDSHAKE:
-		return "GROUP_HANDSHAKE";
-	case WIFI_STATE_COMPLETED:
-		return "COMPLETED";
-	case WIFI_STATE_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+/* We rely on the strict order of the enum values, so, let's check it */
+BUILD_ASSERT(WIFI_STATE_DISCONNECTED < WIFI_STATE_INTERFACE_DISABLED &&
+	     WIFI_STATE_INTERFACE_DISABLED < WIFI_STATE_INACTIVE &&
+	     WIFI_STATE_INACTIVE < WIFI_STATE_SCANNING &&
+	     WIFI_STATE_SCANNING < WIFI_STATE_AUTHENTICATING &&
+	     WIFI_STATE_AUTHENTICATING < WIFI_STATE_ASSOCIATING &&
+	     WIFI_STATE_ASSOCIATING < WIFI_STATE_ASSOCIATED &&
+	     WIFI_STATE_ASSOCIATED < WIFI_STATE_4WAY_HANDSHAKE &&
+	     WIFI_STATE_4WAY_HANDSHAKE < WIFI_STATE_GROUP_HANDSHAKE &&
+	     WIFI_STATE_GROUP_HANDSHAKE < WIFI_STATE_COMPLETED);
 
-/** Wi-Fi interface modes.
+
+/** Helper function to get user-friendly interface state name. */
+const char *wifi_state_txt(enum wifi_iface_state state);
+
+/** @brief Wi-Fi interface modes.
  *
  * Based on https://w1.fi/wpa_supplicant/devel/defs_8h.html#a4aeb27c1e4abd046df3064ea9756f0bc
  */
@@ -229,34 +358,17 @@ enum wifi_iface_mode {
 	/** 802.11s Mesh mode. */
 	WIFI_MODE_MESH = 5,
 
+/** @cond INTERNAL_HIDDEN */
 	__WIFI_MODE_AFTER_LAST,
 	WIFI_MODE_MAX = __WIFI_MODE_AFTER_LAST - 1,
 	WIFI_MODE_UNKNOWN
+/** @endcond */
 };
 
 /** Helper function to get user-friendly interface mode name. */
-static inline const char *wifi_mode_txt(enum wifi_iface_mode mode)
-{
-	switch (mode) {
-	case WIFI_MODE_INFRA:
-		return "STATION";
-	case WIFI_MODE_IBSS:
-		return "ADHOC";
-	case WIFI_MODE_AP:
-		return "ACCESS POINT";
-	case WIFI_MODE_P2P_GO:
-		return "P2P GROUP OWNER";
-	case WIFI_MODE_P2P_GROUP_FORMATION:
-		return "P2P GROUP FORMATION";
-	case WIFI_MODE_MESH:
-		return "MESH";
-	case WIFI_MODE_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+const char *wifi_mode_txt(enum wifi_iface_mode mode);
 
-/** Wi-Fi link operating modes
+/** @brief Wi-Fi link operating modes
  *
  * As per https://en.wikipedia.org/wiki/Wi-Fi#Versions_and_generations.
  */
@@ -280,40 +392,17 @@ enum wifi_link_mode {
 	/** 802.11be. */
 	WIFI_7,
 
+/** @cond INTERNAL_HIDDEN */
 	__WIFI_LINK_MODE_AFTER_LAST,
 	WIFI_LINK_MODE_MAX = __WIFI_LINK_MODE_AFTER_LAST - 1,
 	WIFI_LINK_MODE_UNKNOWN
+/** @endcond */
 };
 
 /** Helper function to get user-friendly link mode name. */
-static inline const char *wifi_link_mode_txt(enum wifi_link_mode link_mode)
-{
-	switch (link_mode) {
-	case WIFI_0:
-		return "WIFI 0 (802.11)";
-	case WIFI_1:
-		return "WIFI 1 (802.11b)";
-	case WIFI_2:
-		return "WIFI 2 (802.11a)";
-	case WIFI_3:
-		return "WIFI 3 (802.11g)";
-	case WIFI_4:
-		return "WIFI 4 (802.11n/HT)";
-	case WIFI_5:
-		return "WIFI 5 (802.11ac/VHT)";
-	case WIFI_6:
-		return "WIFI 6 (802.11ax/HE)";
-	case WIFI_6E:
-		return "WIFI 6E (802.11ax 6GHz/HE)";
-	case WIFI_7:
-		return "WIFI 7 (802.11be/EHT)";
-	case WIFI_LINK_MODE_UNKNOWN:
-	default:
-		return "UNKNOWN";
-	}
-}
+const char *wifi_link_mode_txt(enum wifi_link_mode link_mode);
 
-/** Wi-Fi scanning types. */
+/** @brief Wi-Fi scanning types. */
 enum wifi_scan_type {
 	/** Active scanning (default). */
 	WIFI_SCAN_TYPE_ACTIVE = 0,
@@ -321,7 +410,7 @@ enum wifi_scan_type {
 	WIFI_SCAN_TYPE_PASSIVE,
 };
 
-/** Wi-Fi power save states. */
+/** @brief Wi-Fi power save states. */
 enum wifi_ps {
 	/** Power save disabled. */
 	WIFI_PS_DISABLED = 0,
@@ -329,14 +418,10 @@ enum wifi_ps {
 	WIFI_PS_ENABLED,
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_ps2str[] = {
-	[WIFI_PS_DISABLED] = "Power save disabled",
-	[WIFI_PS_ENABLED] = "Power save enabled",
-};
-/** @endcond */
+/** Helper function to get user-friendly ps name. */
+const char *wifi_ps_txt(enum wifi_ps ps_name);
 
-/** Wi-Fi power save modes. */
+/** @brief Wi-Fi power save modes. */
 enum wifi_ps_mode {
 	/** Legacy power save mode. */
 	WIFI_PS_MODE_LEGACY = 0,
@@ -347,14 +432,43 @@ enum wifi_ps_mode {
 	WIFI_PS_MODE_WMM,
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_ps_mode2str[] = {
-	[WIFI_PS_MODE_LEGACY] = "Legacy power save",
-	[WIFI_PS_MODE_WMM] = "WMM power save",
-};
-/** @endcond */
+/** Helper function to get user-friendly ps mode name. */
+const char *wifi_ps_mode_txt(enum wifi_ps_mode ps_mode);
 
-/** Wi-Fi Target Wake Time (TWT) operations. */
+/** Network interface index min value */
+#define WIFI_INTERFACE_INDEX_MIN 1
+/** Network interface index max value */
+#define WIFI_INTERFACE_INDEX_MAX 255
+
+/** @brief Wifi operational mode */
+enum wifi_operational_modes {
+	/** STA mode setting enable */
+	WIFI_STA_MODE = BIT(0),
+	/** Monitor mode setting enable */
+	WIFI_MONITOR_MODE = BIT(1),
+	/** TX injection mode setting enable */
+	WIFI_TX_INJECTION_MODE = BIT(2),
+	/** Promiscuous mode setting enable */
+	WIFI_PROMISCUOUS_MODE = BIT(3),
+	/** AP mode setting enable */
+	WIFI_AP_MODE = BIT(4),
+	/** Softap mode setting enable */
+	WIFI_SOFTAP_MODE = BIT(5),
+};
+
+/** @brief Mode filter settings */
+enum wifi_filter {
+	/** Support management, data and control packet sniffing */
+	WIFI_PACKET_FILTER_ALL = BIT(0),
+	/** Support only sniffing of management packets */
+	WIFI_PACKET_FILTER_MGMT = BIT(1),
+	/** Support only sniffing of data packets */
+	WIFI_PACKET_FILTER_DATA = BIT(2),
+	/** Support only sniffing of control packets */
+	WIFI_PACKET_FILTER_CTRL = BIT(3),
+};
+
+/** @brief Wi-Fi Target Wake Time (TWT) operations. */
 enum wifi_twt_operation {
 	/** TWT setup operation */
 	WIFI_TWT_SETUP = 0,
@@ -362,14 +476,10 @@ enum wifi_twt_operation {
 	WIFI_TWT_TEARDOWN,
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_twt_operation2str[] = {
-	[WIFI_TWT_SETUP] = "TWT setup",
-	[WIFI_TWT_TEARDOWN] = "TWT teardown",
-};
-/** @endcond */
+/** Helper function to get user-friendly twt operation name. */
+const char *wifi_twt_operation_txt(enum wifi_twt_operation twt_operation);
 
-/** Wi-Fi Target Wake Time (TWT) negotiation types. */
+/** @brief Wi-Fi Target Wake Time (TWT) negotiation types. */
 enum wifi_twt_negotiation_type {
 	/** TWT individual negotiation */
 	WIFI_TWT_INDIVIDUAL = 0,
@@ -379,15 +489,10 @@ enum wifi_twt_negotiation_type {
 	WIFI_TWT_WAKE_TBTT
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_twt_negotiation_type2str[] = {
-	[WIFI_TWT_INDIVIDUAL] = "TWT individual negotiation",
-	[WIFI_TWT_BROADCAST] = "TWT broadcast negotiation",
-	[WIFI_TWT_WAKE_TBTT] = "TWT wake TBTT negotiation",
-};
-/** @endcond */
+/** Helper function to get user-friendly twt negotiation type name. */
+const char *wifi_twt_negotiation_type_txt(enum wifi_twt_negotiation_type twt_negotiation);
 
-/** Wi-Fi Target Wake Time (TWT) setup commands. */
+/** @brief Wi-Fi Target Wake Time (TWT) setup commands. */
 enum wifi_twt_setup_cmd {
 	/** TWT setup request */
 	WIFI_TWT_SETUP_CMD_REQUEST = 0,
@@ -407,20 +512,10 @@ enum wifi_twt_setup_cmd {
 	WIFI_TWT_SETUP_CMD_REJECT,
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_twt_setup_cmd2str[] = {
-	[WIFI_TWT_SETUP_CMD_REQUEST] = "TWT request",
-	[WIFI_TWT_SETUP_CMD_SUGGEST] = "TWT suggest",
-	[WIFI_TWT_SETUP_CMD_DEMAND] = "TWT demand",
-	[WIFI_TWT_SETUP_CMD_GROUPING] = "TWT grouping",
-	[WIFI_TWT_SETUP_CMD_ACCEPT] = "TWT accept",
-	[WIFI_TWT_SETUP_CMD_ALTERNATE] = "TWT alternate",
-	[WIFI_TWT_SETUP_CMD_DICTATE] = "TWT dictate",
-	[WIFI_TWT_SETUP_CMD_REJECT] = "TWT reject",
-};
-/** @endcond */
+/** Helper function to get user-friendly twt setup cmd name. */
+const char *wifi_twt_setup_cmd_txt(enum wifi_twt_setup_cmd twt_setup);
 
-/** Wi-Fi Target Wake Time (TWT) negotiation status. */
+/** @brief Wi-Fi Target Wake Time (TWT) negotiation status. */
 enum wifi_twt_setup_resp_status {
 	/** TWT response received for TWT request */
 	WIFI_TWT_RESP_RECEIVED = 0,
@@ -428,7 +523,7 @@ enum wifi_twt_setup_resp_status {
 	WIFI_TWT_RESP_NOT_RECEIVED,
 };
 
-/** Target Wake Time (TWT) error codes. */
+/** @brief Target Wake Time (TWT) error codes. */
 enum wifi_twt_fail_reason {
 	/** Unspecified error */
 	WIFI_TWT_FAIL_UNSPECIFIED,
@@ -454,8 +549,16 @@ enum wifi_twt_fail_reason {
 	WIFI_TWT_FAIL_FLOW_ALREADY_EXISTS,
 };
 
+/** @brief Wi-Fi Target Wake Time (TWT) teradown status. */
+enum wifi_twt_teardown_status {
+	/** TWT teardown success */
+	WIFI_TWT_TEARDOWN_SUCCESS = 0,
+	/** TWT teardown failure */
+	WIFI_TWT_TEARDOWN_FAILED,
+};
+
 /** @cond INTERNAL_HIDDEN */
-static const char * const twt_err_code_tbl[] = {
+static const char * const wifi_twt_err_code_tbl[] = {
 	[WIFI_TWT_FAIL_UNSPECIFIED] = "Unspecified",
 	[WIFI_TWT_FAIL_CMD_EXEC_FAIL] = "Command Execution failed",
 	[WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED] =
@@ -478,30 +581,32 @@ static const char * const twt_err_code_tbl[] = {
 /** @endcond */
 
 /** Helper function to get user-friendly TWT error code name. */
-static inline const char *get_twt_err_code_str(int16_t err_no)
+static inline const char *wifi_twt_get_err_code_str(int16_t err_no)
 {
-	if ((err_no) < (int16_t)ARRAY_SIZE(twt_err_code_tbl)) {
-		return twt_err_code_tbl[err_no];
+	if ((err_no) < (int16_t)ARRAY_SIZE(wifi_twt_err_code_tbl)) {
+		return wifi_twt_err_code_tbl[err_no];
 	}
 
 	return "<unknown>";
 }
 
-/** Wi-Fi power save parameters. */
-enum ps_param_type {
+/** @brief Wi-Fi power save parameters. */
+enum wifi_ps_param_type {
 	/** Power save state. */
 	WIFI_PS_PARAM_STATE,
-	/** Power save listen interval. */
+	/** Power save listen interval (units: (short) beacon intervals). */
 	WIFI_PS_PARAM_LISTEN_INTERVAL,
 	/** Power save wakeup mode. */
 	WIFI_PS_PARAM_WAKEUP_MODE,
 	/** Power save mode. */
 	WIFI_PS_PARAM_MODE,
+	/** Power save exit strategy. */
+	WIFI_PS_PARAM_EXIT_STRATEGY,
 	/** Power save timeout. */
 	WIFI_PS_PARAM_TIMEOUT,
 };
 
-/** Wi-Fi power save modes. */
+/** @brief Wi-Fi power save modes. */
 enum wifi_ps_wakeup_mode {
 	/** DTIM based wakeup. */
 	WIFI_PS_WAKEUP_MODE_DTIM = 0,
@@ -509,14 +614,28 @@ enum wifi_ps_wakeup_mode {
 	WIFI_PS_WAKEUP_MODE_LISTEN_INTERVAL,
 };
 
-/** @cond INTERNAL_HIDDEN */
-static const char * const wifi_ps_wakeup_mode2str[] = {
-	[WIFI_PS_WAKEUP_MODE_DTIM] = "PS wakeup mode DTIM",
-	[WIFI_PS_WAKEUP_MODE_LISTEN_INTERVAL] = "PS wakeup mode listen interval",
-};
-/** @endcond */
+/** Helper function to get user-friendly ps wakeup mode name. */
+const char *wifi_ps_wakeup_mode_txt(enum wifi_ps_wakeup_mode ps_wakeup_mode);
 
-/** Wi-Fi power save error codes. */
+/**
+ * @brief Wi-Fi power save exit strategy
+ */
+enum wifi_ps_exit_strategy {
+	/** PS-Poll frame based */
+	WIFI_PS_EXIT_CUSTOM_ALGO = 0,
+	/** QoS NULL frame based */
+	WIFI_PS_EXIT_EVERY_TIM,
+
+/** @cond INTERNAL_HIDDEN */
+	WIFI_PS_EXIT_LAST,
+	WIFI_PS_EXIT_MAX = WIFI_PS_EXIT_LAST - 1,
+/** @endcond */
+};
+
+/** Helper function to get user-friendly ps exit strategy name. */
+const char *wifi_ps_exit_strategy_txt(enum wifi_ps_exit_strategy ps_exit_strategy);
+
+/** @brief Wi-Fi power save error codes. */
 enum wifi_config_ps_param_fail_reason {
 	/** Unspecified error */
 	WIFI_PS_PARAM_FAIL_UNSPECIFIED,
@@ -532,10 +651,12 @@ enum wifi_config_ps_param_fail_reason {
 	WIFI_PS_PARAM_FAIL_DEVICE_CONNECTED,
 	/** Listen interval out of range */
 	WIFI_PS_PARAM_LISTEN_INTERVAL_RANGE_INVALID,
+	/** Invalid exit strategy */
+	WIFI_PS_PARAM_FAIL_INVALID_EXIT_STRATEGY,
 };
 
 /** @cond INTERNAL_HIDDEN */
-static const char * const ps_param_config_err_code_tbl[] = {
+static const char * const wifi_ps_param_config_err_code_tbl[] = {
 	[WIFI_PS_PARAM_FAIL_UNSPECIFIED] = "Unspecified",
 	[WIFI_PS_PARAM_FAIL_CMD_EXEC_FAIL] = "Command Execution failed",
 	[WIFI_PS_PARAM_FAIL_OPERATION_NOT_SUPPORTED] =
@@ -551,15 +672,45 @@ static const char * const ps_param_config_err_code_tbl[] = {
 };
 /** @endcond */
 
+/** IEEE 802.11v BTM (BSS transition management) Query reasons.
+ * Refer to IEEE Std 802.11v-2011 - Table 7-43x-Transition and Transition Query reasons table.
+ */
+enum wifi_btm_query_reason {
+	/** Unspecified. */
+	WIFI_BTM_QUERY_REASON_UNSPECIFIED = 0,
+	/** Low RSSI. */
+	WIFI_BTM_QUERY_REASON_LOW_RSSI = 16,
+	/** Leaving ESS. */
+	WIFI_BTM_QUERY_REASON_LEAVING_ESS = 20,
+};
+
 /** Helper function to get user-friendly power save error code name. */
-static inline const char *get_ps_config_err_code_str(int16_t err_no)
+static inline const char *wifi_ps_get_config_err_code_str(int16_t err_no)
 {
-	if ((err_no) < (int16_t)ARRAY_SIZE(ps_param_config_err_code_tbl)) {
-		return ps_param_config_err_code_tbl[err_no];
+	if ((err_no) < (int16_t)ARRAY_SIZE(wifi_ps_param_config_err_code_tbl)) {
+		return wifi_ps_param_config_err_code_tbl[err_no];
 	}
 
 	return "<unknown>";
 }
+
+/** @brief Wi-Fi AP mode configuration parameter */
+enum wifi_ap_config_param {
+	/** Used for AP mode configuration parameter ap_max_inactivity */
+	WIFI_AP_CONFIG_PARAM_MAX_INACTIVITY = BIT(0),
+	/** Used for AP mode configuration parameter max_num_sta */
+	WIFI_AP_CONFIG_PARAM_MAX_NUM_STA = BIT(1),
+	/** Used for AP mode configuration parameter bandwidth */
+	WIFI_AP_CONFIG_PARAM_BANDWIDTH = BIT(2),
+	/** Used for AP mode configuration parameter ht_capab */
+	WIFI_AP_CONFIG_PARAM_HT_CAPAB = BIT(3),
+	/** Used for AP mode configuration parameter vht_capab */
+	WIFI_AP_CONFIG_PARAM_VHT_CAPAB = BIT(4),
+};
+
+#ifdef __cplusplus
+}
+#endif
 
 /**
  * @}

@@ -27,7 +27,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
 #include <zephyr/sys/byteorder.h>
 #include <string.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 #include <zephyr/debug/stack.h>
 
 #include <zephyr/drivers/gpio.h>
@@ -515,11 +515,8 @@ static inline int16_t mcr20a_get_rssi(uint8_t lqi)
 static inline uint8_t *get_mac(const struct device *dev)
 {
 	struct mcr20a_context *mcr20a = dev->data;
-	uint32_t *ptr = (uint32_t *)(mcr20a->mac_addr);
 
-	UNALIGNED_PUT(sys_rand32_get(), ptr);
-	ptr = (uint32_t *)(mcr20a->mac_addr + 4);
-	UNALIGNED_PUT(sys_rand32_get(), ptr);
+	sys_rand_get(mcr20a->mac_addr, sizeof(mcr20a->mac_addr));
 
 	mcr20a->mac_addr[0] = (mcr20a->mac_addr[0] & ~0x01) | 0x02;
 
@@ -730,9 +727,12 @@ static inline bool irqsts3_event(const struct device *dev,
 	return retval;
 }
 
-static void mcr20a_thread_main(void *arg)
+static void mcr20a_thread_main(void *p1, void *p2, void *p3)
 {
-	const struct device *dev = arg;
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	const struct device *dev = p1;
 	struct mcr20a_context *mcr20a = dev->data;
 	uint8_t dregs[MCR20A_PHY_CTRL4 + 1];
 	bool set_new_seq;
@@ -854,7 +854,7 @@ static int mcr20a_set_cca_mode(const struct device *dev, uint8_t mode)
 
 static enum ieee802154_hw_caps mcr20a_get_capabilities(const struct device *dev)
 {
-	return IEEE802154_HW_FCS | IEEE802154_HW_2_4_GHZ | IEEE802154_HW_TX_RX_ACK |
+	return IEEE802154_HW_FCS | IEEE802154_HW_TX_RX_ACK |
 	       IEEE802154_HW_RX_TX_ACK | IEEE802154_HW_FILTER;
 }
 
@@ -916,7 +916,7 @@ static int mcr20a_set_channel(const struct device *dev, uint16_t channel)
 
 	if (channel < 11 || channel > 26) {
 		LOG_ERR("Unsupported channel %u", channel);
-		return -EINVAL;
+		return channel < 11 ? -ENOTSUP : -EINVAL;
 	}
 
 	k_mutex_lock(&mcr20a->phy_mutex, K_FOREVER);
@@ -1265,6 +1265,19 @@ error:
 	return -EIO;
 }
 
+/* driver-allocated attribute memory - constant across all driver instances */
+IEEE802154_DEFINE_PHY_SUPPORTED_CHANNELS(drv_attr, 11, 26);
+
+static int mcr20a_attr_get(const struct device *dev, enum ieee802154_attr attr,
+			   struct ieee802154_attr_value *value)
+{
+	ARG_UNUSED(dev);
+
+	return ieee802154_attr_get_channel_page_and_range(
+		attr, IEEE802154_ATTR_PHY_CHANNEL_PAGE_ZERO_OQPSK_2450_BPSK_868_915,
+		&drv_attr.phy_supported_channels, value);
+}
+
 static int mcr20a_update_overwrites(const struct device *dev)
 {
 	if (!write_reg_overwrite_ver(dev, overwrites_direct[0].data)) {
@@ -1406,7 +1419,7 @@ static int mcr20a_init(const struct device *dev)
 
 	k_thread_create(&mcr20a->mcr20a_rx_thread, mcr20a->mcr20a_rx_stack,
 			CONFIG_IEEE802154_MCR20A_RX_STACK_SIZE,
-			(k_thread_entry_t)mcr20a_thread_main,
+			mcr20a_thread_main,
 			(void *)dev, NULL, NULL, K_PRIO_COOP(2), 0, K_NO_WAIT);
 	k_thread_name_set(&mcr20a->mcr20a_rx_thread, "mcr20a_rx");
 
@@ -1436,7 +1449,7 @@ static const struct mcr20a_config mcr20a_config = {
 
 static struct mcr20a_context mcr20a_context_data;
 
-static struct ieee802154_radio_api mcr20a_radio_api = {
+static const struct ieee802154_radio_api mcr20a_radio_api = {
 	.iface_api.init	= mcr20a_iface_init,
 
 	.get_capabilities	= mcr20a_get_capabilities,
@@ -1447,6 +1460,7 @@ static struct ieee802154_radio_api mcr20a_radio_api = {
 	.start			= mcr20a_start,
 	.stop			= mcr20a_stop,
 	.tx			= mcr20a_tx,
+	.attr_get		= mcr20a_attr_get,
 };
 
 #if defined(CONFIG_IEEE802154_RAW_MODE)

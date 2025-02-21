@@ -5,7 +5,7 @@
  */
 
 #include <zephyr/ztest.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/transport/smp_dummy.h>
 #include <zephyr/mgmt/mcumgr/grp/os_mgmt/os_mgmt.h>
@@ -155,7 +155,7 @@ ZTEST(smp_version, test_legacy_command)
 	zassert_equal(smp_header->nh_version, LEGACY_VERSION,
 		      "Expected response header version mismatch");
 
-	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1);
+	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1, NULL, 0);
 	ok = zcbor_map_decode_bulk(zsd, output_decode, ARRAY_SIZE(output_decode), &decoded) == 0;
 
 	zassert_true(ok, "Expected decode to be successful");
@@ -242,7 +242,7 @@ ZTEST(smp_version, test_current_command)
 	zassert_equal(smp_header->nh_version, CURRENT_VERSION,
 		      "Expected response header version mismatch");
 
-	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1);
+	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1, NULL, 0);
 	ok = zcbor_map_decode_bulk(zsd, output_decode, ARRAY_SIZE(output_decode), &decoded) == 0;
 
 	zassert_true(ok, "Expected decode to be successful");
@@ -328,7 +328,7 @@ ZTEST(smp_version, test_new_command)
 	zassert_equal(smp_header->nh_version, CURRENT_VERSION,
 		      "Expected response header version mismatch");
 
-	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1);
+	zcbor_new_decode_state(zsd, 4, nb->data, nb->len, 1, NULL, 0);
 	ok = zcbor_map_decode_bulk(zsd, output_decode, ARRAY_SIZE(output_decode), &decoded) == 0;
 
 	zassert_true(ok, "Expected decode to be successful");

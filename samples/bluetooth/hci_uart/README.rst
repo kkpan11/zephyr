@@ -1,18 +1,19 @@
-.. _bluetooth-hci-uart-sample:
+.. zephyr:code-sample:: bluetooth_hci_uart
+   :name: HCI UART
+   :relevant-api: hci_raw bluetooth uart_interface
 
-Bluetooth: HCI UART
-####################
+   Expose a Bluetooth controller to another device or CPU over UART.
 
 Overview
 *********
 
-Expose the Zephyr Bluetooth controller support over UART to another device/CPU
+Expose Bluetooth controller support over UART to another device/CPU
 using the H:4 HCI transport protocol (requires HW flow control from the UART).
 
 Requirements
 ************
 
-* A board with BLE support
+* A board with Bluetooth LE support
 
 Default UART settings
 *********************
@@ -32,11 +33,11 @@ Zephyr tree, and it is built as a standard Zephyr application.
 Using the controller with emulators and BlueZ
 *********************************************
 
-The instructions below show how to use a Nordic nRF5x device as a Zephyr BLE
+The instructions below show how to use a Nordic nRF5x device as a Zephyr Bluetooth
 controller and expose it to Linux's BlueZ. This can be very useful for testing
-the Zephyr Link Layer with the BlueZ Host. The Zephyr BLE controller can also
-provide a modern BLE 5.0 controller to a Linux-based machine for native
-BLE support or QEMU-based development.
+the Zephyr Link Layer with the BlueZ Host. The Zephyr Bluetooth LE controller can also
+provide a modern Bluetooth LE 5.0 controller to a Linux-based machine for native
+Bluetooth support or QEMU-based development.
 
 First, make sure you have a recent BlueZ version installed by following the
 instructions in the :ref:`bluetooth_bluez` section.
@@ -50,15 +51,15 @@ For example, to build for the nRF52832 Development Kit:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/bluetooth/hci_uart
-   :board: nrf52dk_nrf52832
+   :board: nrf52dk/nrf52832
    :goals: build flash
 
 .. _bluetooth-hci-uart-qemu-posix:
 
-Using the controller with QEMU and Native POSIX
-===============================================
+Using the controller with QEMU or native_sim
+============================================
 
-In order to use the HCI UART controller with QEMU or Native POSIX you will need
+In order to use the HCI UART controller with QEMU or :ref:`native_sim <native_sim>` you will need
 to attach it to the Linux Host first. To do so simply build the sample and
 connect the UART to the Linux machine, and then attach it with this command:
 
@@ -84,7 +85,7 @@ If you are running :file:`btmon` you should see a brief log showing how the
 Linux kernel identifies the attached controller.
 
 Once the controller is attached follow the instructions in the
-:ref:`bluetooth_qemu_posix` section to use QEMU with it.
+:ref:`bluetooth_qemu_native` section to use QEMU with it.
 
 .. _bluetooth-hci-uart-bluez:
 
@@ -129,25 +130,26 @@ Then attach RTT as described here: :ref:`Using Segger J-Link <Using Segger J-Lin
 Support for the Direction Finding
 =================================
 
-The sample can be built with the support for the BLE Direction Finding.
+The sample can be built with the support for the Bluetooth LE Direction Finding.
 To enable this feature build this sample for specific board variants that provide
 required hardware configuration for the Radio.
 
 .. code-block:: console
 
-   west build samples/bluetooth/hci_uart -b nrf52833dk_nrf52833@df -- -DCONFIG_BT_CTLR_DF=y
+   west build samples/bluetooth/hci_uart -b nrf52833dk/nrf52833@df -- -DCONFIG_BT_CTLR_DF=y
 
 You can use following targets:
 
-* ``nrf5340dk_nrf5340_cpunet@df``
-* ``nrf52833dk_nrf52833@df``
+* ``nrf5340dk/nrf5340/cpunet@df``
+* ``nrf52833dk/nrf52833@df``
 
-Check the :ref:`bluetooth_direction_finding_connectionless_rx` and the :ref:`bluetooth_direction_finding_connectionless_tx` for more details.
+Check the :zephyr:code-sample:`ble_direction_finding_connectionless_rx` and the
+:zephyr:code-sample:`ble_direction_finding_connectionless_tx` for more details.
 
 Using a USB CDC ACM UART
 ========================
 
-The sample can be configured to use a USB UART instead. See :zephyr_file:`samples/bluetooth/hci_uart/boards/nrf52840dongle_nrf52840.conf` and :zephyr_file:`samples/bluetooth/hci_uart/boards/nrf52840dongle_nrf52840.overlay`.
+The sample can be configured to use a USB UART instead. See :zephyr_file:`samples/bluetooth/hci_uart/boards/nrf52840dongle_nrf52840.conf`.
 
 Using the controller with the Zephyr host
 =========================================
@@ -155,7 +157,7 @@ Using the controller with the Zephyr host
 This describes how to hook up a board running this sample to a board running
 an application that uses the Zephyr host.
 
-On the controller side, the `zephyr,bt-c2h-uart` DTS property (in the `chosen`
+On the controller side, the ``zephyr,bt-c2h-uart`` DTS property (in the ``chosen``
 block) is used to select which uart device to use. For example if we want to
 keep the console logs, we can keep console on uart0 and the HCI on uart1 like
 so:
@@ -173,13 +175,13 @@ so:
 On the host application, some config options need to be used to select the H4
 driver instead of the built-in controller:
 
-.. code-block:: kconfig
+.. code-block:: cfg
 
    CONFIG_BT_HCI=y
-   CONFIG_BT_CTLR=n
-   CONFIG_BT_H4=y
+   CONFIG_BT_LL_SW_SPLIT=n
 
-Similarly, the `zephyr,bt-uart` DTS property selects which uart to use:
+Similarly, the ``zephyr,bt-hci`` DTS property selects which HCI instance to use.
+The UART needs to have as its child node a HCI UART node:
 
 .. code-block:: dts
 
@@ -187,6 +189,14 @@ Similarly, the `zephyr,bt-uart` DTS property selects which uart to use:
       chosen {
          zephyr,console = &uart0;
          zephyr,shell-uart = &uart0;
-         zephyr,bt-uart = &uart1;
+         zephyr,bt-hci = &bt_hci_uart;
+      };
+   };
+
+   &uart1 {
+      status = "okay";
+      bt_hci_uart: bt_hci_uart {
+         compatible = "zephyr,bt-hci-uart";
+         status = "okay";
       };
    };

@@ -10,15 +10,13 @@
 #include <zephyr/storage/disk_access.h>
 #include <zephyr/device.h>
 #include <zephyr/timing/timing.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 
 #if defined(CONFIG_DISK_DRIVER_SDMMC)
-#define DISK_NAME CONFIG_SDMMC_VOLUME_NAME
-#elif IS_ENABLED(CONFIG_DISK_DRIVER_MMC)
-#define DISK_NAME CONFIG_MMC_VOLUME_NAME
-#elif IS_ENABLED(CONFIG_DISK_DRIVER_RAM)
-#define DISK_NAME CONFIG_DISK_RAM_VOLUME_NAME
-#elif IS_ENABLED(CONFIG_NVME)
+#define DISK_NAME "SD"
+#elif defined(CONFIG_DISK_DRIVER_MMC)
+#define DISK_NAME "SD2"
+#elif defined(CONFIG_NVME)
 #define DISK_NAME "nvme0n0"
 #else
 #error "No disk device defined, is your board supported?"

@@ -1,7 +1,8 @@
-.. _tensorflow_magic_wand:
+.. zephyr:code-sample:: tflite-magicwand
+   :name: Magic Wand
 
-TensorFlow Lite Micro Magic Wand sample
-#######################################
+   Recognize gestures from an accelerometer using TensorFlow Lite for Microcontrollers and a 20KB
+   neural network.
 
 Overview
 ********
@@ -16,13 +17,20 @@ from an accelerometer.
     `the Antmicro tutorial on Renode emulation for TensorFlow`_.
 
 .. _the TensorFlow Magic Wand sample for Zephyr:
-    https://github.com/tensorflow/tflite-micro/tree/main/tensorflow/lite/micro/examples/magic_wand
+    https://github.com/tensorflow/tflite-micro-arduino-examples/tree/main/examples/magic_wand
 
 .. _the Antmicro tutorial on Renode emulation for TensorFlow:
     https://github.com/antmicro/litex-vexriscv-tensorflow-lite-demo
 
 Building and Running
 ********************
+
+Add the tflite-micro module to your West manifest and pull it:
+
+.. code-block:: console
+
+    west config manifest.project-filter -- +tflite-micro
+    west update
 
 The application can be built for the :ref:`litex-vexriscv` for
 emulation in Renode as follows:
@@ -104,10 +112,10 @@ It is recommended that you copy and modify one of the two TensorFlow
 samples when creating your own TensorFlow project. To build with
 TensorFlow, you must enable the below Kconfig options in your :file:`prj.conf`:
 
-.. code-block:: kconfig
+.. code-block:: cfg
 
     CONFIG_CPP=y
-    CONFIG_NEWLIB_LIBC=y
+    CONFIG_REQUIRES_FULL_LIBC=y
     CONFIG_TENSORFLOW_LITE_MICRO=y
 
 Training

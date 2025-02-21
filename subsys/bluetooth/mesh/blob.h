@@ -27,13 +27,27 @@
 #define BLOB_CHUNK_SIZE_MAX(sdu_max) ((sdu_max) - BLOB_CHUNK_SDU_OVERHEAD)
 #define BLOB_CHUNK_SDU_LEN(chunk_size) (BLOB_CHUNK_SDU_OVERHEAD + (chunk_size))
 
+#if CONFIG_BT_MESH_ALIGN_CHUNK_SIZE_TO_MAX_SEGMENT ||                                              \
+	CONFIG_BT_MESH_RX_BLOB_CHUNK_SIZE > BLOB_CHUNK_SIZE_MAX(BT_MESH_RX_SDU_MAX)
+#define BLOB_RX_CHUNK_SIZE BLOB_CHUNK_SIZE_MAX(BT_MESH_RX_SDU_MAX)
+#else
+#define BLOB_RX_CHUNK_SIZE CONFIG_BT_MESH_RX_BLOB_CHUNK_SIZE
+#endif
+
+#if CONFIG_BT_MESH_ALIGN_CHUNK_SIZE_TO_MAX_SEGMENT ||                                              \
+	CONFIG_BT_MESH_TX_BLOB_CHUNK_SIZE > BLOB_CHUNK_SIZE_MAX(BT_MESH_TX_SDU_MAX)
+#define BLOB_TX_CHUNK_SIZE BLOB_CHUNK_SIZE_MAX(BT_MESH_TX_SDU_MAX)
+#else
+#define BLOB_TX_CHUNK_SIZE CONFIG_BT_MESH_TX_BLOB_CHUNK_SIZE
+#endif
+
 /* Utility macros for calculating log2 of a number at compile time.
  * Used to determine the log2 representation of the block size, which
  * is configured as a raw number, but encoded as log2.
  *
  * The macros expand to a series of ternary expressions, effectively
  * searching through power of twos until a match is found.
- * According to the specification, the block size cannot be larger than 2^20,
+ * According to MshMBTv1.0, the block size cannot be larger than 2^20,
  * so we'll stop the search at 20.
  */
 #define _BLOB_LOG_2_CEIL(l, x) ((x) <= (1U << l)) ? l :

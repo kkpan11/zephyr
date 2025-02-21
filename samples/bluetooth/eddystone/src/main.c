@@ -38,57 +38,61 @@ static const struct bt_data ad[] = {
 		      0xdf, 0x4b, 0xd3, 0x8e, 0x00, 0x75, 0xc8, 0xa3),
 };
 
+static const struct bt_data sd[] = {
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+
 /* Eddystone Service Variables */
 /* Service UUID a3c87500-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87500, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87501-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_caps_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_caps_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87501, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87502-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_slot_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_slot_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87502, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87503-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_intv_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_intv_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87503, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87504-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_tx_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_tx_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87504, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87505-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_adv_tx_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_adv_tx_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87505, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87506-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_lock_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_lock_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87506, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87507-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_unlock_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_unlock_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87507, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87508-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_ecdh_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_ecdh_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87508, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c87509-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_eid_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_eid_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c87509, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c8750a-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_data_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_data_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c8750a, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c8750b-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_reset_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_reset_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c8750b, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 /* Characteristic UUID a3c8750c-8ed3-4bdf-8a39-a01bebede295 */
-static struct bt_uuid_128 eds_connectable_uuid = BT_UUID_INIT_128(
+static const struct bt_uuid_128 eds_connectable_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0xa3c8750c, 0x8ed3, 0x4bdf, 0x8a39, 0xa01bebede295));
 
 enum {
@@ -427,8 +431,7 @@ static int eds_slot_restart(struct eds_slot *slot, uint8_t type)
 			addr = oob.addr;
 		}
 
-		err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad),
-				      NULL, 0);
+		err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), NULL, 0);
 	} else {
 		size_t count = 1;
 
@@ -631,7 +634,7 @@ static void bt_ready(int err)
 	printk("Bluetooth initialized\n");
 
 	/* Start advertising */
-	err = bt_le_adv_start(BT_LE_ADV_CONN_NAME, ad, ARRAY_SIZE(ad), NULL, 0);
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 	if (err) {
 		printk("Advertising failed to start (err %d)\n", err);
 		return;
@@ -658,7 +661,7 @@ static void idle_timeout(struct k_work *work)
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
-		printk("Connection failed (err 0x%02x)\n", err);
+		printk("Connection failed err 0x%02x %s\n", err, bt_hci_err_to_str(err));
 	} else {
 		printk("Connected\n");
 		k_work_cancel_delayable(&idle_work);
@@ -669,7 +672,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	struct eds_slot *slot = &eds_slots[eds_active_slot];
 
-	printk("Disconnected (reason 0x%02x)\n", reason);
+	printk("Disconnected, reason 0x%02x %s\n", reason, bt_hci_err_to_str(reason));
 
 	if (!slot->connectable) {
 		k_work_reschedule(&idle_work, K_NO_WAIT);

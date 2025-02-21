@@ -12,6 +12,11 @@
 
 #define PEER_PORT 4242
 
+/* Turn off the progress printing so that shell can be used.
+ * Set to true if you want to see progress output.
+ */
+#define PRINT_PROGRESS false
+
 #if defined(CONFIG_USERSPACE)
 #include <zephyr/app_memory/app_memdomain.h>
 extern struct k_mem_partition app_partition;
@@ -37,7 +42,7 @@ struct udp_control {
 	struct k_timer rx_timer;
 };
 
-struct data {
+struct sample_data {
 	const char *proto;
 
 	struct {
@@ -57,8 +62,8 @@ struct data {
 };
 
 struct configs {
-	struct data ipv4;
-	struct data ipv6;
+	struct sample_data ipv4;
+	struct sample_data ipv6;
 };
 
 #if !defined(CONFIG_NET_CONFIG_PEER_IPV4_ADDR)

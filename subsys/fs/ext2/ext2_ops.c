@@ -18,7 +18,8 @@
 
 LOG_MODULE_DECLARE(ext2);
 
-K_MEM_SLAB_DEFINE(file_struct_slab, sizeof(struct ext2_file), CONFIG_MAX_FILES, sizeof(void *));
+K_MEM_SLAB_DEFINE(file_struct_slab, sizeof(struct ext2_file), CONFIG_EXT2_MAX_FILES,
+		  sizeof(void *));
 
 /* File operations */
 
@@ -28,7 +29,7 @@ static int ext2_open(struct fs_file_t *filp, const char *fs_path, fs_mode_t flag
 	struct ext2_file *file;
 	struct ext2_data *fs = filp->mp->fs_data;
 
-	if (fs->open_files >= CONFIG_MAX_FILES) {
+	if (fs->open_files >= CONFIG_EXT2_MAX_FILES) {
 		LOG_DBG("Too many open files");
 		return -EMFILE;
 	}
@@ -59,7 +60,7 @@ static int ext2_open(struct fs_file_t *filp, const char *fs_path, fs_mode_t flag
 	/* Inodes allocated by lookup. Must be freed in manually. */
 	struct ext2_inode *found_inode = args.inode;
 
-	/* Not NULL iff FS_O_CREATE and found_inode == NULL */
+	/* Not NULL if FS_O_CREATE and found_inode == NULL */
 	struct ext2_inode *parent = args.parent;
 
 	/* File has to be created */
@@ -126,7 +127,7 @@ static int ext2_close(struct fs_file_t *filp)
 		goto out;
 	}
 
-	k_mem_slab_free(&file_struct_slab, (void **)&f);
+	k_mem_slab_free(&file_struct_slab, (void *)f);
 	filp->filep = NULL;
 out:
 	return rc;
@@ -349,7 +350,7 @@ static int ext2_closedir(struct fs_dir_t *dirp)
 	struct ext2_file *dir = dirp->dirp;
 
 	ext2_inode_drop(dir->f_inode);
-	k_mem_slab_free(&file_struct_slab, (void **)&dir);
+	k_mem_slab_free(&file_struct_slab, (void *)dir);
 	return 0;
 }
 
@@ -361,8 +362,9 @@ FS_EXT2_DECLARE_DEFAULT_CONFIG(ext2_default_cfg);
 
 /* Superblock is used only once. Because ext2 may have only one instance at the time we could
  * statically allocate this strusture.
+ * Alignment needed for reads to work with DMAs that force it (e.g. stm32 SDMMC + DMA).
  */
-static struct ext2_disk_superblock superblock;
+static struct ext2_disk_superblock __aligned(CONFIG_EXT2_SUPERBLOCK_ALIGNMENT) superblock;
 
 static int ext2_mount(struct fs_mount_t *mountp)
 {

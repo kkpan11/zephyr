@@ -9,6 +9,7 @@ on:
     - ready_for_review
     branches:
     - main
+    - collab-*
     - v*-branch
   issues:
     types:
@@ -23,11 +24,10 @@ jobs:
     steps:
     - name: Install Python dependencies
       run: |
-        sudo pip3 install -U setuptools wheel pip
-        pip3 install -U PyGithub>=1.55 west
+        pip install -U PyGithub>=1.55 west
 
     - name: Check out source code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Run assignment script
       env:

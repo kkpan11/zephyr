@@ -1,11 +1,11 @@
 /*
  * Copyright (c) 2018 blik GmbH
- * Copyright (c) 2018, NXP
+ * Copyright (c) 2018,2024 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT nxp_kinetis_rtc
+#define DT_DRV_COMPAT nxp_rtc
 
 #include <zephyr/drivers/counter.h>
 #include <zephyr/irq.h>
@@ -13,6 +13,16 @@
 #include <zephyr/sys_clock.h>
 #include <fsl_rtc.h>
 #include <zephyr/logging/log.h>
+
+/*
+ * FSL_FEATURE_* is defined with paranethesis
+ * which is not acceptable when using the IS_ENABLED() macro
+ */
+#if (defined(FSL_FEATURE_RTC_HAS_LPO_ADJUST) && FSL_FEATURE_RTC_HAS_LPO_ADJUST)
+#define NXP_RTC_HAS_LPO_ADJUST 1
+#else
+#define NXP_RTC_HAS_LPO_ADJUST 0
+#endif
 
 LOG_MODULE_REGISTER(mcux_rtc, CONFIG_COUNTER_LOG_LEVEL);
 
@@ -236,16 +246,34 @@ static int mcux_rtc_init(const struct device *dev)
 	RTC_GetDefaultConfig(&rtc_config);
 	RTC_Init(config->base, &rtc_config);
 
+	/* DT_ENUM_IDX(DT_NODELABEL(rtc), clock_source):
+	 * "RTC": 0
+	 * "LPO": 1
+	 */
+	BUILD_ASSERT((((DT_INST_ENUM_IDX(0, clock_source) == 1) &&
+		NXP_RTC_HAS_LPO_ADJUST) ||
+		DT_INST_ENUM_IDX(0, clock_source) == 0),
+		"Cannot choose the LPO clock for that instance of the RTC");
+
+#if (defined(FSL_FEATURE_RTC_HAS_LPO_ADJUST) && FSL_FEATURE_RTC_HAS_LPO_ADJUST)
+	/* The RTC prescaler increments using the LPO 1 kHz clock
+	 * instead of the RTC clock
+	 */
+	RTC_EnableLPOClock(config->base, DT_INST_ENUM_IDX(0, clock_source));
+#endif
+
+#if !(defined(FSL_FEATURE_RTC_HAS_NO_CR_OSCE) && FSL_FEATURE_RTC_HAS_NO_CR_OSCE)
 	/* Enable 32kHz oscillator and wait for 1ms to settle */
-	config->base->CR |= 0x100;
+	RTC_SetClockSource(config->base);
 	k_busy_wait(USEC_PER_MSEC);
+#endif /* !FSL_FEATURE_RTC_HAS_NO_CR_OSCE */
 
 	config->irq_config_func(dev);
 
 	return 0;
 }
 
-static const struct counter_driver_api mcux_rtc_driver_api = {
+static DEVICE_API(counter, mcux_rtc_driver_api) = {
 	.start = mcux_rtc_start,
 	.stop = mcux_rtc_stop,
 	.get_value = mcux_rtc_get_value,

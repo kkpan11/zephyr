@@ -4,24 +4,41 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/kernel.h>
+
+#include <zephyr/types.h>
+#include <stddef.h>
+#include <errno.h>
+
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/hci.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 
+#include "babblekit/testcase.h"
+#include "babblekit/flags.h"
 #include "common.h"
 
-CREATE_FLAG(flag_is_connected);
-CREATE_FLAG(flag_discover_complete);
-CREATE_FLAG(flag_write_complete);
-CREATE_FLAG(flag_read_complete);
+DEFINE_FLAG_STATIC(flag_is_connected);
+DEFINE_FLAG_STATIC(flag_discover_complete);
+DEFINE_FLAG_STATIC(flag_security_changed);
+DEFINE_FLAG_STATIC(flag_write_complete);
+DEFINE_FLAG_STATIC(flag_read_complete);
 
 static struct bt_conn *g_conn;
 static uint16_t chrc_handle;
 static uint16_t long_chrc_handle;
-static struct bt_uuid *test_svc_uuid = TEST_SERVICE_UUID;
+static uint16_t enc_chrc_handle;
+static uint16_t lesc_chrc_handle;
+static uint8_t att_err;
+static const struct bt_uuid *test_svc_uuid = TEST_SERVICE_UUID;
 
 #define ARRAY_ITEM(i, _) i
 static uint8_t chrc_data[] = { LISTIFY(CHRC_SIZE, ARRAY_ITEM, (,)) }; /* 1, 2, 3 ... */
 static uint8_t long_chrc_data[] = { LISTIFY(LONG_CHRC_SIZE, ARRAY_ITEM, (,)) }; /* 1, 2, 3 ... */
+static uint8_t data_received[LONG_CHRC_SIZE];
+static uint16_t data_received_size;
 
 static void connected(struct bt_conn *conn, uint8_t err)
 {
@@ -30,13 +47,14 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (err != 0) {
-		FAIL("Failed to connect to %s (%u)\n", addr, err);
+		TEST_FAIL("Failed to connect to %s (%u)", addr, err);
 		return;
 	}
 
 	printk("Connected to %s\n", addr);
 
-	g_conn = conn;
+	__ASSERT_NO_MSG(g_conn == conn);
+
 	SET_FLAG(flag_is_connected);
 }
 
@@ -58,9 +76,19 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	UNSET_FLAG(flag_is_connected);
 }
 
-BT_CONN_CB_DEFINE(conn_callbacks) = {
+static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
+{
+	if (err != BT_SECURITY_ERR_SUCCESS) {
+		TEST_FAIL("Security failed (err %d)", err);
+	} else {
+		SET_FLAG(flag_security_changed);
+	}
+}
+
+static struct bt_conn_cb conn_callbacks = {
 	.connected = connected,
 	.disconnected = disconnected,
+	.security_changed = security_changed,
 };
 
 void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
@@ -84,14 +112,14 @@ void device_found(const bt_addr_le_t *addr, int8_t rssi, uint8_t type,
 	printk("Stopping scan\n");
 	err = bt_le_scan_stop();
 	if (err != 0) {
-		FAIL("Could not stop scan: %d");
+		TEST_FAIL("Could not stop scan: %d");
 		return;
 	}
 
 	err = bt_conn_le_create(addr, BT_CONN_LE_CREATE_CONN,
 				BT_LE_CONN_PARAM_DEFAULT, &g_conn);
 	if (err != 0) {
-		FAIL("Could not connect to peer: %d", err);
+		TEST_FAIL("Could not connect to peer: %d", err);
 	}
 }
 
@@ -103,8 +131,8 @@ static uint8_t discover_func(struct bt_conn *conn,
 
 	if (attr == NULL) {
 		if (chrc_handle == 0 || long_chrc_handle == 0) {
-			FAIL("Did not discover chrc (%x) or long_chrc (%x)",
-			     chrc_handle, long_chrc_handle);
+			TEST_FAIL("Did not discover chrc (%x) or long_chrc (%x)", chrc_handle,
+			     long_chrc_handle);
 		}
 
 		(void)memset(params, 0, sizeof(*params));
@@ -125,7 +153,7 @@ static uint8_t discover_func(struct bt_conn *conn,
 
 		err = bt_gatt_discover(conn, params);
 		if (err != 0) {
-			FAIL("Discover failed (err %d)\n", err);
+			TEST_FAIL("Discover failed (err %d)", err);
 		}
 
 		return BT_GATT_ITER_STOP;
@@ -138,6 +166,12 @@ static uint8_t discover_func(struct bt_conn *conn,
 		} else if (bt_uuid_cmp(chrc->uuid, TEST_LONG_CHRC_UUID) == 0) {
 			printk("Found long_chrc\n");
 			long_chrc_handle = chrc->value_handle;
+		} else if (bt_uuid_cmp(chrc->uuid, TEST_ENC_CHRC_UUID) == 0) {
+			printk("Found enc_chrc_handle\n");
+			enc_chrc_handle = chrc->value_handle;
+		} else if (bt_uuid_cmp(chrc->uuid, TEST_LESC_CHRC_UUID) == 0) {
+			printk("Found lesc_chrc_handle\n");
+			lesc_chrc_handle = chrc->value_handle;
 		}
 	}
 
@@ -159,38 +193,56 @@ static void gatt_discover(void)
 
 	err = bt_gatt_discover(g_conn, &discover_params);
 	if (err != 0) {
-		FAIL("Discover failed(err %d)\n", err);
+		TEST_FAIL("Discover failed(err %d)", err);
 	}
 
 	WAIT_FOR_FLAG(flag_discover_complete);
 	printk("Discover complete\n");
 }
 
-static void gatt_write_cb(struct bt_conn *conn, uint8_t err,
-			  struct bt_gatt_write_params *params)
+static void update_security(void)
 {
-	if (err != BT_ATT_ERR_SUCCESS) {
-		FAIL("Write failed: 0x%02X\n", err);
+	int err;
+
+	printk("Updating security\n");
+	err = bt_conn_set_security(g_conn, BT_SECURITY_L2);
+	if (err != 0) {
+		TEST_FAIL("Set security failed (err %d)", err);
 	}
 
+	WAIT_FOR_FLAG(flag_security_changed);
+	printk("Security changed\n");
+}
+
+static void gatt_write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params)
+{
 	(void)memset(params, 0, sizeof(*params));
+	att_err = err;
 
 	SET_FLAG(flag_write_complete);
 }
 
-static void gatt_write(uint16_t handle)
+static void gatt_write(uint16_t handle, uint8_t expect_att_err)
 {
 	static struct bt_gatt_write_params write_params;
 	int err;
 
 	if (handle == chrc_handle) {
-		printk("Writing to chrc\n");
+		printk("Writing to chrc and expecting 0x%02X\n", expect_att_err);
 		write_params.data = chrc_data;
 		write_params.length = sizeof(chrc_data);
-	} else if (handle) {
-		printk("Writing to long_chrc\n");
+	} else if (handle == long_chrc_handle) {
+		printk("Writing to long_chrc and expecting 0x%02X\n", expect_att_err);
 		write_params.data = long_chrc_data;
 		write_params.length = sizeof(long_chrc_data);
+	} else if (handle == enc_chrc_handle) {
+		printk("Writing to enc_chrc and expecting 0x%02X\n", expect_att_err);
+		write_params.data = chrc_data;
+		write_params.length = sizeof(chrc_data);
+	} else if (handle == lesc_chrc_handle) {
+		printk("Writing to lesc_chrc and expecting 0x%02X\n", expect_att_err);
+		write_params.data = chrc_data;
+		write_params.length = sizeof(chrc_data);
 	}
 
 	write_params.func = gatt_write_cb;
@@ -200,10 +252,15 @@ static void gatt_write(uint16_t handle)
 
 	err = bt_gatt_write(g_conn, &write_params);
 	if (err != 0) {
-		FAIL("bt_gatt_write failed: %d\n", err);
+		TEST_FAIL("bt_gatt_write failed: %d", err);
 	}
 
 	WAIT_FOR_FLAG(flag_write_complete);
+
+	if (att_err != expect_att_err) {
+		TEST_FAIL("Write failed: 0x%02X", att_err);
+	}
+
 	printk("success\n");
 }
 
@@ -211,49 +268,96 @@ static uint8_t gatt_read_cb(struct bt_conn *conn, uint8_t err,
 			    struct bt_gatt_read_params *params,
 			    const void *data, uint16_t length)
 {
+	att_err = err;
+
 	if (err != BT_ATT_ERR_SUCCESS) {
-		FAIL("Read failed: 0x%02X\n", err);
+		printk("Read failed: 0x%02X\n", err);
+
+		(void)memset(params, 0, sizeof(*params));
+		SET_FLAG(flag_read_complete);
+
+		return BT_GATT_ITER_STOP;
+	}
+
+	if (data != NULL) {
+		if (data_received_size + length > sizeof(data_received)) {
+			TEST_FAIL("Invalid amount of data received: %u",
+				  data_received_size + length);
+		} else {
+			memcpy(&data_received[data_received_size], data, length);
+			data_received_size += length;
+		}
+
+		return BT_GATT_ITER_CONTINUE;
 	}
 
 	if (params->single.handle == chrc_handle) {
-		if (length != CHRC_SIZE ||
-		    memcmp(data, chrc_data, length) != 0) {
-			FAIL("chrc data different than expected", err);
+		if (data_received_size != CHRC_SIZE ||
+		    memcmp(data_received, chrc_data, data_received_size) != 0) {
+			TEST_FAIL("chrc data different than expected (%u %u)", length, CHRC_SIZE);
 		}
-	} else if (params->single.handle == chrc_handle) {
-		if (length != LONG_CHRC_SIZE ||
-		    memcmp(data, long_chrc_data, length) != 0) {
-			FAIL("long_chrc data different than expected", err);
+	} else if (params->single.handle == long_chrc_handle) {
+		if (data_received_size != LONG_CHRC_SIZE ||
+		    memcmp(data_received, long_chrc_data, data_received_size) != 0) {
+			TEST_FAIL("long_chrc data different than expected (%u %u)", length,
+				  LONG_CHRC_SIZE);
+		}
+	} else if (params->single.handle == enc_chrc_handle) {
+		if (data_received_size != CHRC_SIZE ||
+		    memcmp(data_received, chrc_data, data_received_size) != 0) {
+			TEST_FAIL("enc_chrc data different than expected (%u %u)", length,
+				  CHRC_SIZE);
+		}
+	} else if (params->single.handle == lesc_chrc_handle) {
+		if (data_received_size != CHRC_SIZE ||
+		    memcmp(data_received, chrc_data, data_received_size) != 0) {
+			TEST_FAIL("lesc_chrc data different than expected (%u %u)", length,
+				  CHRC_SIZE);
 		}
 	}
 
 	(void)memset(params, 0, sizeof(*params));
-
 	SET_FLAG(flag_read_complete);
 
-	return 0;
+	return BT_GATT_ITER_STOP;
 }
 
-static void gatt_read(uint16_t handle)
+static void gatt_read(uint16_t handle, uint8_t expect_att_err)
 {
 	static struct bt_gatt_read_params read_params;
 	int err;
 
-	printk("Reading chrc\n");
+	data_received_size = 0;
+	memset(data_received, 0, sizeof(data_received));
+
+	if (handle == chrc_handle) {
+		printk("Reading chrc and expecting 0x%02X\n", expect_att_err);
+	} else if (handle == long_chrc_handle) {
+		printk("Reading long_chrc and expecting 0x%02X\n", expect_att_err);
+	} else if (handle == enc_chrc_handle) {
+		printk("Reading enc_chrc and expecting 0x%02X\n", expect_att_err);
+	} else if (handle == lesc_chrc_handle) {
+		printk("Reading lesc_chrc and expecting 0x%02X\n", expect_att_err);
+	}
 
 	read_params.func = gatt_read_cb;
 	read_params.handle_count = 1;
-	read_params.single.handle = chrc_handle;
+	read_params.single.handle = handle;
 	read_params.single.offset = 0;
 
 	UNSET_FLAG(flag_read_complete);
 
 	err = bt_gatt_read(g_conn, &read_params);
 	if (err != 0) {
-		FAIL("bt_gatt_read failed: %d\n", err);
+		TEST_FAIL("bt_gatt_read failed: %d", err);
 	}
 
 	WAIT_FOR_FLAG(flag_read_complete);
+
+	if (att_err != expect_att_err) {
+		TEST_FAIL("Read failed: 0x%02X", att_err);
+	}
+
 	printk("success\n");
 }
 
@@ -261,14 +365,16 @@ static void test_main(void)
 {
 	int err;
 
+	bt_conn_cb_register(&conn_callbacks);
+
 	err = bt_enable(NULL);
 	if (err != 0) {
-		FAIL("Bluetooth discover failed (err %d)\n", err);
+		TEST_FAIL("Bluetooth discover failed (err %d)", err);
 	}
 
 	err = bt_le_scan_start(BT_LE_SCAN_PASSIVE, device_found);
 	if (err != 0) {
-		FAIL("Scanning failed to start (err %d)\n", err);
+		TEST_FAIL("Scanning failed to start (err %d)", err);
 	}
 
 	printk("Scanning successfully started\n");
@@ -279,20 +385,30 @@ static void test_main(void)
 
 	/* Write and read a few times to ensure stateless behavior */
 	for (size_t i = 0; i < 3; i++) {
-		gatt_write(chrc_handle);
-		gatt_read(chrc_handle);
-		gatt_write(long_chrc_handle);
-		gatt_read(long_chrc_handle);
+		gatt_write(chrc_handle, BT_ATT_ERR_SUCCESS);
+		gatt_read(chrc_handle, BT_ATT_ERR_SUCCESS);
+		gatt_write(long_chrc_handle, BT_ATT_ERR_SUCCESS);
+		gatt_read(long_chrc_handle, BT_ATT_ERR_SUCCESS);
 	}
 
-	PASS("GATT client Passed\n");
+	gatt_write(enc_chrc_handle, BT_ATT_ERR_AUTHENTICATION);
+	gatt_read(enc_chrc_handle, BT_ATT_ERR_AUTHENTICATION);
+	gatt_write(lesc_chrc_handle, BT_ATT_ERR_AUTHENTICATION);
+	gatt_read(lesc_chrc_handle, BT_ATT_ERR_AUTHENTICATION);
+
+	update_security();
+
+	gatt_write(enc_chrc_handle, BT_ATT_ERR_SUCCESS);
+	gatt_read(enc_chrc_handle, BT_ATT_ERR_SUCCESS);
+	gatt_write(lesc_chrc_handle, BT_ATT_ERR_SUCCESS);
+	gatt_read(lesc_chrc_handle, BT_ATT_ERR_SUCCESS);
+
+	TEST_PASS("GATT client Passed");
 }
 
 static const struct bst_test_instance test_vcs[] = {
 	{
 		.test_id = "gatt_client",
-		.test_post_init_f = test_init,
-		.test_tick_f = test_tick,
 		.test_main_f = test_main
 	},
 	BSTEST_END_MARKER

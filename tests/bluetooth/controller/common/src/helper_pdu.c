@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "zephyr/types.h"
-#include "zephyr/ztest.h"
+#include <zephyr/types.h>
+#include <zephyr/ztest.h>
 
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/byteorder.h>
@@ -406,7 +406,7 @@ void helper_pdu_encode_zero(struct pdu_data *pdu, void *param)
 
 void helper_node_encode_cte_rsp(struct node_rx_pdu *rx, void *param)
 {
-	rx->hdr.rx_ftr.iq_report = (struct cte_conn_iq_report *)param;
+	rx->rx_ftr.iq_report = (struct cte_conn_iq_report *)param;
 }
 
 void helper_pdu_encode_cis_req(struct pdu_data *pdu, void *param)
@@ -502,6 +502,33 @@ void helper_pdu_encode_sca_rsp(struct pdu_data *pdu, void *param)
 		sizeof(struct pdu_data_llctrl_clock_accuracy_rsp);
 	pdu->llctrl.opcode = PDU_DATA_LLCTRL_TYPE_CLOCK_ACCURACY_RSP;
 	pdu->llctrl.clock_accuracy_rsp.sca = p->sca;
+}
+
+void helper_pdu_encode_periodic_sync_ind(struct pdu_data *pdu, void *param)
+{
+	struct pdu_data_llctrl_periodic_sync_ind *p = param;
+
+	pdu->ll_id = PDU_DATA_LLID_CTRL;
+	pdu->len = offsetof(struct pdu_data_llctrl, periodic_sync_ind) +
+		sizeof(struct pdu_data_llctrl_periodic_sync_ind);
+	pdu->llctrl.opcode = PDU_DATA_LLCTRL_TYPE_PERIODIC_SYNC_IND;
+
+	pdu->llctrl.periodic_sync_ind.id = sys_cpu_to_le16(p->id);
+
+	memcpy(&pdu->llctrl.periodic_sync_ind.sync_info, &p->sync_info,
+			sizeof(struct pdu_adv_sync_info));
+
+	pdu->llctrl.periodic_sync_ind.conn_event_count = sys_cpu_to_le16(p->conn_event_count);
+	pdu->llctrl.periodic_sync_ind.last_pa_event_counter =
+							sys_cpu_to_le16(p->last_pa_event_counter);
+	pdu->llctrl.periodic_sync_ind.sid = p->sid;
+	pdu->llctrl.periodic_sync_ind.addr_type = p->addr_type;
+	pdu->llctrl.periodic_sync_ind.sca = p->sca;
+	pdu->llctrl.periodic_sync_ind.phy = p->phy;
+
+	memcpy(pdu->llctrl.periodic_sync_ind.adv_addr, p->adv_addr, sizeof(p->adv_addr));
+
+	pdu->llctrl.periodic_sync_ind.sync_conn_event_count = p->sync_conn_event_count;
 }
 
 void helper_pdu_verify_version_ind(const char *file, uint32_t line, struct pdu_data *pdu,
@@ -1054,7 +1081,7 @@ void helper_node_verify_cte_rsp(const char *file, uint32_t line, struct node_rx_
 				void *param)
 {
 	struct cte_conn_iq_report *p_iq_report = param;
-	struct cte_conn_iq_report *rx_iq_report = rx->hdr.rx_ftr.iq_report;
+	struct cte_conn_iq_report *rx_iq_report = rx->rx_ftr.iq_report;
 
 	zassert_equal(rx_iq_report->cte_info.time, p_iq_report->cte_info.time,
 		      "CTE Time mismatch.\nCalled at %s:%d\n", file, line);
@@ -1213,8 +1240,8 @@ void helper_pdu_verify_cis_ind(const char *file, uint32_t line, struct pdu_data 
 	zassert_mem_equal(pdu->llctrl.cis_ind.cis_sync_delay, p->cis_sync_delay,
 			  sizeof(p->cis_sync_delay),
 			  "cis_sync_delay mismatch.\nCalled at %s:%d\n", file, line);
-
-	pdu->llctrl.cis_ind.conn_event_count = p->conn_event_count;
+	zassert_equal(pdu->llctrl.cis_ind.conn_event_count, p->conn_event_count,
+		      "conn_event_count mismatch.\nCalled at %s:%d\n", file, line);
 }
 
 void helper_pdu_verify_cis_terminate_ind(const char *file, uint32_t line, struct pdu_data *pdu,
@@ -1252,4 +1279,47 @@ void helper_pdu_verify_sca_rsp(const char *file, uint32_t line, struct pdu_data 
 		      line);
 	zassert_equal(pdu->llctrl.opcode, PDU_DATA_LLCTRL_TYPE_CLOCK_ACCURACY_RSP,
 		      "Not a LL_CLOCK_ACCURACY_RSP.\nCalled at %s:%d\n", file, line);
+}
+
+void helper_pdu_verify_periodic_sync_ind(const char *file, uint32_t line, struct pdu_data *pdu,
+					 void *param)
+{
+	struct pdu_data_llctrl_periodic_sync_ind *p = param;
+
+	zassert_equal(pdu->ll_id, PDU_DATA_LLID_CTRL, "Not a Control PDU.\nCalled at %s:%d\n", file,
+		      line);
+	zassert_equal(pdu->llctrl.opcode, PDU_DATA_LLCTRL_TYPE_PERIODIC_SYNC_IND,
+		      "Not a LL_PERIODIC_SYNC_IND.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.id, p->id,
+		      "id mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.conn_event_count, p->conn_event_count,
+		      "conn_event_count mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.last_pa_event_counter, p->last_pa_event_counter,
+		      "last_pa_event_counter mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.sid, p->sid,
+		      "sid mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.addr_type, p->addr_type,
+		      "addr_type mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.sca, p->sca,
+		      "sca mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.phy, p->phy,
+		      "phy mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_equal(pdu->llctrl.periodic_sync_ind.sync_conn_event_count, p->sync_conn_event_count,
+		      "sync_conn_event_count mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_mem_equal(&pdu->llctrl.periodic_sync_ind.sync_info, &p->sync_info,
+			   sizeof(struct pdu_adv_sync_info),
+			  "sync_info mismatch.\nCalled at %s:%d\n", file, line);
+
+	zassert_mem_equal(pdu->llctrl.periodic_sync_ind.adv_addr, p->adv_addr,
+			  sizeof(p->adv_addr),
+			  "adv_addr mismatch.\nCalled at %s:%d\n", file, line);
 }

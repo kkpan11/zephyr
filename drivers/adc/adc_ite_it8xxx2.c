@@ -43,6 +43,12 @@ LOG_MODULE_REGISTER(adc_ite_it8xxx2);
 #define ADC_13_16_FULL_SCALE_MASK GENMASK(3, 0)
 #endif
 
+#ifdef CONFIG_SOC_IT8XXX2_EC_BUS_24MHZ
+/* Select analog clock division factor */
+#define ADC_SACLKDIV_MASK   GENMASK(6, 4)
+#define ADC_SACLKDIV(div)   FIELD_PREP(ADC_SACLKDIV_MASK, div)
+#endif
+
 /* List of ADC channels. */
 enum chip_adc_channel {
 	CHIP_ADC_CH0 = 0,
@@ -381,7 +387,7 @@ static void adc_it8xxx2_isr(const struct device *dev)
 	k_sem_give(&data->sem);
 }
 
-static const struct adc_driver_api api_it8xxx2_driver_api = {
+static DEVICE_API(adc, api_it8xxx2_driver_api) = {
 	.channel_setup = adc_it8xxx2_channel_setup,
 	.read = adc_it8xxx2_read,
 #ifdef CONFIG_ADC_ASYNC
@@ -451,6 +457,11 @@ static int adc_it8xxx2_init(const struct device *dev)
 	 * SCLKDIV has to be equal to or greater than 1h;
 	 */
 	adc_regs->ADCCTL = 1;
+
+#ifdef CONFIG_SOC_IT8XXX2_EC_BUS_24MHZ
+	adc_regs->ADCCTL1 =
+		(adc_regs->ADCCTL1 & ~ADC_SACLKDIV_MASK) | ADC_SACLKDIV(2);
+#endif
 	/*
 	 * Enable this bit, and data of VCHxDATL/VCHxDATM will be
 	 * kept until data valid is cleared.

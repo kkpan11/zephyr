@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(ieee802154_cc13xx_cc26xx);
 #include <zephyr/net/ieee802154_radio.h>
 #include <zephyr/net/ieee802154.h>
 #include <zephyr/net/net_pkt.h>
-#include <zephyr/random/rand32.h>
+#include <zephyr/random/random.h>
 #include <string.h>
 #include <zephyr/sys/sys_io.h>
 
@@ -30,6 +30,10 @@ LOG_MODULE_REGISTER(ieee802154_cc13xx_cc26xx);
 #include <ti/drivers/rf/RF.h>
 
 #include "ieee802154_cc13xx_cc26xx.h"
+
+#if defined(CONFIG_NET_L2_OPENTHREAD)
+#include <zephyr/net/openthread.h>
+#endif
 
 /* Overrides from SmartRF Studio 7 2.13.0 */
 static uint32_t overrides[] = {
@@ -122,7 +126,7 @@ static void client_event_callback(RF_Handle h, RF_ClientEvent event, void *arg)
 static enum ieee802154_hw_caps
 ieee802154_cc13xx_cc26xx_get_capabilities(const struct device *dev)
 {
-	return IEEE802154_HW_FCS | IEEE802154_HW_2_4_GHZ | IEEE802154_HW_FILTER |
+	return IEEE802154_HW_FCS | IEEE802154_HW_FILTER |
 	       IEEE802154_HW_RX_TX_ACK | IEEE802154_HW_TX_RX_ACK | IEEE802154_HW_CSMA |
 	       IEEE802154_HW_RETRANSMISSION;
 }
@@ -155,42 +159,36 @@ static inline int ieee802154_cc13xx_cc26xx_channel_to_frequency(
 	__ASSERT_NO_MSG(frequency != NULL);
 	__ASSERT_NO_MSG(fractFreq != NULL);
 
-	if (channel >= IEEE802154_2_4_GHZ_CHANNEL_MIN
-		&& channel <= IEEE802154_2_4_GHZ_CHANNEL_MAX) {
-		*frequency = 2405 + 5 * (channel - IEEE802154_2_4_GHZ_CHANNEL_MIN);
+	/* See IEEE 802.15.4-2020, section 10.1.3.3. */
+	if (channel >= 11 && channel <= 26) {
+		*frequency = 2405 + 5 * (channel - 11);
 		*fractFreq = 0;
+		return 0;
 	} else {
+		/* TODO: Support sub-GHz for CC13xx rather than having separate drivers */
 		*frequency = 0;
 		*fractFreq = 0;
-		return -EINVAL;
+		return channel < 11 ? -ENOTSUP : -EINVAL;
 	}
-
-	return 0;
 }
 
 static int ieee802154_cc13xx_cc26xx_set_channel(const struct device *dev,
 						uint16_t channel)
 {
-	int r;
+	int ret;
 	RF_CmdHandle cmd_handle;
 	RF_EventMask reason;
 	uint16_t freq, fract;
 	struct ieee802154_cc13xx_cc26xx_data *drv_data = dev->data;
 
-	/* TODO Support sub-GHz for CC13xx */
-	if (channel < 11 || channel > 26) {
-		return -EINVAL;
-	}
-
-	r = ieee802154_cc13xx_cc26xx_channel_to_frequency(
-		channel, &freq, &fract);
-	if (r < 0) {
-		return -EINVAL;
+	ret = ieee802154_cc13xx_cc26xx_channel_to_frequency(channel, &freq, &fract);
+	if (ret < 0) {
+		return ret;
 	}
 
 	/* Abort FG and BG processes */
 	if (ieee802154_cc13xx_cc26xx_stop(dev) < 0) {
-		r = -EIO;
+		ret = -EIO;
 		goto out;
 	}
 
@@ -205,7 +203,7 @@ static int ieee802154_cc13xx_cc26xx_set_channel(const struct device *dev,
 			   RF_PriorityNormal, NULL, 0);
 	if (reason != RF_EventLastCmdDone) {
 		LOG_ERR("Failed to set frequency: 0x%" PRIx64, reason);
-		r = -EIO;
+		ret = -EIO;
 		goto out;
 	}
 
@@ -217,15 +215,15 @@ static int ieee802154_cc13xx_cc26xx_set_channel(const struct device *dev,
 		cmd_ieee_rx_callback, RF_EventRxEntryDone);
 	if (cmd_handle < 0) {
 		LOG_ERR("Failed to post RX command (%d)", cmd_handle);
-		r = -EIO;
+		ret = -EIO;
 		goto out;
 	}
 
-	r = 0;
+	ret = 0;
 
 out:
 	k_mutex_unlock(&drv_data->tx_mutex);
-	return r;
+	return ret;
 }
 
 /* TODO remove when rf driver bugfix is pulled in */
@@ -415,10 +413,7 @@ static void ieee802154_cc13xx_cc26xx_rx_done(
 			corr = drv_data->rx_data[i][len--] & 0x3F;
 			rssi = drv_data->rx_data[i][len--];
 
-			/* remove fcs as it is not expected by L2
-			 * But keep it for RAW mode
-			 */
-			if (IS_ENABLED(CONFIG_NET_L2_IEEE802154)) {
+			if (!IS_ENABLED(CONFIG_IEEE802154_L2_PKT_INCL_FCS)) {
 				len -= 2;
 			}
 
@@ -514,6 +509,18 @@ ieee802154_cc13xx_cc26xx_configure(const struct device *dev,
 	return -ENOTSUP;
 }
 
+/* driver-allocated attribute memory - constant across all driver instances */
+IEEE802154_DEFINE_PHY_SUPPORTED_CHANNELS(drv_attr, 11, 26);
+
+static int ieee802154_cc13xx_cc26xx_attr_get(const struct device *dev, enum ieee802154_attr attr,
+					     struct ieee802154_attr_value *value)
+{
+	ARG_UNUSED(dev);
+
+	return ieee802154_attr_get_channel_page_and_range(
+		attr, IEEE802154_ATTR_PHY_CHANNEL_PAGE_ZERO_OQPSK_2450_BPSK_868_915,
+		&drv_attr.phy_supported_channels, value);
+}
 
 static void ieee802154_cc13xx_cc26xx_data_init(const struct device *dev)
 {
@@ -527,7 +534,7 @@ static void ieee802154_cc13xx_cc26xx_data_init(const struct device *dev)
 		mac = (uint8_t *)(FCFG1_BASE + FCFG1_O_MAC_15_4_0);
 	}
 
-	memcpy(&drv_data->mac, mac, sizeof(drv_data->mac));
+	sys_memcpy_swap(&drv_data->mac, mac, sizeof(drv_data->mac));
 
 	/* Setup circular RX queue (TRM 25.3.2.7) */
 	memset(&drv_data->rx_entry[0], 0, sizeof(drv_data->rx_entry[0]));
@@ -564,7 +571,7 @@ static void ieee802154_cc13xx_cc26xx_iface_init(struct net_if *iface)
 	ieee802154_init(iface);
 }
 
-static struct ieee802154_radio_api ieee802154_cc13xx_cc26xx_radio_api = {
+static const struct ieee802154_radio_api ieee802154_cc13xx_cc26xx_radio_api = {
 	.iface_api.init = ieee802154_cc13xx_cc26xx_iface_init,
 
 	.get_capabilities = ieee802154_cc13xx_cc26xx_get_capabilities,
@@ -576,6 +583,7 @@ static struct ieee802154_radio_api ieee802154_cc13xx_cc26xx_radio_api = {
 	.start = ieee802154_cc13xx_cc26xx_start,
 	.stop = ieee802154_cc13xx_cc26xx_stop_if,
 	.configure = ieee802154_cc13xx_cc26xx_configure,
+	.attr_get = ieee802154_cc13xx_cc26xx_attr_get,
 };
 
 /** RF patches to use (note: RF core keeps a pointer to this, so no stack). */
@@ -770,7 +778,13 @@ static struct ieee802154_cc13xx_cc26xx_data ieee802154_cc13xx_cc26xx_data = {
 	},
 
 	.cmd_radio_setup = {
+#if defined(CONFIG_SOC_CC1352R) || defined(CONFIG_SOC_CC2652R) || \
+	defined(CONFIG_SOC_CC1352R7) || defined(CONFIG_SOC_CC2652R7)
 		.commandNo = CMD_RADIO_SETUP,
+#elif defined(CONFIG_SOC_CC1352P) || defined(CONFIG_SOC_CC2652P) || \
+	defined(CONFIG_SOC_CC1352P7) || defined(CONFIG_SOC_CC2652P7)
+		.commandNo = CMD_RADIO_SETUP_PA,
+#endif /* CONFIG_SOC_CCxx52x */
 		.status = IDLE,
 		.pNextOp = NULL,
 		.startTrigger.triggerType = TRIG_NOW,
@@ -789,11 +803,21 @@ static struct ieee802154_cc13xx_cc26xx_data ieee802154_cc13xx_cc26xx_data = {
 };
 
 #if defined(CONFIG_NET_L2_IEEE802154)
+#define L2 IEEE802154_L2
+#define L2_CTX_TYPE NET_L2_GET_CTX_TYPE(IEEE802154_L2)
+#define MTU IEEE802154_MTU
+#elif defined(CONFIG_NET_L2_OPENTHREAD)
+#define L2 OPENTHREAD_L2
+#define L2_CTX_TYPE NET_L2_GET_CTX_TYPE(OPENTHREAD_L2)
+#define MTU 1280
+#endif
+
+#if defined(CONFIG_NET_L2_IEEE802154) || defined(CONFIG_NET_L2_PHY_IEEE802154)
 NET_DEVICE_DT_INST_DEFINE(0, ieee802154_cc13xx_cc26xx_init, NULL,
 			  &ieee802154_cc13xx_cc26xx_data, NULL,
 			  CONFIG_IEEE802154_CC13XX_CC26XX_INIT_PRIO,
-			  &ieee802154_cc13xx_cc26xx_radio_api, IEEE802154_L2,
-			  NET_L2_GET_CTX_TYPE(IEEE802154_L2), IEEE802154_MTU);
+			  &ieee802154_cc13xx_cc26xx_radio_api, L2,
+			  L2_CTX_TYPE, MTU);
 #else
 DEVICE_DT_INST_DEFINE(0, ieee802154_cc13xx_cc26xx_init, NULL,
 		      &ieee802154_cc13xx_cc26xx_data, NULL, POST_KERNEL,

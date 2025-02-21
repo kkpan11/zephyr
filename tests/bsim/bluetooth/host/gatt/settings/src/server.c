@@ -12,10 +12,12 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/settings/settings.h>
-#include <zephyr/toolchain/gcc.h>
+#include <zephyr/toolchain.h>
 
 #include <stdint.h>
 #include <string.h>
+
+#include "babblekit/testcase.h"
 
 void set_public_addr(void)
 {
@@ -200,7 +202,7 @@ void server_procedure(void)
 		server_round_6();
 		break;
 	default:
-		FAIL("Round %d doesn't exist\n", round);
+		TEST_FAIL("Round %d doesn't exist", round);
 		break;
 	}
 

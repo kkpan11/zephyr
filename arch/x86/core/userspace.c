@@ -4,12 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <errno.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/sys/speculation.h>
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #include <kernel_arch_func.h>
 #include <ksched.h>
 #include <x86_mmu.h>
+
+BUILD_ASSERT((CONFIG_PRIVILEGED_STACK_SIZE > 0) &&
+	     (CONFIG_PRIVILEGED_STACK_SIZE % CONFIG_MMU_PAGE_SIZE) == 0);
+
+#ifdef CONFIG_DEMAND_PAGING
+#include <zephyr/kernel/mm/demand_paging.h>
+#endif
 
 #ifndef CONFIG_X86_KPTI
 /* Update the to the incoming thread's page table, and update the location of
@@ -62,11 +71,19 @@ void z_x86_swap_update_page_tables(struct k_thread *incoming)
 void *z_x86_userspace_prepare_thread(struct k_thread *thread)
 {
 	void *initial_entry;
-	struct z_x86_thread_stack_header *header =
-		(struct z_x86_thread_stack_header *)thread->stack_obj;
 
-	thread->arch.psp =
-		header->privilege_stack + sizeof(header->privilege_stack);
+	if (z_stack_is_user_capable(thread->stack_obj)) {
+		struct z_x86_thread_stack_header *header =
+#ifdef CONFIG_THREAD_STACK_MEM_MAPPED
+			(struct z_x86_thread_stack_header *)thread->stack_info.mapped.addr;
+#else
+			(struct z_x86_thread_stack_header *)thread->stack_obj;
+#endif /* CONFIG_THREAD_STACK_MEM_MAPPED */
+
+		thread->arch.psp = header->privilege_stack + sizeof(header->privilege_stack);
+	} else {
+		thread->arch.psp = NULL;
+	}
 
 #ifndef CONFIG_X86_COMMON_PAGE_TABLE
 	/* Important this gets cleared, so that arch_mem_domain_* APIs
@@ -78,6 +95,28 @@ void *z_x86_userspace_prepare_thread(struct k_thread *thread)
 
 	if ((thread->base.user_options & K_USER) != 0U) {
 		initial_entry = arch_user_mode_enter;
+
+#ifdef CONFIG_INIT_STACKS
+		/* setup_thread_stack() does not initialize the architecture specific
+		 * privileged stack. So we need to do it manually here as this function
+		 * is called by arch_new_thread() via z_setup_new_thread() after
+		 * setup_thread_stack() but before thread starts running.
+		 *
+		 * Note that only user threads have privileged stacks and kernel
+		 * only threads do not.
+		 *
+		 * Also note that this needs to be done before calling
+		 * z_x86_userspace_enter() where it clears the user stack.
+		 * That function requires using the privileged stack for
+		 * code execution so we cannot clear that at the same time.
+		 */
+		struct z_x86_thread_stack_header *hdr_stack_obj =
+			(struct z_x86_thread_stack_header *)thread->stack_obj;
+
+		(void)memset(&hdr_stack_obj->privilege_stack[0], 0xaa,
+			     sizeof(hdr_stack_obj->privilege_stack));
+#endif
+
 	} else {
 		initial_entry = z_thread_entry;
 	}
@@ -125,9 +164,9 @@ FUNC_NORETURN void arch_user_mode_enter(k_thread_entry_t user_entry,
 	size_t stack_aligned_size;
 
 	stack_start = POINTER_TO_UINT(_current->stack_obj);
-	stack_size = Z_THREAD_STACK_SIZE_ADJUST(_current->stack_info.size);
+	stack_size = K_THREAD_STACK_LEN(_current->stack_info.size);
 
-#if defined(CONFIG_HW_STACK_PROTECTION)
+#if defined(CONFIG_X86_STACK_PROTECTION)
 	/* With hardware stack protection, the first page of stack
 	 * is a guard page. So need to skip it.
 	 */
@@ -145,4 +184,20 @@ FUNC_NORETURN void arch_user_mode_enter(k_thread_entry_t user_entry,
 	z_x86_userspace_enter(user_entry, p1, p2, p3, stack_end,
 			      _current->stack_info.start);
 	CODE_UNREACHABLE;
+}
+
+int arch_thread_priv_stack_space_get(const struct k_thread *thread, size_t *stack_size,
+				     size_t *unused_ptr)
+{
+	struct z_x86_thread_stack_header *hdr_stack_obj;
+
+	if ((thread->base.user_options & K_USER) != K_USER) {
+		return -EINVAL;
+	}
+
+	hdr_stack_obj = (struct z_x86_thread_stack_header *)thread->stack_obj;
+
+	return z_stack_space_get(&hdr_stack_obj->privilege_stack[0],
+				 sizeof(hdr_stack_obj->privilege_stack),
+				 unused_ptr);
 }

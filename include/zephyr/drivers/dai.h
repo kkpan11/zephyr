@@ -14,6 +14,8 @@
 
 /**
  * @defgroup dai_interface DAI Interface
+ * @since 3.1
+ * @version 0.1.0
  * @ingroup io_interfaces
  * @brief DAI Interface
  *
@@ -32,6 +34,61 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** Used to extract the clock configuration from the format attribute of struct dai_config */
+#define DAI_FORMAT_CLOCK_PROVIDER_MASK 0xf000
+/** Used to extract the protocol from the format attribute of struct dai_config */
+#define DAI_FORMAT_PROTOCOL_MASK 0x000f
+/** Used to extract the clock inversion from the format attribute of struct dai_config */
+#define DAI_FORMAT_CLOCK_INVERSION_MASK 0x0f00
+
+/** @brief DAI clock configurations
+ *
+ * This is used to describe all of the possible
+ * clock-related configurations w.r.t the DAI
+ * and the codec.
+ */
+enum dai_clock_provider {
+	/**< codec BLCK provider, codec FSYNC provider */
+	DAI_CBP_CFP = (0 << 12),
+	/**< codec BCLK consumer, codec FSYNC provider */
+	DAI_CBC_CFP = (2 << 12),
+	/**< codec BCLK provider, codec FSYNC consumer */
+	DAI_CBP_CFC = (3 << 12),
+	/**< codec BCLK consumer, codec FSYNC consumer */
+	DAI_CBC_CFC = (4 << 12),
+};
+
+/** @brief DAI protocol
+ *
+ * The communication between the DAI and the CODEC
+ * may use different protocols depending on the scenario.
+ */
+enum dai_protocol {
+	DAI_PROTO_I2S = 1, /**< I2S */
+	DAI_PROTO_RIGHT_J, /**< Right Justified */
+	DAI_PROTO_LEFT_J, /**< Left Justified */
+	DAI_PROTO_DSP_A, /**< TDM, FSYNC asserted 1 BCLK early */
+	DAI_PROTO_DSP_B, /**< TDM, FSYNC asserted at the same time as MSB */
+	DAI_PROTO_PDM, /**< Pulse Density Modulation */
+};
+
+/** @brief DAI clock inversion
+ *
+ * Some applications may require a different
+ * clock polarity (FSYNC/BCLK) compared to
+ * the default one chosen based on the protocol.
+ */
+enum dai_clock_inversion {
+	/**< no BCLK inversion, no FSYNC inversion */
+	DAI_INVERSION_NB_NF = 0,
+	/**< no BCLK inversion, FSYNC inversion */
+	DAI_INVERSION_NB_IF = (2 << 8),
+	 /**< BCLK inversion, no FSYNC inversion */
+	DAI_INVERSION_IB_NF = (3 << 8),
+	/**< BCLK inversion, FSYNC inversion */
+	DAI_INVERSION_IB_IF = (4 << 8),
+};
 
 /** @brief Types of DAI
  *
@@ -58,16 +115,17 @@ enum dai_type {
 	DAI_INTEL_DMIC_NHLT,	/**< nhlt ssp */
 	DAI_INTEL_HDA_NHLT,	/**< nhlt Intel HD/A */
 	DAI_INTEL_ALH_NHLT,	/**< nhlt Intel ALH */
+	DAI_IMX_MICFIL,		/**< i.MX PDM MICFIL */
 };
 
 /**
  * @brief DAI Direction
  */
 enum dai_dir {
-	/** Receive data */
-	DAI_DIR_RX = 1,
 	/** Transmit data */
-	DAI_DIR_TX,
+	DAI_DIR_TX = 0,
+	/** Receive data */
+	DAI_DIR_RX,
 	/** Both receive and transmit data */
 	DAI_DIR_BOTH,
 };
@@ -211,6 +269,8 @@ struct dai_config {
 	size_t block_size;
 	/** DAI specific link configuration. */
 	uint16_t link_config;
+	/**< tdm slot group number*/
+	uint32_t  tdm_slot_group;
 };
 
 /**
@@ -271,6 +331,8 @@ __subsystem struct dai_driver_api {
 	int (*ts_stop)(const struct device *dev, struct dai_ts_cfg *cfg);
 	int (*ts_get)(const struct device *dev, struct dai_ts_cfg *cfg,
 		      struct dai_ts_data *tsd);
+	int (*config_update)(const struct device *dev, const void *bespoke_cfg,
+			     size_t size);
 };
 
 /**
@@ -416,8 +478,9 @@ static inline int dai_ts_config(const struct device *dev, struct dai_ts_cfg *cfg
 {
 	const struct dai_driver_api *api = (const struct dai_driver_api *)dev->api;
 
-	if (!api->ts_config)
+	if (!api->ts_config) {
 		return -EINVAL;
+	}
 
 	return api->ts_config(dev, cfg);
 }
@@ -435,8 +498,9 @@ static inline int dai_ts_start(const struct device *dev, struct dai_ts_cfg *cfg)
 {
 	const struct dai_driver_api *api = (const struct dai_driver_api *)dev->api;
 
-	if (!api->ts_start)
+	if (!api->ts_start) {
 		return -EINVAL;
+	}
 
 	return api->ts_start(dev, cfg);
 }
@@ -454,8 +518,9 @@ static inline int dai_ts_stop(const struct device *dev, struct dai_ts_cfg *cfg)
 {
 	const struct dai_driver_api *api = (const struct dai_driver_api *)dev->api;
 
-	if (!api->ts_stop)
+	if (!api->ts_stop) {
 		return -EINVAL;
+	}
 
 	return api->ts_stop(dev, cfg);
 }
@@ -475,10 +540,43 @@ static inline int dai_ts_get(const struct device *dev, struct dai_ts_cfg *cfg,
 {
 	const struct dai_driver_api *api = (const struct dai_driver_api *)dev->api;
 
-	if (!api->ts_get)
+	if (!api->ts_get) {
 		return -EINVAL;
+	}
 
 	return api->ts_get(dev, cfg, tsd);
+}
+
+/**
+ * @brief Update DAI configuration at runtime.
+ *
+ * This function updates the configuration of a DAI interface at runtime.
+ * It allows setting bespoke configuration parameters that are specific to
+ * the DAI implementation, enabling updates outside of the regular flow with
+ * the full configuration blob. The details of the bespoke configuration are
+ * specific to each DAI implementation. This function should only be called
+ * when the DAI is in the READY state, ensuring that the configuration updates
+ * are applied before data transmission or reception begins.
+ *
+ * @param dev Pointer to the device structure for the driver instance.
+ * @param bespoke_cfg Pointer to the buffer containing bespoke configuration parameters.
+ * @param size Size of the bespoke_cfg buffer in bytes.
+ *
+ * @retval 0 If successful.
+ * @retval -ENOSYS If the configuration update operation is not implemented.
+ * @retval Negative errno code if failure.
+ */
+static inline int dai_config_update(const struct device *dev,
+									const void *bespoke_cfg,
+									size_t size)
+{
+	const struct dai_driver_api *api = (const struct dai_driver_api *)dev->api;
+
+	if (!api->config_update) {
+		return -ENOSYS;
+	}
+
+	return api->config_update(dev, bespoke_cfg, size);
 }
 
 /**

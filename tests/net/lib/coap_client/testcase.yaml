@@ -2,5 +2,8 @@ common:
   depends_on: netif
 tests:
   net.coap.client:
-    platform_allow: native_posix
-    tags: coap net
+    platform_allow:
+      - native_sim
+    tags:
+      - coap
+      - net

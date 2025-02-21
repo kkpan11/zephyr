@@ -8,14 +8,18 @@ menu "GATT Services"
 
 rsource "Kconfig.dis"
 
-rsource "Kconfig.bas"
+rsource "Kconfig.cts"
 
 rsource "Kconfig.hrs"
 
 rsource "Kconfig.tps"
 
+rsource "nus/Kconfig.nus"
+
 rsource "ias/Kconfig.ias"
 
 rsource "ots/Kconfig"
+
+rsource "bas/Kconfig.bas"
 
 endmenu

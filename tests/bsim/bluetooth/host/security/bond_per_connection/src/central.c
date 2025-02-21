@@ -5,12 +5,15 @@
  */
 
 #include "bs_bt_utils.h"
-#include "zephyr/bluetooth/addr.h"
-#include "zephyr/bluetooth/conn.h"
+#include <zephyr/bluetooth/addr.h>
+#include <zephyr/bluetooth/conn.h>
 
 #include <stdint.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
+
+#include "babblekit/testcase.h"
+#include "babblekit/flags.h"
 
 void central(void)
 {
@@ -51,5 +54,5 @@ void central(void)
 	wait_disconnected();
 	clear_g_conn();
 
-	PASS("PASS\n");
+	TEST_PASS("PASS");
 }

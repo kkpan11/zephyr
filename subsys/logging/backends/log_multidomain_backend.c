@@ -32,13 +32,16 @@ static void process(const struct log_backend *const backend,
 		return;
 	}
 
-	/* Need to ensure that package is aligned to a pointer size. */
+	/* Need to ensure that package is aligned to a pointer size even though
+	 * it is in the packed structured.
+	 */
 	uint32_t msg_len = Z_LOG_MSG_LEN(fsc_plen, dlen);
 	uint8_t buf[msg_len + sizeof(void *)] __aligned(sizeof(void *));
 	size_t msg_offset = offsetof(struct log_multidomain_msg, data);
 	struct log_multidomain_msg *out_msg =
 		(struct log_multidomain_msg *)&buf[sizeof(void *) - msg_offset];
-	struct log_msg *out_log_msg = (struct log_msg *)out_msg->data.log_msg.data;
+	uintptr_t out_log_msg_ptr = (uintptr_t)out_msg->data.log_msg.data;
+	struct log_msg *out_log_msg = (struct log_msg *)out_log_msg_ptr;
 
 	/* Set ipc message id. */
 	out_msg->id = Z_LOG_MULTIDOMAIN_ID_MSG;
@@ -48,11 +51,8 @@ static void process(const struct log_backend *const backend,
 	/* Update package len field in the message descriptor. */
 	out_log_msg->hdr.desc.package_len = fsc_plen;
 
-	out_log_msg->hdr.source = out_log_msg->hdr.source ?
-			(const void *)(IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING) ?
-				log_dynamic_source_id((void *)out_log_msg->hdr.source) :
-				log_const_source_id((void *)out_log_msg->hdr.source)) :
-			(const void *)-1;
+	out_log_msg->hdr.source = (const void *)(out_log_msg->hdr.source ?
+				log_source_id(out_log_msg->hdr.source) : -1);
 
 	/* Fill new package. */
 	fsc_plen = cbprintf_fsc_package(msg->log.data, msg->log.hdr.desc.package_len,

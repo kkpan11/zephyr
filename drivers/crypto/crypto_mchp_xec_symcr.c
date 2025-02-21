@@ -12,7 +12,7 @@
 #include <zephyr/crypto/crypto.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/mchp_xec_clock_control.h>
-#include "zephyr/sys/util.h"
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(xec_symcr, CONFIG_CRYPTO_LOG_LEVEL);
 
@@ -514,7 +514,7 @@ static int xec_symcr_init(const struct device *dev)
 	return ret;
 }
 
-static struct crypto_driver_api xec_symcr_api = {
+static DEVICE_API(crypto, xec_symcr_api) = {
 	.query_hw_caps = xec_symcr_query_hw_caps,
 	.hash_begin_session = xec_symcr_hash_session_begin,
 	.hash_free_session = xec_symcr_hash_session_free,

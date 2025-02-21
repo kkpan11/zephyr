@@ -1,7 +1,8 @@
-.. _mqtt-sn-publisher-sample:
+.. zephyr:code-sample:: mqtt-sn-publisher
+   :name: MQTT-SN publisher
+   :relevant-api: mqtt_sn_socket
 
-MQTT-SN Publisher
-#################
+   Send MQTT-SN PUBLISH messages to an MQTT-SN gateway.
 
 Overview
 ********
@@ -16,8 +17,8 @@ requires a reliable TCP/IP transport, MQTT-SN is designed to be usable
 on any datagram-based transport like UDP, ZigBee or even a plain UART
 (with an additional framing protocol).
 
-The Zephyr MQTT-SN Publisher sample application is a MQTT-SN v1.2
-client that sends MQTT-SN PUBLISH messages to a MQTT-SN gateway.
+The Zephyr MQTT-SN Publisher sample application is an MQTT-SN v1.2
+client that sends MQTT-SN PUBLISH messages to an MQTT-SN gateway.
 It also SUBSCRIBEs to a topic.
 See the `MQTT-SN v1.2 spec`_ for more information.
 
@@ -39,13 +40,30 @@ Requirements
 Build and Running
 *****************
 
-Currently, this sample application only supports static IP addresses.
-Open the :file:`prj.conf` file and set the IP addresses according
-to the LAN environment.
+This sample application supports both static IP addresses and the Gateway Discovery process.
+Open the :zephyr_file:`samples/net/mqtt_sn_publisher/prj.conf` file and set the IP addresses according
+to the LAN environment. CONFIG_NET_SAMPLE_MQTT_SN_STATIC_GATEWAY can be used to select the
+static IP or Gateway discovery process.
 
-You will also need to start a MQTT-SN gateway. With paho, you can either
-build it from source - see `PAHO MQTT-SN Gateway`_ - or run an unofficial
-docker image, like `kyberpunk/paho`_.
+You will also need to start an MQTT-SN gateway. A convenience Docker Compose specification file
+is provided in :zephyr_file:`samples/net/mqtt_sn_publisher/compose/compose.yaml`.
+First, Start the net-tools configuration from[here](https://github.com/zephyrproject-rtos/net-tools)
+with:
+
+.. code-block:: console
+
+	$ ./net-setup.sh --config docker.conf
+
+Then bring up the Docker environment in a separate terminal window with:
+
+.. code-block:: console
+
+	$ cd ./compose
+	$ docker compose up
+
+You can also set up this environment manually.With Paho, you can either build it
+from source - see `PAHO MQTT-SN Gateway`_ - or run an unofficial docker image, l
+ike `kyberpunk/paho`_.
 
 .. _PAHO MQTT-SN Gateway: https://www.eclipse.org/paho/index.php?page=components/mqtt-sn-transparent-gateway/index.php
 .. _kyberpunk/paho: https://hub.docker.com/r/kyberpunk/paho
@@ -66,8 +84,8 @@ Then, locate your zephyr directory and type:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/net/mqtt_sn_publisher
-   :board: native_posix_64
-   :goals: build -t run
+   :board: native_sim/native/64
+   :goals: run
    :compact:
 
 Optionally, use any MQTT explorer to connect to your broker.

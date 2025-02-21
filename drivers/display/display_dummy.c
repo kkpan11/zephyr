@@ -38,7 +38,7 @@ static int dummy_display_write(const struct device *dev, const uint16_t x,
 {
 	const struct dummy_display_config *config = dev->config;
 
-	__ASSERT(desc->width <= desc->pitch, "Pitch is smaller then width");
+	__ASSERT(desc->width <= desc->pitch, "Pitch is smaller than width");
 	__ASSERT(desc->pitch <= config->width,
 		"Pitch in descriptor is larger than screen size");
 	__ASSERT(desc->height <= config->height,
@@ -55,19 +55,6 @@ static int dummy_display_write(const struct device *dev, const uint16_t x,
 	}
 
 	return 0;
-}
-
-static int dummy_display_read(const struct device *dev, const uint16_t x,
-			      const uint16_t y,
-			      const struct display_buffer_descriptor *desc,
-			      void *buf)
-{
-	return -ENOTSUP;
-}
-
-static void *dummy_display_get_framebuffer(const struct device *dev)
-{
-	return NULL;
 }
 
 static int dummy_display_blanking_off(const struct device *dev)
@@ -119,12 +106,10 @@ static int dummy_display_set_pixel_format(const struct device *dev,
 	return 0;
 }
 
-static const struct display_driver_api dummy_display_api = {
+static DEVICE_API(display, dummy_display_api) = {
 	.blanking_on = dummy_display_blanking_on,
 	.blanking_off = dummy_display_blanking_off,
 	.write = dummy_display_write,
-	.read = dummy_display_read,
-	.get_framebuffer = dummy_display_get_framebuffer,
 	.set_brightness = dummy_display_set_brightness,
 	.set_contrast = dummy_display_set_contrast,
 	.get_capabilities = dummy_display_get_capabilities,
@@ -142,7 +127,7 @@ static const struct display_driver_api dummy_display_api = {
 	DEVICE_DT_INST_DEFINE(n, &dummy_display_init, NULL,		\
 			      &dd_data_##n,				\
 			      &dd_config_##n,				\
-			      APPLICATION,				\
+			      POST_KERNEL,				\
 			      CONFIG_DISPLAY_INIT_PRIORITY,		\
 			      &dummy_display_api);			\
 

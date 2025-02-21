@@ -153,7 +153,7 @@ static int microchip_mcp7940n_bbram_read(const struct device *dev, size_t offset
 	size_t i = 0;
 	int32_t rc = 0;
 
-	if ((offset + size) > MICROCHIP_MCP7940N_SRAM_SIZE) {
+	if (size == 0 || (offset + size) > MICROCHIP_MCP7940N_SRAM_SIZE) {
 		return -EINVAL;
 	}
 
@@ -186,7 +186,7 @@ static int microchip_mcp7940n_bbram_write(const struct device *dev, size_t offse
 	size_t i = 0;
 	int32_t rc = 0;
 
-	if ((offset + size) > MICROCHIP_MCP7940N_SRAM_SIZE) {
+	if (size == 0 || (offset + size) > MICROCHIP_MCP7940N_SRAM_SIZE) {
 		return -EINVAL;
 	}
 
@@ -212,7 +212,7 @@ finish:
 	return rc;
 }
 
-static const struct bbram_driver_api microchip_mcp7940n_bbram_api = {
+static DEVICE_API(bbram, microchip_mcp7940n_bbram_api) = {
 	.get_size = microchip_mcp7940n_bbram_size,
 	.check_invalid = microchip_mcp7940n_bbram_is_invalid,
 	.check_standby_power = microchip_mcp7940n_bbram_check_standby_power,

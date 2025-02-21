@@ -23,13 +23,17 @@
 #if !defined(_ASMLANGUAGE)
 #include <zephyr/sys/atomic.h>
 #include <zephyr/types.h>
-#include <zephyr/kernel/sched_priq.h>
 #include <zephyr/sys/dlist.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/sys_heap.h>
 #include <zephyr/arch/structs.h>
 #include <zephyr/kernel/stats.h>
+#include <zephyr/kernel/obj_core.h>
+#include <zephyr/sys/rb.h>
 #endif
+
+#define K_NUM_THREAD_PRIO (CONFIG_NUM_PREEMPT_PRIORITIES + CONFIG_NUM_COOP_PRIORITIES + 1)
+#define PRIQ_BITMAP_SIZE  (DIV_ROUND_UP(K_NUM_THREAD_PRIO, BITS_PER_LONG))
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,8 +54,8 @@ extern "C" {
 /* Thread is waiting on an object */
 #define _THREAD_PENDING (BIT(1))
 
-/* Thread has not yet started */
-#define _THREAD_PRESTART (BIT(2))
+/* Thread is sleeping */
+#define _THREAD_SLEEPING (BIT(2))
 
 /* Thread has terminated */
 #define _THREAD_DEAD (BIT(3))
@@ -59,8 +63,11 @@ extern "C" {
 /* Thread is suspended */
 #define _THREAD_SUSPENDED (BIT(4))
 
-/* Thread is being aborted */
+/* Thread is in the process of aborting */
 #define _THREAD_ABORTING (BIT(5))
+
+/* Thread is in the process of suspending */
+#define _THREAD_SUSPENDING (BIT(6))
 
 /* Thread is present in the ready queue */
 #define _THREAD_QUEUED (BIT(7))
@@ -79,6 +86,46 @@ extern "C" {
 #define _PREEMPT_THRESHOLD (_NON_PREEMPT_THRESHOLD - 1U)
 
 #if !defined(_ASMLANGUAGE)
+
+/* Two abstractions are defined here for "thread priority queues".
+ *
+ * One is a "dumb" list implementation appropriate for systems with
+ * small numbers of threads and sensitive to code size.  It is stored
+ * in sorted order, taking an O(N) cost every time a thread is added
+ * to the list.  This corresponds to the way the original _wait_q_t
+ * abstraction worked and is very fast as long as the number of
+ * threads is small.
+ *
+ * The other is a balanced tree "fast" implementation with rather
+ * larger code size (due to the data structure itself, the code here
+ * is just stubs) and higher constant-factor performance overhead, but
+ * much better O(logN) scaling in the presence of large number of
+ * threads.
+ *
+ * Each can be used for either the wait_q or system ready queue,
+ * configurable at build time.
+ */
+
+struct _priq_rb {
+	struct rbtree tree;
+	int next_order_key;
+};
+
+
+/* Traditional/textbook "multi-queue" structure.  Separate lists for a
+ * small number (max 32 here) of fixed priorities.  This corresponds
+ * to the original Zephyr scheduler.  RAM requirements are
+ * comparatively high, but performance is very fast.  Won't work with
+ * features like deadline scheduling which need large priority spaces
+ * to represent their requirements.
+ */
+struct _priq_mq {
+	sys_dlist_t queues[K_NUM_THREAD_PRIO];
+	unsigned long bitmask[PRIQ_BITMAP_SIZE];
+#ifndef CONFIG_SMP
+	unsigned int cached_queue_index;
+#endif
+};
 
 struct _ready_q {
 #ifndef CONFIG_SMP
@@ -141,8 +188,12 @@ struct _cpu {
 	uint32_t usage0;
 
 #ifdef CONFIG_SCHED_THREAD_USAGE_ALL
-	struct k_cycle_stats usage;
+	struct k_cycle_stats *usage;
 #endif
+#endif
+
+#ifdef CONFIG_OBJ_CORE_SYSTEM
+	struct k_obj_core  obj_core;
 #endif
 
 	/* Per CPU architecture specifics */
@@ -183,10 +234,17 @@ struct z_kernel {
 #if defined(CONFIG_THREAD_MONITOR)
 	struct k_thread *threads; /* singly linked list of ALL threads */
 #endif
+#ifdef CONFIG_SCHED_THREAD_USAGE_ALL
+	struct k_cycle_stats usage[CONFIG_MP_MAX_NUM_CPUS];
+#endif
+
+#ifdef CONFIG_OBJ_CORE_SYSTEM
+	struct k_obj_core  obj_core;
+#endif
 
 #if defined(CONFIG_SMP) && defined(CONFIG_SCHED_IPI_SUPPORTED)
-	/* Need to signal an IPI at the next scheduling point */
-	bool pending_ipi;
+	/* Identify CPUs to send IPIs to at the next scheduling point */
+	atomic_t pending_ipi;
 #endif
 };
 
@@ -202,25 +260,37 @@ extern atomic_t _cpus_active;
  * another SMP CPU.
  */
 bool z_smp_cpu_mobile(void);
-
 #define _current_cpu ({ __ASSERT_NO_MSG(!z_smp_cpu_mobile()); \
 			arch_curr_cpu(); })
-#define _current z_current_get()
+
+__attribute_const__ struct k_thread *z_smp_current_get(void);
+#define _current z_smp_current_get()
 
 #else
 #define _current_cpu (&_kernel.cpus[0])
 #define _current _kernel.cpus[0].current
 #endif
 
-/* kernel wait queue record */
+/* This is always invoked from a context where preemption is disabled */
+#define z_current_thread_set(thread) ({ _current_cpu->current = (thread); })
 
+#ifdef CONFIG_ARCH_HAS_CUSTOM_CURRENT_IMPL
+#undef _current
+#define _current arch_current_thread()
+#undef z_current_thread_set
+#define z_current_thread_set(thread) \
+	arch_current_thread_set(({ _current_cpu->current = (thread); }))
+#endif
+
+/* kernel wait queue record */
 #ifdef CONFIG_WAITQ_SCALABLE
 
 typedef struct {
 	struct _priq_rb waitq;
 } _wait_q_t;
 
-extern bool z_priq_rb_lessthan(struct rbnode *a, struct rbnode *b);
+/* defined in kernel/priority_queues.c */
+bool z_priq_rb_lessthan(struct rbnode *a, struct rbnode *b);
 
 #define Z_WAIT_Q_INIT(wait_q) { { { .lessthan_fn = z_priq_rb_lessthan } } }
 
@@ -232,10 +302,9 @@ typedef struct {
 
 #define Z_WAIT_Q_INIT(wait_q) { SYS_DLIST_STATIC_INIT(&(wait_q)->waitq) }
 
-#endif
+#endif /* CONFIG_WAITQ_SCALABLE */
 
 /* kernel timeout record */
-
 struct _timeout;
 typedef void (*_timeout_func_t)(struct _timeout *t);
 

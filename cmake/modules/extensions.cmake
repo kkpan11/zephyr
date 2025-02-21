@@ -34,6 +34,11 @@ include(CheckCXXCompilerFlag)
 # 5. Zephyr linker functions
 # 5.1. zephyr_linker*
 # 6 Function helper macros
+# 7 Linkable loadable extensions (llext)
+# 7.1 llext_* configuration functions
+# 7.2 add_llext_* build control functions
+# 7.3 llext helper functions
+# 8. Script mode handling
 
 ########################################################
 # 1. Zephyr-aware extensions
@@ -104,12 +109,40 @@ endfunction()
 
 # https://cmake.org/cmake/help/latest/command/target_compile_options.html
 function(zephyr_compile_options)
-  target_compile_options(zephyr_interface INTERFACE ${ARGV})
+  if(ARGV0 STREQUAL "PROPERTY")
+    set(property $<TARGET_PROPERTY:compiler,${ARGV1}>)
+    set(property_defined $<BOOL:${property}>)
+    if(ARGC GREATER 3)
+      message(FATAL_ERROR "zephyr_compile_options(PROPERTY <prop> [<var>]) "
+                          "called with too many arguments."
+      )
+    elseif(ARGC EQUAL 3)
+      target_compile_options(zephyr_interface INTERFACE $<${property_defined}:${property}${ARGV2}>)
+    else()
+      target_compile_options(zephyr_interface INTERFACE ${property})
+    endif()
+  else()
+    target_compile_options(zephyr_interface INTERFACE ${ARGV})
+  endif()
 endfunction()
 
 # https://cmake.org/cmake/help/latest/command/target_link_libraries.html
 function(zephyr_link_libraries)
-  target_link_libraries(zephyr_interface INTERFACE ${ARGV})
+  if(ARGV0 STREQUAL "PROPERTY")
+    set(property $<TARGET_PROPERTY:linker,${ARGV1}>)
+    set(property_defined $<BOOL:${property}>)
+    if(ARGC GREATER 3)
+      message(FATAL_ERROR "zephyr_link_options(PROPERTY <prop> [<val>]) "
+                          "called with too many arguments."
+      )
+    elseif(ARGC EQUAL 3)
+      target_link_libraries(zephyr_interface INTERFACE $<${property_defined}:${property}${ARGV2}>)
+    else()
+      target_link_libraries(zephyr_interface INTERFACE ${property})
+    endif()
+  else()
+    target_link_libraries(zephyr_interface INTERFACE ${ARGV})
+  endif()
 endfunction()
 
 function(zephyr_libc_link_libraries)
@@ -303,6 +336,12 @@ function(process_flags lang input output)
 
   foreach(flag ${${input}})
     set(is_compile_lang_generator_expression 0)
+    # SHELL is used to avoid de-duplication, but when process flags
+    # then this tag must be removed to return real compile/linker flags.
+    if(flag MATCHES "^SHELL:[ ]*(.*)")
+      separate_arguments(flag UNIX_COMMAND ${CMAKE_MATCH_1})
+    endif()
+
     foreach(l ${languages})
       if(flag MATCHES "<COMPILE_LANGUAGE:${l}>:([^>]+)>")
         set(updated_flag ${CMAKE_MATCH_1})
@@ -323,11 +362,6 @@ function(process_flags lang input output)
     endforeach()
 
     if(NOT is_compile_lang_generator_expression)
-      # SHELL is used to avoid de-duplication, but when process flags
-      # then this tag must be removed to return real compile/linker flags.
-      if(flag MATCHES "SHELL:[ ]*(.*)")
-        separate_arguments(flag UNIX_COMMAND ${CMAKE_MATCH_1})
-      endif()
       # Flags may be placed inside generator expression, therefore any flag
       # which is not already a generator expression must have commas converted.
       if(NOT flag MATCHES "\\\$<.*>")
@@ -501,7 +535,7 @@ function(zephyr_library_compile_options item)
   # library and link with it to obtain the flags.
   #
   # Linking with a dummy interface library will place flags later on
-  # the command line than the the flags from zephyr_interface because
+  # the command line than the flags from zephyr_interface because
   # zephyr_interface will be the first interface library that flags
   # are taken from.
 
@@ -526,6 +560,10 @@ function(zephyr_library_cc_option)
       zephyr_library_compile_options(${option})
     endif()
   endforeach()
+endfunction()
+
+function(zephyr_library_add_dependencies)
+  add_dependencies(${ZEPHYR_CURRENT_LIBRARY} ${ARGN})
 endfunction()
 
 # Add the existing CMake library 'library' to the global list of
@@ -697,9 +735,10 @@ endfunction()
 # This section provides glue between CMake and the Python code that
 # manages the runners.
 
+set(TYPES "FLASH" "DEBUG" "SIM" "ROBOT")
 function(_board_check_runner_type type) # private helper
-  if (NOT (("${type}" STREQUAL "FLASH") OR ("${type}" STREQUAL "DEBUG")))
-    message(FATAL_ERROR "invalid type ${type}; should be FLASH or DEBUG")
+  if (NOT "${type}" IN_LIST TYPES)
+    message(FATAL_ERROR "invalid type ${type}; should be one of: ${TYPES}")
   endif()
 endfunction()
 
@@ -715,8 +754,8 @@ endfunction()
 #
 # This would set the board's flash runner to "pyocd".
 #
-# In general, "type" is FLASH or DEBUG, and "runner" is the name of a
-# runner.
+# In general, "type" is FLASH, DEBUG, SIM or ROBOT and "runner" is
+# the name of a runner.
 function(board_set_runner type runner)
   _board_check_runner_type(${type})
   if (DEFINED BOARD_${type}_RUNNER)
@@ -757,6 +796,16 @@ macro(board_set_debugger_ifnset runner)
   board_set_runner_ifnset(DEBUG ${runner})
 endmacro()
 
+# A convenience macro for board_set_runner_ifnset(ROBOT ${runner}).
+macro(board_set_robot_runner_ifnset runner)
+  board_set_runner_ifnset(ROBOT ${runner})
+endmacro()
+
+# A convenience macro for board_set_runner_ifnset(SIM ${runner}).
+macro(board_set_sim_runner_ifnset runner)
+  board_set_runner_ifnset(SIM ${runner})
+endmacro()
+
 # This function is intended for board.cmake files and application
 # CMakeLists.txt files.
 #
@@ -769,7 +818,7 @@ endmacro()
 #
 # Within application CMakeLists.txt files, ensure that all calls to
 # board_runner_args() are part of a macro named app_set_runner_args(),
-# like this, which is defined before including the boilerplate file:
+# like this, which is defined before calling 'find_package(Zephyr)':
 #   macro(app_set_runner_args)
 #     board_runner_args(runner "--some-app-setting=value")
 #   endmacro()
@@ -832,6 +881,39 @@ endfunction()
 function(board_set_rimage_target target)
   set(RIMAGE_TARGET ${target} CACHE STRING "rimage target")
   zephyr_check_cache(RIMAGE_TARGET)
+endfunction()
+
+function(board_emu_args emu)
+  string(MAKE_C_IDENTIFIER ${emu} emu_id)
+  # Note the "_EXPLICIT_" here, and see below.
+  set_property(GLOBAL APPEND PROPERTY BOARD_EMU_ARGS_EXPLICIT_${emu_id} ${ARGN})
+endfunction()
+
+function(board_finalize_emu_args emu)
+  # If the application provided a macro to add additional emu
+  # arguments, handle them.
+  if(COMMAND app_set_emu_args)
+    app_set_emu_args()
+  endif()
+
+  # Retrieve the list of explicitly set arguments.
+  string(MAKE_C_IDENTIFIER ${emu} emu_id)
+  get_property(explicit GLOBAL PROPERTY "BOARD_EMU_ARGS_EXPLICIT_${emu_id}")
+
+  # Note no _EXPLICIT_ here. This property contains the final list.
+  set_property(GLOBAL APPEND PROPERTY BOARD_EMU_ARGS_${emu_id}
+    # Default arguments from the common emu file come first.
+    ${ARGN}
+    # Arguments explicitly given with board_emu_args() come
+    # next, so they take precedence over the common emu file.
+    ${explicit}
+    # Arguments given via the CMake cache come last of all. Users
+    # can provide variables in this way from the CMake command line.
+    ${BOARD_EMU_ARGS_${emu_id}}
+    )
+
+  # Add the finalized emu to the global property list.
+  set_property(GLOBAL APPEND PROPERTY ZEPHYR_EMUS ${emu})
 endfunction()
 
 # Zephyr board revision:
@@ -1154,6 +1236,8 @@ endfunction(zephyr_check_compiler_flag_hardcoded)
 #    copied/included verbatim into the given <location> in the global linker.ld.
 #    Preprocessor directives work inside <files>. Relative paths are resolved
 #    relative to the calling file, like zephyr_sources().
+#    Subsequent calls to zephyr_linker_sources with the same file(s) will remove
+#    these from the original location. Only the last call is considered.
 # <location> is one of
 #    NOINIT        Inside the noinit output section.
 #    RWDATA        Inside the data output section.
@@ -1161,10 +1245,13 @@ endfunction(zephyr_check_compiler_flag_hardcoded)
 #    ROM_START     Inside the first output section of the image. This option is
 #                  currently only available on ARM Cortex-M, ARM Cortex-R,
 #                  x86, ARC, openisa_rv32m1, and RISC-V.
+#    ROM_SECTIONS  Inside the ROMABLE_REGION GROUP, not initialized.
 #    RAM_SECTIONS  Inside the RAMABLE_REGION GROUP, not initialized.
 #    DATA_SECTIONS Inside the RAMABLE_REGION GROUP, initialized.
 #    RAMFUNC_SECTION Inside the RAMFUNC RAMABLE_REGION GROUP, not initialized.
 #    NOCACHE_SECTION Inside the NOCACHE section
+#    ITCM_SECTION  Inside the itcm section.
+#    DTCM_SECTION  Inside the dtcm data section.
 #    SECTIONS      Near the end of the file. Don't use this when linking into
 #                  RAMABLE_REGION, use RAM_SECTIONS instead.
 #    PINNED_RODATA Similar to RODATA but pinned in memory.
@@ -1179,15 +1266,16 @@ endfunction(zephyr_check_compiler_flag_hardcoded)
 # Use NOINIT, RWDATA, and RODATA unless they don't work for your use case.
 #
 # When placing into NOINIT, RWDATA, RODATA, ROM_START, RAMFUNC_SECTION,
-# NOCACHE_SECTION the contents of the files will be placed inside
-# an output section, so assume the section definition is already present, e.g.:
+# NOCACHE_SECTION, DTCM_SECTION or ITCM_SECTION the contents of the files will
+# be placed inside an output section, so assume the section definition is
+# already present, e.g.:
 #    _mysection_start = .;
 #    KEEP(*(.mysection));
 #    _mysection_end = .;
 #    _mysection_size = ABSOLUTE(_mysection_end - _mysection_start);
 #
-# When placing into SECTIONS, RAM_SECTIONS or DATA_SECTIONS, the files must
-# instead define their own output sections to achieve the same thing:
+# When placing into SECTIONS, ROM_SECTIONS, RAM_SECTIONS or DATA_SECTIONS, the
+# files must instead define their own output sections to achieve the same thing:
 #    SECTION_PROLOGUE(.mysection,,)
 #    {
 #        _mysection_start = .;
@@ -1207,6 +1295,7 @@ function(zephyr_linker_sources location)
   # the global linker.ld.
   set(snippet_base       "${__build_dir}/include/generated")
   set(sections_path      "${snippet_base}/snippets-sections.ld")
+  set(rom_sections_path  "${snippet_base}/snippets-rom-sections.ld")
   set(ram_sections_path  "${snippet_base}/snippets-ram-sections.ld")
   set(data_sections_path "${snippet_base}/snippets-data-sections.ld")
   set(rom_start_path     "${snippet_base}/snippets-rom-start.ld")
@@ -1215,6 +1304,8 @@ function(zephyr_linker_sources location)
   set(rodata_path        "${snippet_base}/snippets-rodata.ld")
   set(ramfunc_path       "${snippet_base}/snippets-ramfunc-section.ld")
   set(nocache_path       "${snippet_base}/snippets-nocache-section.ld")
+  set(itcm_path          "${snippet_base}/snippets-itcm-section.ld")
+  set(dtcm_path          "${snippet_base}/snippets-dtcm-section.ld")
 
   set(pinned_ram_sections_path  "${snippet_base}/snippets-pinned-ram-sections.ld")
   set(pinned_data_sections_path "${snippet_base}/snippets-pinned-data-sections.ld")
@@ -1224,6 +1315,7 @@ function(zephyr_linker_sources location)
   get_property(cleared GLOBAL PROPERTY snippet_files_cleared)
   if (NOT DEFINED cleared)
     file(WRITE ${sections_path} "")
+    file(WRITE ${rom_sections_path} "")
     file(WRITE ${ram_sections_path} "")
     file(WRITE ${data_sections_path} "")
     file(WRITE ${rom_start_path} "")
@@ -1232,6 +1324,8 @@ function(zephyr_linker_sources location)
     file(WRITE ${rodata_path} "")
     file(WRITE ${ramfunc_path} "")
     file(WRITE ${nocache_path} "")
+    file(WRITE ${itcm_path} "")
+    file(WRITE ${dtcm_path} "")
     file(WRITE ${pinned_ram_sections_path} "")
     file(WRITE ${pinned_data_sections_path} "")
     file(WRITE ${pinned_rodata_path} "")
@@ -1241,6 +1335,8 @@ function(zephyr_linker_sources location)
   # Choose destination file, based on the <location> argument.
   if ("${location}" STREQUAL "SECTIONS")
     set(snippet_path "${sections_path}")
+  elseif("${location}" STREQUAL "ROM_SECTIONS")
+    set(snippet_path "${rom_sections_path}")
   elseif("${location}" STREQUAL "RAM_SECTIONS")
     set(snippet_path "${ram_sections_path}")
   elseif("${location}" STREQUAL "DATA_SECTIONS")
@@ -1257,6 +1353,22 @@ function(zephyr_linker_sources location)
     set(snippet_path "${ramfunc_path}")
   elseif("${location}" STREQUAL "NOCACHE_SECTION")
     set(snippet_path "${nocache_path}")
+  elseif("${location}" STREQUAL "ITCM_SECTION")
+    dt_has_chosen(HAS_ITCM PROPERTY "zephyr,itcm")
+    if(NOT HAS_ITCM)
+      message(FATAL_ERROR "Trying to link snippet into itcm but no itcm available. "
+              "Add `zephyr,itcm` to the device tree if supported on your device or choose another "
+              "location.")
+    endif()
+    set(snippet_path "${itcm_path}")
+  elseif("${location}" STREQUAL "DTCM_SECTION")
+    dt_has_chosen(HAS_DTCM PROPERTY "zephyr,dtcm")
+    if(NOT HAS_DTCM)
+      message(FATAL_ERROR "Trying to link snippet into dtcm but no dtcm available. "
+              "Add `zephyr,dtcm` to the device tree if supported on your device or choose another "
+              "location.")
+    endif()
+    set(snippet_path "${dtcm_path}")
   elseif("${location}" STREQUAL "PINNED_RAM_SECTIONS")
     set(snippet_path "${pinned_ram_sections_path}")
   elseif("${location}" STREQUAL "PINNED_DATA_SECTIONS")
@@ -1290,6 +1402,16 @@ function(zephyr_linker_sources location)
 
     # Create strings to be written into the file
     set (include_str "/* Sort key: \"${SORT_KEY}\" */#include \"${relpath}\"")
+
+    # Remove line from other snippet file, if already used
+    get_property(old_path GLOBAL PROPERTY "snippet_files_used_${relpath}")
+    if (DEFINED old_path)
+      file(STRINGS ${old_path} lines)
+      list(FILTER lines EXCLUDE REGEX ${relpath})
+      string(REPLACE ";" "\n;" lines "${lines}") # Add newline to each line.
+      file(WRITE ${old_path} ${lines} "\n")
+    endif()
+    set_property(GLOBAL PROPERTY "snippet_files_used_${relpath}" ${snippet_path})
 
     # Add new line to existing lines, sort them, and write them back.
     file(STRINGS ${snippet_path} lines) # Get current lines (without newlines).
@@ -1326,10 +1448,12 @@ endmacro()
 # The following optional arguments are supported:
 # - NOCOPY: this flag indicates that the file data does not need to be copied
 #   at boot time (For example, for flash XIP).
+# - NOKEEP: suppress the generation of KEEP() statements in the linker script,
+#   to allow any unused code in the given files/library to be discarded.
 # - PHDR [program_header]: add program header. Used on Xtensa platforms.
 function(zephyr_code_relocate)
-  set(options NOCOPY)
-  set(single_args LIBRARY LOCATION PHDR)
+  set(options NOCOPY NOKEEP)
+  set(single_args LIBRARY LOCATION PHDR FILTER)
   set(multi_args FILES)
   cmake_parse_arguments(CODE_REL "${options}" "${single_args}"
     "${multi_args}" ${ARGN})
@@ -1388,21 +1512,25 @@ function(zephyr_code_relocate)
     endif()
   endif()
   if(NOT CODE_REL_NOCOPY)
-    set(copy_flag COPY)
+    set(flag_list COPY)
   else()
-    set(copy_flag NOCOPY)
+    set(flag_list NOCOPY)
+  endif()
+  if(CODE_REL_NOKEEP)
+    list(APPEND flag_list NOKEEP)
   endif()
   if(CODE_REL_PHDR)
     set(CODE_REL_LOCATION "${CODE_REL_LOCATION}\ :${CODE_REL_PHDR}")
   endif()
-  # We use the "|" character to separate code relocation directives instead
-  # of using CMake lists. This way, the ";" character can be reserved for
-  # generator expression file lists.
+  # Each code relocation directive is placed on an independent line, instead of
+  # using set_property(APPEND) to produce a ";"-separated CMake list. This way,
+  # each directive can embed multiple CMake lists, representing flags and files,
+  # the latter of which can come from generator expressions.
   get_property(code_rel_str TARGET code_data_relocation_target
-    PROPERTY COMPILE_DEFINITIONS)
+    PROPERTY INTERFACE_SOURCES)
   set_property(TARGET code_data_relocation_target
-    PROPERTY COMPILE_DEFINITIONS
-    "${code_rel_str}|${CODE_REL_LOCATION}:${copy_flag}:${file_list}")
+    PROPERTY INTERFACE_SOURCES
+    "${code_rel_str}\n${CODE_REL_LOCATION}:${flag_list}:${file_list},${CODE_REL_FILTER}")
 endfunction()
 
 # Usage:
@@ -1464,32 +1592,74 @@ endfunction()
 #
 # This is a common function to ensure that build strings are always created
 # in a uniform way.
+# A single string is returned containing the full build string constructed from
+# all arguments.
+#
+# When MERGE is supplied a list of build strings will be returned with the full
+# build string as first item in the list.
+# The full order of build strings returned in the list will be:
+# - Normalized board target build string, this includes qualifiers and revision
+# - Build string with board variants removed in addition
+# - Build string with cpuset removed in addition
+# - Build string with soc removed in addition
+#
+# If REVISION is supplied or obtained as system wide setting a build string
+# with the sanitized revision string will be added in addition to the
+# non-revisioned entry for each entry.
 #
 # Usage:
 #   zephyr_build_string(<out-variable>
 #                       BOARD <board>
+#                       [SHORT <out-variable>]
+#                       [BOARD_QUALIFIERS <qualifiers>]
 #                       [BOARD_REVISION <revision>]
-#                       [BUILD <type>]
+#                       [MERGE [REVERSE]]
+#   )
+#   zephyr_build_string(<out-variable>
+#                       BOARD_QUALIFIERS <qualifiers>
+#                       [MERGE [REVERSE]]
 #   )
 #
 # <out-variable>:            Output variable where the build string will be returned.
+# SHORT <out-variable>:      Output variable where the shortened build string will be returned.
 # BOARD <board>:             Board name to use when creating the build string.
 # BOARD_REVISION <revision>: Board revision to use when creating the build string.
-# BUILD <type>:              Build type to use when creating the build string.
+# MERGE:                     Return a list of build strings instead of a single build string.
+# REVERSE:                   Reverse the list before returning it.
 #
 # Examples
 # calling
-#   zephyr_build_string(build_string BOARD alpha BUILD debug)
-# will return the string `alpha_debug` in `build_string` parameter.
+#   zephyr_build_string(build_string BOARD alpha)
+# will return the string `alpha` in `build_string` parameter.
 #
 # calling
-#   zephyr_build_string(build_string BOARD alpha BOARD_REVISION 1.0.0 BUILD debug)
-# will return the string `alpha_1_0_0_debug` in `build_string` parameter.
+#   zephyr_build_string(build_string BOARD alpha BOARD_REVISION 1.0.0)
+# will return the string `alpha_1_0_0` in `build_string` parameter.
+#
+# calling
+#   zephyr_build_string(build_string BOARD alpha BOARD_QUALIFIERS /soc/bar)
+# will return the string `alpha_soc_bar` in `build_string` parameter.
+#
+# calling
+#   zephyr_build_string(build_string BOARD alpha BOARD_REVISION 1.0.0 BOARD_QUALIFIERS /soc/bar MERGE)
+# will return a list of the following strings
+# `alpha_soc_bar_1_0_0;alpha_soc_bar` in `build_string` parameter.
+#
+# calling
+#   zephyr_build_string(build_string SHORT short_build_string BOARD alpha BOARD_REVISION 1.0.0 BOARD_QUALIFIERS /soc/bar MERGE)
+# will return two lists of the following strings
+# `alpha_soc_bar_1_0_0;alpha_soc_bar` in `build_string` parameter.
+# `alpha_bar_1_0_0;alpha_bar` in `short_build_string` parameter.
+#
+# calling
+#   zephyr_build_string(build_string BOARD_QUALIFIERS /soc/bar/foo)
+# will return the string `soc_bar_foo` in `build_string` parameter.
 #
 function(zephyr_build_string outvar)
-  set(single_args BOARD BOARD_REVISION BUILD)
+  set(options MERGE REVERSE)
+  set(single_args BOARD BOARD_QUALIFIERS BOARD_REVISION SHORT)
 
-  cmake_parse_arguments(BUILD_STR "" "${single_args}" "" ${ARGN})
+  cmake_parse_arguments(BUILD_STR "${options}" "${single_args}" "" ${ARGN})
   if(BUILD_STR_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR
       "zephyr_build_string(${ARGV0} <val> ...) given unknown arguments:"
@@ -1504,19 +1674,85 @@ function(zephyr_build_string outvar)
     )
   endif()
 
-  set(${outvar} ${BUILD_STR_BOARD})
-
-  if(DEFINED BUILD_STR_BOARD_REVISION)
-    string(REPLACE "." "_" revision_string ${BUILD_STR_BOARD_REVISION})
-    set(${outvar} "${${outvar}}_${revision_string}")
+  if(DEFINED BUILD_STR_BOARD_REVISION AND NOT DEFINED BUILD_STR_BOARD)
+    message(FATAL_ERROR
+      "zephyr_build_string(${ARGV0} <list> BOARD_REVISION ${BUILD_STR_BOARD_REVISION} ...)"
+      " given without BOARD argument, these must be used together"
+    )
   endif()
 
-  if(BUILD_STR_BUILD)
-    set(${outvar} "${${outvar}}_${BUILD_STR_BUILD}")
+  if(DEFINED BUILD_STR_SHORT AND NOT DEFINED BUILD_STR_BOARD)
+    message(FATAL_ERROR
+      "zephyr_build_string(${ARGV0} <list> SHORT ${BUILD_STR_SHORT} ...)"
+      " given without BOARD argument, these must be used together"
+    )
+  endif()
+
+  string(REPLACE "/" ";" str_segment_list "${BUILD_STR_BOARD_QUALIFIERS}")
+  string(REPLACE "." "_" revision_string "${BUILD_STR_BOARD_REVISION}")
+
+  string(JOIN "_" ${outvar} ${BUILD_STR_BOARD} ${str_segment_list} ${revision_string})
+
+  if(BUILD_STR_MERGE)
+    string(JOIN "_" variant_string ${BUILD_STR_BOARD} ${str_segment_list})
+
+    if(NOT "${variant_string}" IN_LIST ${outvar})
+      list(APPEND ${outvar} "${variant_string}")
+    endif()
+  endif()
+
+  if(BUILD_STR_REVERSE)
+    list(REVERSE ${outvar})
+  endif()
+  list(REMOVE_DUPLICATES ${outvar})
+
+  if(BUILD_STR_SHORT AND BUILD_STR_BOARD_QUALIFIERS)
+    string(REGEX REPLACE "^/[^/]*(.*)" "\\1" shortened_qualifiers "${BOARD_QUALIFIERS}")
+    string(REPLACE "/" ";" str_short_segment_list "${shortened_qualifiers}")
+    string(JOIN "_" ${BUILD_STR_SHORT}
+           ${BUILD_STR_BOARD} ${str_short_segment_list} ${revision_string}
+    )
+    if(BUILD_STR_MERGE)
+      string(JOIN "_" variant_string ${BUILD_STR_BOARD} ${str_short_segment_list})
+
+      if(NOT "${variant_string}" IN_LIST ${BUILD_STR_SHORT})
+        list(APPEND ${BUILD_STR_SHORT} "${variant_string}")
+      endif()
+    endif()
+
+    if(BUILD_STR_REVERSE)
+      list(REVERSE ${BUILD_STR_SHORT})
+    endif()
+    list(REMOVE_DUPLICATES ${BUILD_STR_SHORT})
+    set(${BUILD_STR_SHORT} ${${BUILD_STR_SHORT}} PARENT_SCOPE)
   endif()
 
   # This updates the provided outvar in parent scope (callers scope)
   set(${outvar} ${${outvar}} PARENT_SCOPE)
+endfunction()
+
+# Function to add one or more directories to the include list passed to the syscall generator.
+function(zephyr_syscall_include_directories)
+  foreach(one_dir ${ARGV})
+    if(EXISTS ${one_dir})
+      set(include_dir ${one_dir})
+    elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${one_dir})
+      set(include_dir ${CMAKE_CURRENT_SOURCE_DIR}/${one_dir})
+    else()
+      message(FATAL_ERROR "Syscall include directory not found: ${one_dir}")
+    endif()
+
+    target_include_directories(
+      syscalls_interface INTERFACE
+      ${include_dir}
+    )
+    add_dependencies(
+      syscalls_interface
+      ${include_dir}
+    )
+
+    unset(include_dir)
+  endforeach()
 endfunction()
 
 # Function to add header file(s) to the list to be passed to syscall generator.
@@ -1534,10 +1770,6 @@ function(zephyr_syscall_header)
       syscalls_interface INTERFACE
       ${header_file}
     )
-    target_include_directories(
-      syscalls_interface INTERFACE
-      ${header_file}
-    )
     add_dependencies(
       syscalls_interface
       ${header_file}
@@ -1552,6 +1784,77 @@ endfunction()
 function(zephyr_syscall_header_ifdef feature_toggle)
   if(${${feature_toggle}})
     zephyr_syscall_header(${ARGN})
+  endif()
+endfunction()
+
+# Verify blobs fetched using west. If the sha256 checksum isn't valid, a warning/
+# fatal error message is printed (depends on REQUIRED flag).
+#
+# Usage:
+#   zephyr_blobs_verify(<MODULE module|FILES file [files...]> [REQUIRED])
+#
+# Example:
+# zephyr_blobs_verify(MODULE my_module REQUIRED) # verify all blobs in my_module and fail on error
+# zephyr_blobs_verify(FILES img/file.bin)        # verify a single file and print on error
+function(zephyr_blobs_verify)
+  cmake_parse_arguments(BLOBS_VERIFY "REQUIRED" "MODULE" "FILES" ${ARGN})
+
+  if((DEFINED BLOBS_VERIFY_MODULE) EQUAL (DEFINED BLOBS_VERIFY_FILES))
+    message(FATAL_ERROR "Either MODULE or FILES required when calling ${CMAKE_CURRENT_FUNCTION}")
+  endif()
+
+  if(NOT WEST)
+    return()
+  endif()
+
+  execute_process(
+    COMMAND ${WEST} blobs list ${BLOBS_VERIFY_MODULE} --format "{status} {abspath}"
+    OUTPUT_VARIABLE BLOBS_LIST_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY
+  )
+
+  if(${BLOBS_VERIFY_REQUIRED})
+    set(msg_lvl FATAL_ERROR)
+  else()
+    set(msg_lvl WARNING)
+  endif()
+
+  string(REPLACE "\n" ";" BLOBS_LIST ${BLOBS_LIST_OUTPUT})
+
+  if(DEFINED BLOBS_VERIFY_FILES)
+    foreach(file ${BLOBS_VERIFY_FILES})
+      # Resolve path.
+      if(IS_ABSOLUTE ${file})
+        file(REAL_PATH "${file}" real_path)
+      else()
+        file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${file}" real_path)
+      endif()
+      file(TO_NATIVE_PATH ${real_path} path)
+
+      message(VERBOSE "Verifying blob \"${path}\"")
+
+      if(NOT EXISTS "${path}")
+        message(${msg_lvl} "Blob for path \"${path}\" missing. Update with: west blobs fetch")
+      elseif(NOT "A ${path}" IN_LIST BLOBS_LIST)
+        # Each path that has a correct sha256 is prefixed with an A
+        message(${msg_lvl} "Blob for path \"${path}\" isn't valid. Update with: west blobs fetch")
+      endif()
+    endforeach()
+  else()
+    foreach(blob ${BLOBS_LIST})
+      separate_arguments(blob)
+      list(GET blob 0 status)
+      list(GET blob 1 path)
+
+      message(VERBOSE "Verifying blob \"${path}\"")
+
+      if(NOT EXISTS "${path}")
+        message(${msg_lvl} "Blob for path \"${path}\" missing. Update with: west blobs fetch ${BLOBS_VERIFY_MODULE}")
+      elseif(NOT "${status}" STREQUAL "A")
+        message(${msg_lvl} "Blob for path \"${path}\" isn't valid. Update with: west blobs fetch ${BLOBS_VERIFY_MODULE}")
+      endif()
+    endforeach()
   endif()
 endfunction()
 
@@ -1819,6 +2122,12 @@ function(zephyr_linker_sources_ifdef feature_toggle)
   endif()
 endfunction()
 
+function(zephyr_library_add_dependencies_ifdef feature_toggle)
+  if(${${feature_toggle}})
+    zephyr_library_add_dependencies(${ARGN})
+  endif()
+endfunction()
+
 macro(list_append_ifdef feature_toggle list)
   if(${${feature_toggle}})
     list(APPEND ${list} ${ARGN})
@@ -1965,6 +2274,12 @@ function(zephyr_linker_sources_ifndef feature_toggle)
   endif()
 endfunction()
 
+function(zephyr_library_add_dependencies_ifndef feature_toggle)
+  if(NOT ${feature_toggle})
+    zephyr_library_add_dependencies(${ARGN})
+  endif()
+endfunction()
+
 macro(list_append_ifndef feature_toggle list)
   if(NOT ${feature_toggle})
     list(APPEND ${list} ${ARGN})
@@ -2095,16 +2410,12 @@ function(toolchain_parse_make_rule input_file include_files)
   # the element separator, so let's get the pure `;` back.
   string(REPLACE "\;" ";" input_as_list ${input})
 
-  # Pop the first line and treat it specially
-  list(POP_FRONT input_as_list first_input_line)
-  string(FIND ${first_input_line} ": " index)
-  math(EXPR j "${index} + 2")
-  string(SUBSTRING ${first_input_line} ${j} -1 first_include_file)
+  # The file might also contain multiple files on one line if one or both of
+  # the file paths are short, split these up into multiple elements using regex
+  string(REGEX REPLACE "([^ ])[ ]([^ ])" "\\1;\\2" input_as_list "${input_as_list}")
 
-  # Remove whitespace before and after filename and convert to CMake path.
-  string(STRIP "${first_include_file}" first_include_file)
-  file(TO_CMAKE_PATH "${first_include_file}" first_include_file)
-  set(result "${first_include_file}")
+  # Pop the first item containing "empty_file.o:"
+  list(POP_FRONT input_as_list first_input_line)
 
   # Remove whitespace before and after filename and convert to CMake path.
   foreach(file ${input_as_list})
@@ -2116,6 +2427,43 @@ function(toolchain_parse_make_rule input_file include_files)
   set(${include_files} ${result} PARENT_SCOPE)
 endfunction()
 
+# 'set_linker_property' is a function that sets the property for the linker
+# property target used for toolchain abstraction.
+#
+# This function is similar in nature to the CMake set_property function, but
+# with some additional extension flags for improved behavioral control.
+#
+# NO_CREATE: Flag to indicate that the property should only be set if not already
+#            defined with a value.
+# APPEND: Flag indicated that the property should be appended to the existing
+#         value list for the property.
+# TARGET: Name of target on which to add the property (default: linker)
+# PROPERTY: Name of property with the value(s) following immediately after
+#           property name
+function(set_linker_property)
+  set(options APPEND NO_CREATE)
+  set(single_args TARGET)
+  set(multi_args  PROPERTY)
+  cmake_parse_arguments(LINKER_PROPERTY "${options}" "${single_args}" "${multi_args}" ${ARGN})
+
+  if(LINKER_PROPERTY_APPEND)
+   set(APPEND "APPEND")
+  endif()
+
+  if(NOT DEFINED LINKER_PROPERTY_TARGET)
+   set(LINKER_PROPERTY_TARGET "linker")
+  endif()
+
+  if(LINKER_PROPERTY_NO_CREATE)
+    list(GET LINKER_PROPERTY_PROPERTY 0 property_name)
+    get_target_property(var ${LINKER_PROPERTY_TARGET} ${property_name})
+    if(NOT "${var}" STREQUAL "var-NOTFOUND")
+      return()
+    endif()
+  endif()
+  set_property(TARGET ${LINKER_PROPERTY_TARGET} ${APPEND} PROPERTY ${LINKER_PROPERTY_PROPERTY})
+endfunction()
+
 # 'check_set_linker_property' is a function that check the provided linker
 # flag and only set the linker property if the check succeeds
 #
@@ -2125,7 +2473,7 @@ endfunction()
 #
 # APPEND: Flag indicated that the property should be appended to the existing
 #         value list for the property.
-# TARGET: Name of target on which to add the property (commonly: linker)
+# TARGET: Name of target on which to add the property (default: linker)
 # PROPERTY: Name of property with the value(s) following immediately after
 #           property name
 function(check_set_linker_property)
@@ -2138,20 +2486,26 @@ function(check_set_linker_property)
    set(APPEND "APPEND")
   endif()
 
+  if(NOT DEFINED LINKER_PROPERTY_TARGET)
+   set(LINKER_PROPERTY_TARGET "linker")
+  endif()
+
   list(GET LINKER_PROPERTY_PROPERTY 0 property)
   list(REMOVE_AT LINKER_PROPERTY_PROPERTY 0)
-  set(option ${LINKER_PROPERTY_PROPERTY})
 
-  string(MAKE_C_IDENTIFIER check${option} check)
+  foreach(option ${LINKER_PROPERTY_PROPERTY})
+    string(MAKE_C_IDENTIFIER check${option} check)
 
-  set(SAVED_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
-  set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${option}")
-  zephyr_check_compiler_flag(C "" ${check})
-  set(CMAKE_REQUIRED_FLAGS ${SAVED_CMAKE_REQUIRED_FLAGS})
+    set(SAVED_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${option}")
+    zephyr_check_compiler_flag(C "" ${check})
+    set(CMAKE_REQUIRED_FLAGS ${SAVED_CMAKE_REQUIRED_FLAGS})
 
-  if(${${check}})
-    set_property(TARGET ${LINKER_PROPERTY_TARGET} ${APPEND} PROPERTY ${property} ${option})
-  endif()
+    if(${${check}})
+      set_property(TARGET ${LINKER_PROPERTY_TARGET} ${APPEND} PROPERTY ${property} ${option})
+      set(APPEND "APPEND")
+    endif()
+  endforeach()
 endfunction()
 
 # 'set_compiler_property' is a function that sets the property for the C and
@@ -2237,7 +2591,7 @@ endfunction()
 # Usage:
 #   print(BOARD)
 #
-# will print: "BOARD: nrf52dk_nrf52832"
+# will print: "BOARD: nrf52dk"
 function(print arg)
   message(STATUS "${arg}: ${${arg}}")
 endfunction()
@@ -2297,14 +2651,23 @@ endfunction()
 #                          to absolute path, relative from `APPLICATION_SOURCE_DIR`
 #                          Issue an error for any relative path not specified
 #                          by user with `-D<path>`
+#                          BASE_DIR <base-dir>: convert paths relative to <base-dir>
+#                                               instead of `APPLICATION_SOURCE_DIR`
 #
 # returns an updated list of absolute paths
+#
+# Usage:
+#   zephyr_file(CONF_FILES <paths> [DTS <list>] [KCONF <list>]
+#               [BOARD <board> [BOARD_REVISION <revision>] | NAMES <name> ...]
+#               [SUFFIX <suffix>] [REQUIRED]
+#   )
 #
 # CONF_FILES <paths>: Find all configuration files in the list of paths and
 #                     return them in a list. If paths is empty then no configuration
 #                     files are returned. Configuration files will be:
 #                     - DTS:       Overlay files (.overlay)
 #                     - Kconfig:   Config fragments (.conf)
+#                     - defconfig: defconfig files (_defconfig)
 #                     The conf file search will return existing configuration
 #                     files for the current board.
 #                     CONF_FILES takes the following additional arguments:
@@ -2313,14 +2676,23 @@ endfunction()
 #                                                revision. Requires BOARD to be specified.
 #
 #                                                If no board is given the current BOARD and
-#                                                BOARD_REVISION will be used.
+#                                                BOARD_REVISION will be used, unless NAMES are
+#                                                specified.
 #
-#                     DTS <list>:   List to append DTS overlay files in <path> to
-#                     KCONF <list>: List to append Kconfig fragment files in <path> to
-#                     BUILD <type>: Build type to include for search.
-#                                   For example:
-#                                   BUILD debug, will look for <board>_debug.conf
-#                                   and <board>_debug.overlay, instead of <board>.conf
+#                     NAMES <name1> [name2] ...  List of file names to look for and instead of
+#                                                creating file names based on board settings.
+#                                                Only the first match found in <paths> will be
+#                                                returned in the <list>
+#                     DTS <list>:    List to append DTS overlay files in <path> to
+#                     KCONF <list>:  List to append Kconfig fragment files in <path> to
+#                     DEFCONF <list>: List to append _defconfig files in <path> to
+#                     SUFFIX <name>: Suffix name to check for instead of the default name
+#                                    but with a fallback to the default name if not found.
+#                                    For example:
+#                                    SUFFIX fish, will look for <file>_fish.conf and use
+#                                    if found but will use <file>.conf if not found
+#                     REQUIRED:      Option to indicate that the <list> specified by DTS or KCONF
+#                                    must contain at least one element, else an error will be raised.
 #
 function(zephyr_file)
   set(file_options APPLICATION_ROOT CONF_FILES)
@@ -2330,107 +2702,244 @@ Please provide one of following: APPLICATION_ROOT, CONF_FILES")
   endif()
 
   if(${ARGV0} STREQUAL APPLICATION_ROOT)
-    set(single_args APPLICATION_ROOT)
+    set(single_args APPLICATION_ROOT BASE_DIR)
   elseif(${ARGV0} STREQUAL CONF_FILES)
-    set(single_args BOARD BOARD_REVISION DTS KCONF BUILD)
-    set(multi_args CONF_FILES)
+    set(options QUALIFIERS REQUIRED)
+    set(single_args BOARD BOARD_REVISION BOARD_QUALIFIERS DTS KCONF DEFCONFIG SUFFIX)
+    set(multi_args CONF_FILES NAMES)
   endif()
 
-  cmake_parse_arguments(FILE "" "${single_args}" "${multi_args}" ${ARGN})
-  if(FILE_UNPARSED_ARGUMENTS)
-      message(FATAL_ERROR "zephyr_file(${ARGV0} <val> ...) given unknown arguments: ${FILE_UNPARSED_ARGUMENTS}")
+  cmake_parse_arguments(ZFILE "${options}" "${single_args}" "${multi_args}" ${ARGN})
+  if(ZFILE_UNPARSED_ARGUMENTS)
+      message(FATAL_ERROR "zephyr_file(${ARGV0} <val> ...) given unknown arguments: ${ZFILE_UNPARSED_ARGUMENTS}")
   endif()
 
+  if(ZFILE_APPLICATION_ROOT)
+    if(NOT DEFINED ZFILE_BASE_DIR)
+      set(ZFILE_BASE_DIR ${APPLICATION_SOURCE_DIR})
+    endif()
 
-  if(FILE_APPLICATION_ROOT)
     # Note: user can do: `-D<var>=<relative-path>` and app can at same
     # time specify `list(APPEND <var> <abs-path>)`
     # Thus need to check and update only CACHED variables (-D<var>).
-    set(CACHED_PATH $CACHE{${FILE_APPLICATION_ROOT}})
+    set(CACHED_PATH $CACHE{${ZFILE_APPLICATION_ROOT}})
     foreach(path ${CACHED_PATH})
       # The cached variable is relative path, i.e. provided by `-D<var>` or
       # `set(<var> CACHE)`, so let's update current scope variable to absolute
       # path from  `APPLICATION_SOURCE_DIR`.
       if(NOT IS_ABSOLUTE ${path})
-        set(abs_path ${APPLICATION_SOURCE_DIR}/${path})
-        list(FIND ${FILE_APPLICATION_ROOT} ${path} index)
+        list(FIND ${ZFILE_APPLICATION_ROOT} ${path} index)
+        cmake_path(ABSOLUTE_PATH path BASE_DIRECTORY ${ZFILE_BASE_DIR} NORMALIZE)
         if(NOT ${index} LESS 0)
-          list(REMOVE_AT ${FILE_APPLICATION_ROOT} ${index})
-          list(INSERT ${FILE_APPLICATION_ROOT} ${index} ${abs_path})
+          list(REMOVE_AT ${ZFILE_APPLICATION_ROOT} ${index})
+          list(INSERT ${ZFILE_APPLICATION_ROOT} ${index} ${path})
         endif()
       endif()
     endforeach()
 
     # Now all cached relative paths has been updated.
     # Let's check if anyone uses relative path as scoped variable, and fail
-    foreach(path ${${FILE_APPLICATION_ROOT}})
+    foreach(path ${${ZFILE_APPLICATION_ROOT}})
       if(NOT IS_ABSOLUTE ${path})
         message(FATAL_ERROR
-"Relative path encountered in scoped variable: ${FILE_APPLICATION_ROOT}, value=${path}\n \
-Please adjust any `set(${FILE_APPLICATION_ROOT} ${path})` or `list(APPEND ${FILE_APPLICATION_ROOT} ${path})`\n \
+"Relative path encountered in scoped variable: ${ZFILE_APPLICATION_ROOT}, value=${path}\n \
+Please adjust any `set(${ZFILE_APPLICATION_ROOT} ${path})` or `list(APPEND ${ZFILE_APPLICATION_ROOT} ${path})`\n \
 to absolute path using `\${CMAKE_CURRENT_SOURCE_DIR}/${path}` or similar. \n \
 Relative paths are only allowed with `-D${ARGV1}=<path>`")
       endif()
     endforeach()
 
+    list(REMOVE_DUPLICATES ${ZFILE_APPLICATION_ROOT})
     # This updates the provided argument in parent scope (callers scope)
-    set(${FILE_APPLICATION_ROOT} ${${FILE_APPLICATION_ROOT}} PARENT_SCOPE)
+    set(${ZFILE_APPLICATION_ROOT} ${${ZFILE_APPLICATION_ROOT}} PARENT_SCOPE)
   endif()
 
-  if(FILE_CONF_FILES)
-    if(DEFINED FILE_BOARD_REVISION AND NOT FILE_BOARD)
+  if(ZFILE_CONF_FILES)
+    if(DEFINED ZFILE_BOARD_REVISION AND NOT ZFILE_BOARD)
         message(FATAL_ERROR
-          "zephyr_file(${ARGV0} <path> BOARD_REVISION ${FILE_BOARD_REVISION} ...)"
+          "zephyr_file(${ARGV0} <path> BOARD_REVISION ${ZFILE_BOARD_REVISION} ...)"
           " given without BOARD argument, please specify BOARD"
         )
     endif()
 
-    if(NOT DEFINED FILE_BOARD)
+    if(NOT DEFINED ZFILE_BOARD)
       # Defaulting to system wide settings when BOARD is not given as argument
-      set(FILE_BOARD ${BOARD})
+      set(ZFILE_BOARD ${BOARD})
       if(DEFINED BOARD_REVISION)
-        set(FILE_BOARD_REVISION ${BOARD_REVISION})
+        set(ZFILE_BOARD_REVISION ${BOARD_REVISION})
+      endif()
+
+      if(DEFINED BOARD_QUALIFIERS)
+        set(ZFILE_BOARD_QUALIFIERS ${BOARD_QUALIFIERS})
       endif()
     endif()
 
-    zephyr_build_string(filename
-                        BOARD ${FILE_BOARD}
-                        BUILD ${FILE_BUILD}
-    )
-    set(filename_list ${filename})
+    if(ZFILE_NAMES)
+      set(dts_filename_list ${ZFILE_NAMES})
+      set(kconf_filename_list ${ZFILE_NAMES})
+    else()
+      if(NOT ZFILE_QUALIFIERS)
+        zephyr_build_string(filename_list
+                            SHORT shortened_filename_list
+                            BOARD ${ZFILE_BOARD}
+                            BOARD_REVISION ${ZFILE_BOARD_REVISION}
+                            BOARD_QUALIFIERS ${ZFILE_BOARD_QUALIFIERS}
+                            MERGE REVERSE
+        )
+      else()
+        zephyr_build_string(filename_list
+                            BOARD_QUALIFIERS ${ZFILE_BOARD_QUALIFIERS}
+                            MERGE REVERSE
+        )
+      endif()
 
-    zephyr_build_string(filename
-                        BOARD ${FILE_BOARD}
-                        BOARD_REVISION ${FILE_BOARD_REVISION}
-                        BUILD ${FILE_BUILD}
-    )
-    list(APPEND filename_list ${filename})
-    list(REMOVE_DUPLICATES filename_list)
+      set(dts_filename_list ${filename_list})
+      set(dts_shortened_filename_list ${shortened_filename_list})
+      list(TRANSFORM dts_filename_list APPEND ".overlay")
+      list(TRANSFORM dts_shortened_filename_list APPEND ".overlay")
 
-    if(FILE_DTS)
-      foreach(path ${FILE_CONF_FILES})
-        foreach(filename ${filename_list})
-          if(EXISTS ${path}/${filename}.overlay)
-            list(APPEND ${FILE_DTS} ${path}/${filename}.overlay)
-          endif()
-        endforeach()
-      endforeach()
-
-      # This updates the provided list in parent scope (callers scope)
-      set(${FILE_DTS} ${${FILE_DTS}} PARENT_SCOPE)
+      set(kconf_filename_list ${filename_list})
+      set(kconf_shortened_filename_list ${shortened_filename_list})
+      list(TRANSFORM kconf_filename_list APPEND ".conf")
+      list(TRANSFORM kconf_shortened_filename_list APPEND ".conf")
     endif()
 
-    if(FILE_KCONF)
-      foreach(path ${FILE_CONF_FILES})
-        foreach(filename ${filename_list})
-          if(EXISTS ${path}/${filename}.conf)
-            list(APPEND ${FILE_KCONF} ${path}/${filename}.conf)
+    if(ZFILE_DTS)
+      foreach(path ${ZFILE_CONF_FILES})
+        foreach(filename IN ZIP_LISTS dts_filename_list dts_shortened_filename_list)
+          foreach(i RANGE 1)
+            if(NOT IS_ABSOLUTE filename_${i} AND DEFINED filename_${i})
+              set(test_file_${i} ${path}/${filename_${i}})
+            else()
+              set(test_file_${i} ${filename_${i}})
+            endif()
+            zephyr_file_suffix(test_file_${i} SUFFIX ${ZFILE_SUFFIX})
+
+            if(NOT EXISTS ${test_file_${i}})
+              set(test_file_${i})
+            endif()
+          endforeach()
+
+          if(test_file_0 OR test_file_1)
+            list(APPEND found_dts_files ${test_file_0})
+            list(APPEND found_dts_files ${test_file_1})
+
+            if(ZFILE_NAMES)
+              break()
+            endif()
+          endif()
+
+          if(test_file_1 AND NOT BOARD_${ZFILE_BOARD}_SINGLE_SOC)
+            message(FATAL_ERROR "Board ${ZFILE_BOARD} defines multiple SoCs.\nShortened file name "
+                    "(${filename_1}) not allowed, use '<board>_<soc>.overlay' naming"
+            )
+          endif()
+
+          if(test_file_0 AND test_file_1)
+            message(FATAL_ERROR "Conflicting file names discovered. Cannot use both ${filename_0} "
+                    "and ${filename_1}. Please choose one naming style, "
+                    "${filename_0} is recommended."
+            )
           endif()
         endforeach()
       endforeach()
 
+      list(APPEND ${ZFILE_DTS} ${found_dts_files})
+
       # This updates the provided list in parent scope (callers scope)
-      set(${FILE_KCONF} ${${FILE_KCONF}} PARENT_SCOPE)
+      set(${ZFILE_DTS} ${${ZFILE_DTS}} PARENT_SCOPE)
+    endif()
+
+    if(ZFILE_KCONF)
+      set(found_conf_files)
+      foreach(path ${ZFILE_CONF_FILES})
+        foreach(filename IN ZIP_LISTS kconf_filename_list kconf_shortened_filename_list)
+          foreach(i RANGE 1)
+            if(NOT IS_ABSOLUTE filename_${i} AND DEFINED filename_${i})
+              set(test_file_${i} ${path}/${filename_${i}})
+            else()
+              set(test_file_${i} ${filename_${i}})
+            endif()
+            zephyr_file_suffix(test_file_${i} SUFFIX ${ZFILE_SUFFIX})
+
+            if(NOT EXISTS ${test_file_${i}})
+              set(test_file_${i})
+            endif()
+          endforeach()
+
+          if(test_file_0 OR test_file_1)
+            list(APPEND found_conf_files ${test_file_0})
+            list(APPEND found_conf_files ${test_file_1})
+
+            if(ZFILE_NAMES)
+              break()
+            endif()
+          endif()
+
+          if(test_file_1 AND NOT BOARD_${ZFILE_BOARD}_SINGLE_SOC)
+            message(FATAL_ERROR "Board ${ZFILE_BOARD} defines multiple SoCs.\nShortened file name "
+                    "(${filename_1}) not allowed, use '<board>_<soc>.conf' naming"
+            )
+          endif()
+
+          if(test_file_0 AND test_file_1)
+            message(FATAL_ERROR "Conflicting file names discovered. Cannot use both ${filename_0} "
+                    "and ${filename_1}. Please choose one naming style, "
+                    "${filename_0} is recommended."
+            )
+          endif()
+        endforeach()
+      endforeach()
+
+      list(APPEND ${ZFILE_KCONF} ${found_conf_files})
+
+      # This updates the provided list in parent scope (callers scope)
+      set(${ZFILE_KCONF} ${${ZFILE_KCONF}} PARENT_SCOPE)
+
+      if(NOT ${ZFILE_KCONF})
+        set(not_found ${kconf_filename_list})
+      endif()
+    endif()
+
+    if(ZFILE_REQUIRED AND DEFINED not_found)
+      message(FATAL_ERROR
+              "No ${not_found} file(s) was found in the ${ZFILE_CONF_FILES} folder(s), "
+              "please read the Zephyr documentation on application development."
+      )
+    endif()
+
+    if(ZFILE_DEFCONFIG)
+      set(found_defconf_files)
+      foreach(path ${ZFILE_CONF_FILES})
+        foreach(filename IN ZIP_LISTS filename_list shortened_filename_list)
+          foreach(i RANGE 1)
+            set(test_file_${i} ${path}/${filename_${i}}_defconfig)
+
+            if(EXISTS ${test_file_${i}})
+              list(APPEND found_defconf_files ${test_file_${i}})
+            else()
+              set(test_file_${i})
+            endif()
+          endforeach()
+
+          if(test_file_1 AND NOT BOARD_${ZFILE_BOARD}_SINGLE_SOC)
+            message(FATAL_ERROR "Board ${ZFILE_BOARD} defines multiple SoCs.\nShortened file name "
+                    "(${filename_1}_defconfig) not allowed, use '<board>_<soc>_defconfig' naming"
+            )
+          endif()
+
+          if(test_file_0 AND test_file_1)
+            message(FATAL_ERROR "Conflicting file names discovered. Cannot use both "
+                    "${filename_0}_defconfig and ${filename_1}_defconfig. Please choose one "
+                    "naming style, ${filename_0}_defconfig is recommended."
+            )
+          endif()
+        endforeach()
+      endforeach()
+      list(APPEND ${ZFILE_DEFCONFIG} ${found_defconf_files})
+
+      # This updates the provided list in parent scope (callers scope)
+      set(${ZFILE_DEFCONFIG} ${${ZFILE_DEFCONFIG}} PARENT_SCOPE)
     endif()
   endif()
 endfunction()
@@ -2472,11 +2981,71 @@ function(zephyr_file_copy oldname newname)
 endfunction()
 
 # Usage:
+#   zephyr_file_suffix(<filename> SUFFIX <suffix>)
+#
+# Zephyr file add suffix extension.
+# This function will check the provied filename or list of filenames to see if they have a
+# `_<suffix>` extension to them and if so, updates the supplied variable/list with the new
+# path/paths.
+#
+# <filename>: Variable (singlular or list) of absolute path filename(s) which should be checked
+#             and updated if there is a filename which has the <suffix> present.
+# <suffix>: The suffix to test for and append to the end of the provided filename.
+#
+# Returns an updated variable of absolute path(s)
+#
+function(zephyr_file_suffix filename)
+  set(single_args SUFFIX)
+  cmake_parse_arguments(SFILE "" "${single_args}" "" ${ARGN})
+
+  if(NOT DEFINED SFILE_SUFFIX OR NOT DEFINED ${filename})
+    # If the file suffix variable is not known then there is nothing to do, return early
+    return()
+  endif()
+
+  set(tmp_new_list)
+
+  foreach(file ${${filename}})
+    if("${file}" STREQUAL "")
+      # Skip checking empty variables
+      continue()
+    endif()
+
+    # Search for the full stop so we know where to add the file suffix before the file extension
+    cmake_path(GET file EXTENSION file_ext)
+    cmake_path(REMOVE_EXTENSION file OUTPUT_VARIABLE new_filename)
+    cmake_path(APPEND_STRING new_filename "_${SFILE_SUFFIX}${file_ext}")
+
+    # Use the filename with the suffix if it exists, if not then fall back to the default
+    if(EXISTS "${new_filename}")
+      list(APPEND tmp_new_list ${new_filename})
+    else()
+      list(APPEND tmp_new_list ${file})
+    endif()
+  endforeach()
+
+  # Update supplied variable if it differs
+  if(NOT "${${filename}}" STREQUAL "${tmp_new_list}")
+    set(${filename} "${tmp_new_list}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Usage:
 #   zephyr_string(<mode> <out-var> <input> ...)
 #
 # Zephyr string function extension.
 # This function extends the CMake string function by providing additional
 # manipulation arguments to CMake string.
+#
+# ESCAPE:   Ensure that any single '\' in the input string is escaped with the
+#           escape char '\'. For example the string 'foo\bar' will be escaped
+#           so that it becomes 'foo\\bar'.
+#           Backslashes which are already escaped will not be escaped further,
+#           for example 'foo\\bar' will not be modified.
+#           This is useful for handling of windows path separator in strings or
+#           when strings contains newline escapes such as '\n' and this can
+#           cause issues when writing to a file where a '\n' is desired in the
+#           string instead of a newline.
 #
 # SANITIZE: Ensure that the output string does not contain any special
 #           characters. Special characters, such as -, +, =, $, etc. are
@@ -2489,8 +3058,10 @@ endfunction()
 #
 # returns the updated string
 function(zephyr_string)
-  set(options SANITIZE TOUPPER)
+  set(options SANITIZE TOUPPER ESCAPE)
   cmake_parse_arguments(ZEPHYR_STRING "${options}" "" "" ${ARGN})
+
+  zephyr_check_flags_exclusive(${CMAKE_CURRENT_FUNCTION} ZEPHYR_STRING SANITIZE ESCAPE)
 
   if (NOT ZEPHYR_STRING_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "Function zephyr_string() called without a return variable")
@@ -2507,6 +3078,13 @@ function(zephyr_string)
 
   if(ZEPHYR_STRING_TOUPPER)
     string(TOUPPER ${work_string} work_string)
+  endif()
+
+  if(ZEPHYR_STRING_ESCAPE)
+    # If a single '\' is discovered, such as 'foo\bar', then it must be escaped like: 'foo\\bar'
+    # \\1 and \\2 are keeping the match patterns, the \\\\ --> \\ meaning an escaped '\',
+    # which then becomes a single '\' in the final string.
+    string(REGEX REPLACE "([^\\][\\])([^\\])" "\\1\\\\\\2" work_string "${ZEPHYR_STRING_UNPARSED_ARGUMENTS}")
   endif()
 
   set(${return_arg} ${work_string} PARENT_SCOPE)
@@ -2669,8 +3247,9 @@ function(zephyr_get variable)
       set(sysbuild_global_${var})
     endif()
 
-    if(TARGET snippets_scope)
-      get_property(snippets_${var} TARGET snippets_scope PROPERTY ${var})
+    zephyr_scope_exists(scope_defined snippets)
+    if(scope_defined)
+      zephyr_get_scoped(snippets_${var} snippets ${var})
     endif()
   endforeach()
 
@@ -2735,11 +3314,54 @@ endfunction(zephyr_get variable)
 # <scope>: Name of new scope.
 #
 function(zephyr_create_scope scope)
-  if(TARGET ${scope}_scope)
+  zephyr_scope_exists(scope_defined ${scope})
+  if(scope_defined)
     message(FATAL_ERROR "zephyr_create_scope(${scope}) already exists.")
   endif()
 
-  add_custom_target(${scope}_scope)
+  set_property(GLOBAL PROPERTY scope:${scope} TRUE)
+endfunction()
+
+# Usage:
+#   zephyr_scope_exists(<result> <scope>)
+#
+# Check if <scope> exists.
+#
+# <result>: Variable to set with result.
+#           TRUE if scope exists, FALSE otherwise.
+# <scope> : Name of scope.
+#
+function(zephyr_scope_exists result scope)
+  get_property(scope_defined GLOBAL PROPERTY scope:${scope})
+  if(scope_defined)
+    set(${result} TRUE PARENT_SCOPE)
+  else()
+    set(${result} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
+# Usage:
+#   zephyr_get_scoped(<output> <scope> <var>)
+#
+# Get the current value of <var> in a specific <scope>, as defined by a
+# previous zephyr_set() call. The value will be stored in the <output> var.
+#
+# <output> : Variable to store the value in
+# <scope>  : Scope for the variable look up
+# <var>    : Name to look up in the specific scope
+#
+function(zephyr_get_scoped output scope var)
+  zephyr_scope_exists(scope_defined ${scope})
+  if(NOT scope_defined)
+    message(FATAL_ERROR "zephyr_get_scoped(): scope ${scope} doesn't exists.")
+  endif()
+
+  get_property(value GLOBAL PROPERTY ${scope}_scope:${var})
+  if(DEFINED value)
+    set(${output} "${value}" PARENT_SCOPE)
+  else()
+    unset(${output} PARENT_SCOPE)
+  endif()
 endfunction()
 
 # Usage:
@@ -2760,7 +3382,8 @@ function(zephyr_set variable)
 
   zephyr_check_arguments_required_all(zephyr_set SET_VAR SCOPE)
 
-  if(NOT TARGET ${SET_VAR_SCOPE}_scope)
+  zephyr_scope_exists(scope_defined ${SET_VAR_SCOPE})
+  if(NOT scope_defined)
     message(FATAL_ERROR "zephyr_set(... SCOPE ${SET_VAR_SCOPE}) doesn't exists.")
   endif()
 
@@ -2768,8 +3391,8 @@ function(zephyr_set variable)
     set(property_args APPEND)
   endif()
 
-  set_property(TARGET ${SET_VAR_SCOPE}_scope ${property_args}
-               PROPERTY ${variable} ${SET_VAR_UNPARSED_ARGUMENTS}
+  set_property(GLOBAL ${property_args} PROPERTY
+               ${SET_VAR_SCOPE}_scope:${variable} ${SET_VAR_UNPARSED_ARGUMENTS}
   )
 endfunction()
 
@@ -3005,6 +3628,164 @@ function(target_byproducts)
   )
 endfunction()
 
+# Usage:
+#   topological_sort(TARGETS <target> [<target> ...]
+#                    PROPERTY_NAME <property>
+#                    RESULT <out-variable>)
+#
+# This function performs topological sorting of CMake targets using a specific
+# <property>, which dictates target dependencies. A fatal error occurs if the
+# provided dependencies cannot be met, e.g., if they contain cycles.
+#
+# TARGETS:       List of target names.
+# PROPERTY_NAME: Name of the target property to be used when sorting. For every
+#                target listed in TARGETS, this property must contain a list
+#                (possibly empty) of other targets, which this target depends on
+#                for a particular purpose. The property must not contain any
+#                target which is not also found in TARGETS.
+# RESULT:        Output variable, where the topologically sorted list of target
+#                names will be returned.
+#
+function(topological_sort)
+  cmake_parse_arguments(TS "" "RESULT;PROPERTY_NAME" "TARGETS" ${ARGN})
+
+  set(dep_targets)
+  set(start_targets)
+  set(sorted_targets)
+
+  foreach(target ${TS_TARGETS})
+    get_target_property(${target}_dependencies ${target} ${TS_PROPERTY_NAME})
+
+    if(${target}_dependencies)
+      list(APPEND dep_targets ${target})
+    else()
+      list(APPEND start_targets ${target})
+    endif()
+  endforeach()
+
+  while(TRUE)
+    list(POP_FRONT start_targets node)
+    list(APPEND sorted_targets ${node})
+    set(to_remove)
+    foreach(target ${dep_targets})
+      if("${node}" IN_LIST ${target}_dependencies)
+        list(REMOVE_ITEM ${target}_dependencies ${node})
+        if(NOT ${target}_dependencies)
+          list(APPEND start_targets ${target})
+          list(APPEND to_remove ${target})
+        endif()
+      endif()
+    endforeach()
+
+    foreach(target ${to_remove})
+      list(REMOVE_ITEM dep_targets ${target})
+    endforeach()
+    if(NOT start_targets)
+      break()
+    endif()
+  endwhile()
+
+  if(dep_targets)
+    foreach(target ${dep_targets})
+      get_target_property(deps ${target} ${TS_PROPERTY_NAME})
+      list(JOIN deps " " deps)
+      list(APPEND dep_string "${target} depends on: ${deps}")
+    endforeach()
+    list(JOIN dep_string "\n" dep_string)
+    message(FATAL_ERROR "Unmet or cyclic dependencies:\n${dep_string}")
+  endif()
+
+  set(${TS_RESULT} "${sorted_targets}" PARENT_SCOPE)
+endfunction()
+
+# Usage:
+#   build_info(<tag>... VALUE <value>...)
+#   build_info(<tag>... PATH  <path>...)
+#
+# This function populates the build_info.yml info file with exchangable build
+# information related to the current build.
+#
+# Example:
+#   build_info(devicetree files VALUE file1.dts file2.dts file3.dts)
+# Will update the 'devicetree files' key in the build info yaml with the list
+# of files, file1.dts file2.dts file3.dts.
+#
+#   build_info(vendor-specific foo VALUE bar)
+# Will place the vendor specific key 'foo' with value 'bar' in the vendor specific section
+# of the build info file.
+#
+# <tag>...: One of the pre-defined valid CMake keys supported by build info or vendor-specific.
+#           See 'scripts/schemas/build-schema.yml' CMake section for valid tags.
+# VALUE <value>... : value(s) to place in the build_info.yml file.
+# PATH  <path>... : path(s) to place in the build_info.yml file. All paths are converted to CMake
+#                   style. If no conversion is required, for example when paths are already
+#                   guaranteed to be CMake style, then VALUE can also be used.
+function(build_info)
+  set(convert_path FALSE)
+  set(arg_list ${ARGV})
+  list(FIND arg_list VALUE index)
+  if(index EQUAL -1)
+    list(FIND arg_list PATH index)
+    set(convert_path TRUE)
+  endif()
+
+  if(index EQUAL -1)
+    message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}(...) missing a required argument: VALUE or PATH")
+  endif()
+
+  string(GENEX_STRIP "${arg_list}" arg_list_no_genexes)
+  if (NOT "${arg_list}" STREQUAL "${arg_list_no_genexes}")
+    if (convert_path)
+      message(FATAL_ERROR "build_info: generator expressions unsupported on PATH entries")
+    endif()
+    set(genex_flag GENEX)
+  endif()
+
+  yaml_context(EXISTS NAME build_info result)
+  if(NOT result)
+    yaml_load(FILE ${ZEPHYR_BASE}/scripts/schemas/build-schema.yml NAME build_info_schema)
+    if(EXISTS ${CMAKE_BINARY_DIR}/build_info.yml)
+      yaml_load(FILE ${CMAKE_BINARY_DIR}/build_info.yml NAME build_info)
+    else()
+      yaml_create(FILE ${CMAKE_BINARY_DIR}/build_info.yml NAME build_info)
+    endif()
+    yaml_set(NAME build_info KEY version VALUE "0.1.0")
+  endif()
+
+  list(SUBLIST arg_list 0 ${index} keys)
+  list(SUBLIST arg_list ${index} -1 values)
+  list(POP_FRONT values)
+
+  if(convert_path)
+    set(converted_values)
+    foreach(val ${values})
+      cmake_path(SET cmake_path "${val}")
+      list(APPEND converted_values "${cmake_path}")
+    endforeach()
+    set(values "${converted_values}")
+  endif()
+
+  if(ARGV0 STREQUAL "vendor-specific")
+    set(type VALUE)
+  else()
+    set(schema_check ${keys})
+    list(TRANSFORM schema_check PREPEND "mapping;")
+    yaml_get(check NAME build_info_schema KEY mapping cmake ${schema_check})
+    if(check MATCHES ".*-NOTFOUND")
+      message(FATAL_ERROR "${CMAKE_CURRENT_FUNCTION}(...) called with invalid tag: ${keys}")
+    endif()
+
+    yaml_get(type NAME build_info_schema KEY mapping cmake ${schema_check} type)
+    if(type MATCHES "seq|sequence")
+      set(type LIST)
+    else()
+      set(type VALUE)
+    endif()
+  endif()
+
+  yaml_set(NAME build_info KEY cmake ${keys} ${type} "${values}" ${genex_flag})
+endfunction()
+
 ########################################################
 # 4. Devicetree extensions
 ########################################################
@@ -3047,9 +3828,11 @@ endfunction()
 #
 # <var>              : Return variable where the node path will be stored
 # NODELABEL <label>  : Node label
+# REQUIRED           : Generate a fatal error if the node-label is not found
 function(dt_nodelabel var)
+  set(options "REQUIRED")
   set(req_single_args "NODELABEL")
-  cmake_parse_arguments(DT_LABEL "" "${req_single_args}" "" ${ARGN})
+  cmake_parse_arguments(DT_LABEL "${options}" "${req_single_args}" "" ${ARGN})
 
   if(${ARGV0} IN_LIST req_single_args)
     message(FATAL_ERROR "dt_nodelabel(${ARGV0} ...) missing return parameter.")
@@ -3065,6 +3848,9 @@ function(dt_nodelabel var)
 
   get_target_property(${var} devicetree_target "DT_NODELABEL|${DT_LABEL_NODELABEL}")
   if(${${var}} STREQUAL ${var}-NOTFOUND)
+    if(DT_LABEL_REQUIRED)
+      message(FATAL_ERROR "required nodelabel not found: ${DT_LABEL_NODELABEL}")
+    endif()
     set(${var})
   endif()
 
@@ -3090,9 +3876,11 @@ endfunction()
 #
 # <var>           : Return variable where the node path will be stored
 # PROPERTY <prop> : The alias to check
+# REQUIRED        : Generate a fatal error if the alias is not found
 function(dt_alias var)
+  set(options "REQUIRED")
   set(req_single_args "PROPERTY")
-  cmake_parse_arguments(DT_ALIAS "" "${req_single_args}" "" ${ARGN})
+  cmake_parse_arguments(DT_ALIAS "${options}" "${req_single_args}" "" ${ARGN})
 
   if(${ARGV0} IN_LIST req_single_args)
     message(FATAL_ERROR "dt_alias(${ARGV0} ...) missing return parameter.")
@@ -3108,6 +3896,9 @@ function(dt_alias var)
 
   get_target_property(${var} devicetree_target "DT_ALIAS|${DT_ALIAS_PROPERTY}")
   if(${${var}} STREQUAL ${var}-NOTFOUND)
+    if(DT_ALIAS_REQUIRED)
+      message(FATAL_ERROR "required alias not found: ${DT_ALIAS_PROPERTY}")
+    endif()
     set(${var})
   endif()
 
@@ -3197,13 +3988,13 @@ function(dt_node_has_status var)
     return()
   endif()
 
-  dt_prop(${var} PATH ${canonical} PROPERTY status)
+  dt_prop(status PATH ${canonical} PROPERTY status)
 
-  if(NOT DEFINED ${var} OR "${${var}}" STREQUAL ok)
-    set(${var} okay)
+  if(NOT DEFINED status OR status STREQUAL "ok")
+    set(status "okay")
   endif()
 
-  if(${var} STREQUAL ${DT_NODE_STATUS})
+  if(status STREQUAL "${DT_NODE_STATUS}")
     set(${var} TRUE PARENT_SCOPE)
   else()
     set(${var} FALSE PARENT_SCOPE)
@@ -3260,10 +4051,12 @@ endfunction()
 # PROPERTY <prop>: Property for which a value should be returned, as it
 #                  appears in the DTS source
 # INDEX <idx>    : Optional index when retrieving a value in an array property
+# REQUIRED       : Generate a fatal error if the property is not found
 function(dt_prop var)
+  set(options "REQUIRED")
   set(req_single_args "PATH;PROPERTY")
   set(single_args "INDEX")
-  cmake_parse_arguments(DT_PROP "" "${req_single_args};${single_args}" "" ${ARGN})
+  cmake_parse_arguments(DT_PROP "${options}" "${req_single_args};${single_args}" "" ${ARGN})
 
   if(${ARGV0} IN_LIST req_single_args)
     message(FATAL_ERROR "dt_prop(${ARGV0} ...) missing return parameter.")
@@ -3285,6 +4078,9 @@ function(dt_prop var)
 
   if(NOT exists)
     set(${var} PARENT_SCOPE)
+    if(DT_PROP_REQUIRED)
+      message(FATAL_ERROR "required property not found: ${canonical}/${DT_PROP_PROPERTY}")
+    endif()
     return()
   endif()
 
@@ -3886,7 +4682,7 @@ function(zephyr_linker)
 endfunction()
 
 # Usage:
-#   zephyr_linker_memory(NAME <name> START <address> SIZE <size> FLAGS <flags>)
+#   zephyr_linker_memory(NAME <name> START <address> SIZE <size> [FLAGS <flags>])
 #
 # Zephyr linker memory.
 # This function specifies a memory region for the platform in use.
@@ -3903,14 +4699,18 @@ endfunction()
 #                  All the following are valid values:
 #                    1048576, 0x10000, 1024k, 1024K, 1m, and 1M.
 # FLAGS <flags>  : Flags describing properties of the memory region.
-#                  Currently supported:
 #                  r: Read-only region
 #                  w: Read-write region
 #                  x: Executable region
-#                  The flags r and x, or w and x may be combined like: rx, wx.
+#                  a: Allocatable region
+#                  i: Initialized region
+#                  l: Same as ‘i’
+#                  !: Invert the sense of any of the attributes that follow
+#                  The flags may be combined like: rx, rx!w.
 function(zephyr_linker_memory)
-  set(single_args "FLAGS;NAME;SIZE;START")
-  cmake_parse_arguments(MEMORY "" "${single_args}" "" ${ARGN})
+  set(req_single_args "NAME;SIZE;START")
+  set(single_args "FLAGS")
+  cmake_parse_arguments(MEMORY "" "${req_single_args};${single_args}" "" ${ARGN})
 
   if(MEMORY_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "zephyr_linker_memory(${ARGV0} ...) given unknown "
@@ -3918,7 +4718,7 @@ function(zephyr_linker_memory)
     )
   endif()
 
-  foreach(arg ${single_args})
+  foreach(arg ${req_single_args})
     if(NOT DEFINED MEMORY_${arg})
       message(FATAL_ERROR "zephyr_linker_memory(${ARGV0} ...) missing required "
                           "argument: ${arg}"
@@ -3927,6 +4727,7 @@ function(zephyr_linker_memory)
   endforeach()
 
   set(MEMORY)
+  zephyr_linker_arg_val_list(MEMORY "${req_single_args}")
   zephyr_linker_arg_val_list(MEMORY "${single_args}")
 
   string(REPLACE ";" "\;" MEMORY "${MEMORY}")
@@ -3936,7 +4737,7 @@ function(zephyr_linker_memory)
 endfunction()
 
 # Usage:
-#   zephyr_linker_memory_ifdef(<setting> NAME <name> START <address> SIZE <size> FLAGS <flags>)
+#   zephyr_linker_memory_ifdef(<setting> NAME <name> START <address> SIZE <size> [FLAGS <flags>])
 #
 # Will create memory region if <setting> is enabled.
 #
@@ -3969,7 +4770,7 @@ function(zephyr_linker_dts_section)
 
   if(DTS_SECTION_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "zephyr_linker_dts_section(${ARGV0} ...) given unknown "
-	    "arguments: ${DTS_SECTION_UNPARSED_ARGUMENTS}"
+            "arguments: ${DTS_SECTION_UNPARSED_ARGUMENTS}"
     )
   endif()
 
@@ -3979,8 +4780,8 @@ function(zephyr_linker_dts_section)
     )
   endif()
 
-  dt_node_exists(exists PATH ${DTS_SECTION_PATH})
-  if(NOT ${exists})
+  dt_node_has_status(okay PATH ${DTS_SECTION_PATH} STATUS okay)
+  if(NOT ${okay})
     return()
   endif()
 
@@ -3999,9 +4800,9 @@ function(zephyr_linker_dts_section)
 endfunction()
 
 # Usage:
-#   zephyr_linker_dts_memory(PATH <path> FLAGS <flags>)
-#   zephyr_linker_dts_memory(NODELABEL <nodelabel> FLAGS <flags>)
-#   zephyr_linker_dts_memory(CHOSEN <prop> FLAGS <flags>)
+#   zephyr_linker_dts_memory(PATH <path>)
+#   zephyr_linker_dts_memory(NODELABEL <nodelabel>)
+#   zephyr_linker_dts_memory(CHOSEN <prop>)
 #
 # Zephyr linker devicetree memory.
 # This function specifies a memory region for the platform in use based on its
@@ -4016,15 +4817,9 @@ endfunction()
 # NODELABEL <label>: Node label
 # CHOSEN <prop>    : Chosen property, add memory section described by the
 #                    /chosen property if it exists.
-# FLAGS <flags>  : Flags describing properties of the memory region.
-#                  Currently supported:
-#                  r: Read-only region
-#                  w: Read-write region
-#                  x: Executable region
-#                  The flags r and x, or w and x may be combined like: rx, wx.
 #
 function(zephyr_linker_dts_memory)
-  set(single_args "CHOSEN;FLAGS;PATH;NODELABEL")
+  set(single_args "CHOSEN;PATH;NODELABEL")
   cmake_parse_arguments(DTS_MEMORY "" "${single_args}" "" ${ARGN})
 
   if(DTS_MEMORY_UNPARSED_ARGUMENTS)
@@ -4052,22 +4847,43 @@ function(zephyr_linker_dts_memory)
     return()
   endif()
 
-  dt_node_exists(exists PATH ${DTS_MEMORY_PATH})
-  if(NOT ${exists})
+  dt_node_has_status(okay PATH ${DTS_MEMORY_PATH} STATUS okay)
+  if(NOT ${okay})
     return()
   endif()
 
   dt_reg_addr(addr PATH ${DTS_MEMORY_PATH})
   dt_reg_size(size PATH ${DTS_MEMORY_PATH})
   dt_prop(name PATH ${DTS_MEMORY_PATH} PROPERTY "zephyr,memory-region")
+  if(NOT DEFINED name)
+    message(FATAL_ERROR "zephyr_linker_dts_memory(${ARGV0} ...) missing "
+                        "\"zephyr,memory-region\" property"
+    )
+  endif()
   zephyr_string(SANITIZE name ${name})
 
-  zephyr_linker_memory(
-    NAME  ${name}
-    START ${addr}
-    SIZE  ${size}
-    FLAGS ${DTS_MEMORY_FLAGS}
-  )
+  dt_prop(flags PATH ${DTS_MEMORY_PATH} PROPERTY "zephyr,memory-region-flags")
+  if(NOT DEFINED flags)
+    zephyr_linker_memory(
+      NAME  ${name}
+      START ${addr}
+      SIZE  ${size}
+      FLAGS "rw"
+    )
+  elseif("${flags}" STREQUAL "")
+    zephyr_linker_memory(
+      NAME  ${name}
+      START ${addr}
+      SIZE  ${size}
+    )
+  else()
+    zephyr_linker_memory(
+      NAME  ${name}
+      START ${addr}
+      SIZE  ${size}
+      FLAGS ${flags}
+    )
+  endif()
 endfunction()
 
 # Usage:
@@ -4390,7 +5206,11 @@ function(zephyr_iterable_section)
   endif()
 
   if(SECTION_NUMERIC)
-    set(INPUT "._${SECTION_NAME}.static.*_?_*;._${SECTION_NAME}.static.*_??_*")
+    set(INPUT "._${SECTION_NAME}.static.*_?_*;"
+              "._${SECTION_NAME}.static.*_??_*;"
+              "._${SECTION_NAME}.static.*_???_*;"
+              "._${SECTION_NAME}.static.*_????_*;"
+              "._${SECTION_NAME}.static.*_?????_*")
   else()
     set(INPUT "._${SECTION_NAME}.static.*")
   endif()
@@ -4617,6 +5437,24 @@ macro(zephyr_check_arguments_required function prefix)
 endmacro()
 
 #
+# Helper macro for verifying that at least one of the required arguments has
+# been provided by the caller. Arguments with empty values are allowed.
+#
+# A FATAL_ERROR will be raised if not one of the required arguments has been
+# passed by the caller.
+#
+# Usage:
+#   zephyr_check_arguments_required_allow_empty(<function_name> <prefix> <arg1> [<arg2> ...])
+#
+macro(zephyr_check_arguments_required_allow_empty function prefix)
+  set(check_defined DEFINED)
+  set(allow_empty TRUE)
+  zephyr_check_flags_required(${function} ${prefix} ${ARGN})
+  set(allow_empty)
+  set(check_defined)
+endmacro()
+
+#
 # Helper macro for verifying that at least one of the required flags has
 # been provided by the caller.
 #
@@ -4630,6 +5468,8 @@ macro(zephyr_check_flags_required function prefix)
   set(required_found FALSE)
   foreach(required ${ARGN})
     if(${check_defined} ${prefix}_${required})
+      set(required_found TRUE)
+    elseif("${allow_empty}" AND ${required} IN_LIST ${prefix}_KEYWORDS_MISSING_VALUES)
       set(required_found TRUE)
     endif()
   endforeach()
@@ -4695,3 +5535,392 @@ macro(zephyr_check_flags_exclusive function prefix)
       )
   endif()
 endmacro()
+
+########################################################
+# 7. Linkable loadable extensions (llext)
+########################################################
+#
+# These functions simplify the creation and management of linkable
+# loadable extensions (llexts).
+#
+
+# 7.1 Configuration functions
+#
+# The following functions simplify access to the compilation/link stage
+# properties of an llext using the same API of the target_* functions.
+#
+
+function(llext_compile_definitions target_name)
+  target_compile_definitions(${target_name}_llext_lib PRIVATE ${ARGN})
+endfunction()
+
+function(llext_compile_features target_name)
+  target_compile_features(${target_name}_llext_lib PRIVATE ${ARGN})
+endfunction()
+
+function(llext_compile_options target_name)
+  target_compile_options(${target_name}_llext_lib PRIVATE ${ARGN})
+endfunction()
+
+function(llext_include_directories target_name)
+  target_include_directories(${target_name}_llext_lib PRIVATE ${ARGN})
+endfunction()
+
+function(llext_link_options target_name)
+  target_link_options(${target_name}_llext_lib PRIVATE ${ARGN})
+endfunction()
+
+# 7.2 Build control functions
+#
+# The following functions add targets and subcommands to the build system
+# to compile and link an llext.
+#
+
+# Usage:
+#   add_llext_target(<target_name>
+#                    OUTPUT  <output_file>
+#                    SOURCES <source_files>
+#   )
+#
+# Add a custom target that compiles a set of source files to a .llext file.
+#
+# Output and source files must be specified using the OUTPUT and SOURCES
+# arguments. Only one source file is supported when LLEXT_TYPE_ELF_OBJECT is
+# selected, since there is no linking step in that case.
+#
+# The llext code will be compiled with mostly the same C compiler flags used
+# in the Zephyr build, but with some important modifications. The list of
+# flags to remove and flags to append is controlled respectively by the
+# LLEXT_REMOVE_FLAGS and LLEXT_APPEND_FLAGS global variables.
+#
+# The following custom properties of <target_name> are defined and can be
+# retrieved using the get_target_property() function:
+#
+# - lib_target  Target name for the source compilation and/or link step.
+# - lib_output  The binary file resulting from compilation and/or
+#               linking steps.
+# - pkg_input   The file to be used as input for the packaging step.
+# - pkg_output  The final .llext file.
+#
+# Example usage:
+#   add_llext_target(hello_world
+#     OUTPUT  ${PROJECT_BINARY_DIR}/hello_world.llext
+#     SOURCES ${PROJECT_SOURCE_DIR}/src/llext/hello_world.c
+#   )
+# will compile the source file src/llext/hello_world.c to a file
+# named "${PROJECT_BINARY_DIR}/hello_world.llext".
+#
+function(add_llext_target target_name)
+  set(single_args OUTPUT)
+  set(multi_args SOURCES)
+  cmake_parse_arguments(PARSE_ARGV 1 LLEXT "${options}" "${single_args}" "${multi_args}")
+
+  # Check that the llext subsystem is enabled for this build
+  if (NOT CONFIG_LLEXT)
+    message(FATAL_ERROR "add_llext_target: CONFIG_LLEXT must be enabled")
+  endif()
+
+  # Source and output files must be provided
+  zephyr_check_arguments_required_all("add_llext_target" LLEXT OUTPUT SOURCES)
+
+  list(LENGTH LLEXT_SOURCES source_count)
+  if(CONFIG_LLEXT_TYPE_ELF_OBJECT AND NOT (source_count EQUAL 1))
+    message(FATAL_ERROR "add_llext_target: only one source file is supported "
+                        "for ELF object file builds")
+  endif()
+
+  set(llext_pkg_output ${LLEXT_OUTPUT})
+  set(source_files ${LLEXT_SOURCES})
+
+  set(zephyr_flags
+      "$<TARGET_PROPERTY:zephyr_interface,INTERFACE_COMPILE_OPTIONS>"
+  )
+  llext_filter_zephyr_flags(LLEXT_REMOVE_FLAGS ${zephyr_flags}
+      zephyr_filtered_flags)
+
+  # Compile the source file using current Zephyr settings but a different
+  # set of flags to obtain the desired llext object type.
+  set(llext_lib_target ${target_name}_llext_lib)
+  if(CONFIG_LLEXT_TYPE_ELF_OBJECT)
+
+    # Create an object library to compile the source file
+    add_library(${llext_lib_target} EXCLUDE_FROM_ALL OBJECT ${source_files})
+    set(llext_lib_output $<TARGET_OBJECTS:${llext_lib_target}>)
+
+  elseif(CONFIG_LLEXT_TYPE_ELF_RELOCATABLE)
+
+    # CMake does not directly support a "RELOCATABLE" library target.
+    # The "SHARED" target would be similar, but that unavoidably adds
+    # a "-shared" flag to the linker command line which does firmly
+    # conflict with "-r".
+    # A workaround is to use an executable target and make the linker
+    # output a relocatable file. The output file suffix is changed so
+    # the result looks like the object file it actually is.
+    add_executable(${llext_lib_target} EXCLUDE_FROM_ALL ${source_files})
+    target_link_options(${llext_lib_target} PRIVATE
+      $<TARGET_PROPERTY:linker,partial_linking>)
+    set_target_properties(${llext_lib_target} PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/llext
+      SUFFIX ${CMAKE_C_OUTPUT_EXTENSION})
+    set(llext_lib_output $<TARGET_FILE:${llext_lib_target}>)
+
+    # Add the llext flags to the linking step as well
+    target_link_options(${llext_lib_target} PRIVATE
+      ${LLEXT_APPEND_FLAGS}
+    )
+
+  elseif(CONFIG_LLEXT_TYPE_ELF_SHAREDLIB)
+
+    # Create a shared library
+    add_library(${llext_lib_target} EXCLUDE_FROM_ALL SHARED ${source_files})
+    set_target_properties(${llext_lib_target} PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/llext
+    )
+    set(llext_lib_output $<TARGET_FILE:${llext_lib_target}>)
+
+    # Add the llext flags to the linking step as well
+    target_link_options(${llext_lib_target} PRIVATE
+      ${LLEXT_APPEND_FLAGS}
+    )
+
+  endif()
+
+  target_compile_definitions(${llext_lib_target} PRIVATE
+    $<TARGET_PROPERTY:zephyr_interface,INTERFACE_COMPILE_DEFINITIONS>
+    LL_EXTENSION_BUILD
+  )
+  target_compile_options(${llext_lib_target} PRIVATE
+    ${zephyr_filtered_flags}
+    ${LLEXT_APPEND_FLAGS}
+  )
+  target_include_directories(${llext_lib_target} PRIVATE
+    $<TARGET_PROPERTY:zephyr_interface,INTERFACE_INCLUDE_DIRECTORIES>
+  )
+  target_include_directories(${llext_lib_target} SYSTEM PUBLIC
+    $<TARGET_PROPERTY:zephyr_interface,INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>
+  )
+  add_dependencies(${llext_lib_target}
+    zephyr_interface
+    zephyr_generated_headers
+  )
+
+  # Make sure the intermediate output directory exists.
+  file(MAKE_DIRECTORY ${PROJECT_BINARY_DIR}/llext)
+
+  # Set up an intermediate processing step between compilation and packaging
+  # to be used to support POST_BUILD commands on targets that do not use a
+  # dynamic library.
+  set(llext_proc_target ${target_name}_llext_proc)
+  set(llext_pkg_input ${PROJECT_BINARY_DIR}/llext/${target_name}_debug.elf)
+  add_custom_target(${llext_proc_target} DEPENDS ${llext_pkg_input})
+  set_property(TARGET ${llext_proc_target} PROPERTY has_post_build_cmds 0)
+
+  # By default this target must copy the `lib_output` binary file to the
+  # expected `pkg_input` location. If actual POST_BUILD commands are defined,
+  # they will take care of this and the default copy is replaced by a no-op.
+  set(has_post_build_cmds "$<TARGET_PROPERTY:${llext_proc_target},has_post_build_cmds>")
+  set(noop_cmd ${CMAKE_COMMAND} -E true)
+  set(copy_cmd ${CMAKE_COMMAND} -E copy ${llext_lib_output} ${llext_pkg_input})
+  add_custom_command(
+    OUTPUT ${llext_pkg_input}
+    COMMAND "$<IF:${has_post_build_cmds},${noop_cmd},${copy_cmd}>"
+    DEPENDS ${llext_lib_target} ${llext_lib_output}
+    COMMAND_EXPAND_LISTS
+  )
+
+  # LLEXT ELF processing for importing via SLID
+  #
+  # This command must be executed as last step of the packaging process,
+  # to ensure that the ELF processed for binary generation contains SLIDs.
+  # If executed too early, it is possible that some tools executed to modify
+  # the ELF file (e.g., strip) undo the work performed here.
+  if (CONFIG_LLEXT_EXPORT_BUILTINS_BY_SLID)
+    set(slid_inject_cmd
+      ${PYTHON_EXECUTABLE}
+      ${ZEPHYR_BASE}/scripts/build/llext_inject_slids.py
+      --elf-file ${llext_pkg_output}
+    )
+  else()
+    set(slid_inject_cmd ${CMAKE_COMMAND} -E true)
+  endif()
+
+  # Remove sections that are unused by the llext loader
+  add_custom_command(
+    OUTPUT ${llext_pkg_output}
+    COMMAND $<TARGET_PROPERTY:bintools,elfconvert_command>
+            $<TARGET_PROPERTY:bintools,elfconvert_flag>
+            $<TARGET_PROPERTY:bintools,elfconvert_flag_strip_unneeded>
+            $<TARGET_PROPERTY:bintools,elfconvert_flag_section_remove>.xt.*
+            $<TARGET_PROPERTY:bintools,elfconvert_flag_infile>${llext_pkg_input}
+            $<TARGET_PROPERTY:bintools,elfconvert_flag_outfile>${llext_pkg_output}
+            $<TARGET_PROPERTY:bintools,elfconvert_flag_final>
+    COMMAND ${slid_inject_cmd}
+    DEPENDS ${llext_proc_target} ${llext_pkg_input}
+  )
+
+  # Add user-visible target and dependency, and fill in properties
+  get_filename_component(output_name ${llext_pkg_output} NAME)
+  add_custom_target(${target_name}
+    COMMENT "Generating ${output_name}"
+    DEPENDS ${llext_pkg_output}
+  )
+  set_target_properties(${target_name} PROPERTIES
+    lib_target ${llext_lib_target}
+    lib_output ${llext_lib_output}
+    pkg_input  ${llext_pkg_input}
+    pkg_output ${llext_pkg_output}
+  )
+endfunction()
+
+# Usage:
+#   add_llext_command(
+#     TARGET <target_name>
+#     PRE_BUILD | POST_BUILD | POST_PKG
+#     COMMAND <command> [...]
+#   )
+#
+# Add a custom command to an llext target that will be executed during
+# the build. The command will be executed at the specified build step and
+# can refer to <target>'s properties for build-specific details.
+#
+# The different build steps are:
+# - PRE_BUILD:  Before the llext code is linked, if the architecture uses
+#               dynamic libraries. This step can access `lib_target` and
+#               its own properties.
+# - POST_BUILD: After the llext code is built, but before packaging
+#               it in an .llext file. This step is expected to create a
+#               `pkg_input` file by reading the contents of `lib_output`.
+# - POST_PKG:   After the .llext file has been created. This can operate on
+#               the final llext file `pkg_output`.
+#
+# Anything else after COMMAND will be passed to add_custom_command() as-is
+# (including multiple commands and other options).
+function(add_llext_command)
+  set(options     PRE_BUILD POST_BUILD POST_PKG)
+  set(single_args TARGET)
+  # COMMAND and other options are passed to add_custom_command() as-is
+
+  cmake_parse_arguments(PARSE_ARGV 0 LLEXT "${options}" "${single_args}" "${multi_args}")
+  zephyr_check_arguments_required_all("add_llext_command" LLEXT TARGET)
+
+  # Check the target exists and refers to an llext target
+  set(target_name ${LLEXT_TARGET})
+  set(llext_lib_target  ${target_name}_llext_lib)
+  set(llext_proc_target ${target_name}_llext_proc)
+  if(NOT TARGET ${llext_lib_target})
+    message(FATAL_ERROR "add_llext_command: not an llext target: ${target_name}")
+  endif()
+
+  # ARM uses an object file representation so there is no link step.
+  if(CONFIG_ARM AND LLEXT_PRE_BUILD)
+    message(FATAL_ERROR
+            "add_llext_command: PRE_BUILD not supported on this arch")
+  endif()
+
+  # Determine the build step and the target to attach the command to
+  # based on the provided options
+  if(LLEXT_PRE_BUILD)
+    # > before the object files are linked:
+    #   - execute user command(s) before the lib target's link step.
+    set(cmd_target ${llext_lib_target})
+    set(build_step PRE_LINK)
+  elseif(LLEXT_POST_BUILD)
+    # > after linking, but before llext packaging:
+    #   - stop default file copy to prevent user files from being clobbered;
+    #   - execute user command(s) after the (now empty) `llext_proc_target`.
+    set_property(TARGET ${llext_proc_target} PROPERTY has_post_build_cmds 1)
+    set(cmd_target ${llext_proc_target})
+    set(build_step POST_BUILD)
+  elseif(LLEXT_POST_PKG)
+    # > after the final llext binary is ready:
+    #   - execute user command(s) after the main target is done.
+    set(cmd_target ${target_name})
+    set(build_step POST_BUILD)
+  else()
+    message(FATAL_ERROR "add_llext_command: build step must be provided")
+  endif()
+
+  # Check that the first unparsed argument is the word COMMAND
+  list(GET LLEXT_UNPARSED_ARGUMENTS 0 command_str)
+  if(NOT command_str STREQUAL "COMMAND")
+    message(FATAL_ERROR "add_llext_command: COMMAND argument must be provided")
+  endif()
+
+  # Add the actual command(s) to the target
+  add_custom_command(
+    TARGET ${cmd_target} ${build_step}
+    ${LLEXT_UNPARSED_ARGUMENTS}
+    COMMAND_EXPAND_LISTS
+  )
+endfunction()
+
+# 7.3 llext helper functions
+
+# Usage:
+#   llext_filter_zephyr_flags(<filter> <flags> <outvar>)
+#
+# Filter out flags from a list of flags. The filter is a list of regular
+# expressions that will be used to exclude flags from the input list.
+#
+# The resulting generator expression will be stored in the variable <outvar>.
+#
+# Example:
+#   llext_filter_zephyr_flags(LLEXT_REMOVE_FLAGS zephyr_flags zephyr_filtered_flags)
+#
+function(llext_filter_zephyr_flags filter flags outvar)
+  list(TRANSFORM ${filter}
+       REPLACE "(.+)" "^\\1$"
+       OUTPUT_VARIABLE llext_remove_flags_regexp
+  )
+  list(JOIN llext_remove_flags_regexp "|" llext_remove_flags_regexp)
+  if ("${llext_remove_flags_regexp}" STREQUAL "")
+    # an empty regexp would match anything, we actually need the opposite
+    # so set it to match empty strings
+    set(llext_remove_flags_regexp "^$")
+  endif()
+
+  set(zephyr_filtered_flags
+      "$<FILTER:${flags},EXCLUDE,${llext_remove_flags_regexp}>"
+  )
+
+  set(${outvar} ${zephyr_filtered_flags} PARENT_SCOPE)
+endfunction()
+
+########################################################
+# 8. Script mode handling
+########################################################
+#
+# Certain features are not available when CMake is used in script mode.
+# For example custom targets, and thus features related to custom targets, such
+# as target properties are not available in script mode.
+#
+# This section defines behavior for functions whose default implementation does
+# not work correctly in script mode.
+#
+# The script mode function can be a simple stub or a more complex solution
+# depending on the exact use of the function in script mode.
+#
+# Current Zephyr CMake scripts which includes `extensions.cmake` in script mode
+# are: package_helper.cmake, verify-toolchain.cmake, llext-edk.cmake
+#
+
+if(CMAKE_SCRIPT_MODE_FILE)
+  # add_custom_target and set_target_properties are not supported in script mode.
+  # However, Zephyr CMake functions like `zephyr_get()`, `zephyr_create_scope()`,
+  # llext functions creates or relies on custom CMake targets.
+  function(add_custom_target)
+    # This silence the error: 'add_custom_target command is not scriptable'
+  endfunction()
+
+  function(set_target_properties)
+    # This silence the error: 'set_target_properties command is not scriptable'
+  endfunction()
+
+  # Build info creates a custom target for handling of build info.
+  # build_info is not needed in script mode but still called by Zephyr CMake
+  # modules. Therefore disable build_info(...) in when including
+  # extensions.cmake in script mode.
+  function(build_info)
+    # This silence the error: 'Unknown CMake command "yaml_context"'
+  endfunction()
+endif()

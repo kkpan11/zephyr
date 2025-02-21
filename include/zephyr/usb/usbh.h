@@ -16,8 +16,9 @@
 
 #include <stdint.h>
 #include <zephyr/device.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/sys/dlist.h>
+#include <zephyr/sys/bitarray.h>
 #include <zephyr/drivers/usb/uhc.h>
 #include <zephyr/sys/iterable_sections.h>
 
@@ -42,41 +43,33 @@ struct usbh_contex {
 	struct k_mutex mutex;
 	/** Pointer to UHC device struct */
 	const struct device *dev;
-	/** peripheral list */
-	sys_dlist_t peripherals;
+	/** USB device list */
+	sys_dlist_t udevs;
+	/** USB root device */
+	struct usb_device *root;
+	/** Allocated device addresses bit array */
+	struct sys_bitarray *addr_ba;
 };
 
 #define USBH_CONTROLLER_DEFINE(device_name, uhc_dev)			\
+	SYS_BITARRAY_DEFINE_STATIC(ba_##device_name, 128);		\
 	static STRUCT_SECTION_ITERABLE(usbh_contex, device_name) = {	\
 		.name = STRINGIFY(device_name),				\
 		.mutex = Z_MUTEX_INITIALIZER(device_name.mutex),	\
 		.dev = uhc_dev,						\
+		.addr_ba = &ba_##device_name,				\
 	}
 
 /**
- * @brief USB host peripheral structure
+ * @brief USB Class Code triple
  */
-struct usbh_peripheral {
-	/** Peripheral dlist node */
-	sys_dnode_t node;
-	/** Peripheral address */
-	uint8_t addr;
-	/** Detected speed (TBD) */
-	uint8_t speed;
-};
-
-/**
- * @brief Class Code
- */
-struct usbh_class_code {
+struct usbh_code_triple {
 	/** Device Class Code */
 	uint8_t dclass;
 	/** Class Subclass Code */
 	uint8_t sub;
 	/** Class Protocol Code */
 	uint8_t proto;
-	/** Reserved */
-	uint8_t reserved;
 };
 
 /**
@@ -84,7 +77,7 @@ struct usbh_class_code {
  */
 struct usbh_class_data {
 	/** Class code supported by this instance */
-	struct usbh_class_code code;
+	struct usbh_code_triple code;
 
 	/** Initialization of the class implementation */
 	/* int (*init)(struct usbh_contex *const uhs_ctx); */

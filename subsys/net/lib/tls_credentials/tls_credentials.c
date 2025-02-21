@@ -9,6 +9,12 @@
 #include <zephyr/kernel.h>
 
 #include "tls_internal.h"
+#include "tls_credentials_digest_raw.h"
+
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_DECLARE(tls_credentials,
+		   CONFIG_TLS_CREDENTIALS_LOG_LEVEL);
 
 /* Global pool of credentials shared among TLS contexts. */
 static struct tls_credential credentials[CONFIG_TLS_MAX_CREDENTIALS_NUMBER];
@@ -74,6 +80,37 @@ struct tls_credential *credential_next_get(sec_tag_t tag,
 	return NULL;
 }
 
+sec_tag_t credential_next_tag_get(sec_tag_t iter)
+{
+	int i;
+	sec_tag_t lowest = TLS_SEC_TAG_NONE;
+
+	/* Scan all slots and find lowest sectag greater than iter */
+	for (i = 0; i < ARRAY_SIZE(credentials); i++) {
+		/* Skip empty slots. */
+		if (credentials[i].type == TLS_CREDENTIAL_NONE) {
+			continue;
+		}
+
+		/* Skip any slots containing sectags not greater than iter */
+		if (credentials[i].tag <= iter && iter != TLS_SEC_TAG_NONE) {
+			continue;
+		}
+
+		/* Find the lowest of such slots */
+		if (lowest == TLS_SEC_TAG_NONE || credentials[i].tag < lowest) {
+			lowest = credentials[i].tag;
+		}
+	}
+
+	return lowest;
+}
+
+int credential_digest(struct tls_credential *credential, void *dest, size_t *len)
+{
+	return credential_digest_raw(credential, dest, len);
+}
+
 void credentials_lock(void)
 {
 	k_mutex_lock(&credential_lock, K_FOREVER);
@@ -126,11 +163,18 @@ int tls_credential_get(sec_tag_t tag, enum tls_credential_type type,
 	credential = credential_get(tag, type);
 	if (credential == NULL) {
 		ret = -ENOENT;
+		*credlen = 0;
 		goto exit;
 	}
 
 	if (credential->len > *credlen) {
 		ret = -EFBIG;
+		LOG_DBG("Not enough room in the credential buffer to "
+			"retrieve credential with sectag %d and type %d. "
+			"Increase TLS_CREDENTIALS_SHELL_MAX_CRED_LEN "
+			">= %d.\n",
+			tag, (int)type, (int)credential->len);
+		*credlen = credential->len;
 		goto exit;
 	}
 

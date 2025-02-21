@@ -10,10 +10,6 @@ test structure.
 The framework can be used in two ways, either as a generic framework for
 integration testing, or for unit testing specific modules.
 
-To enable support for the latest Ztest API, set
-:kconfig:option:`CONFIG_ZTEST_NEW_API` to ``y``. There is also a legacy API
-that is deprecated and will eventually be removed.
-
 Creating a test suite
 *********************
 
@@ -50,10 +46,13 @@ Below is an example of a test suite using a predicate:
 Adding tests to a suite
 ***********************
 
-There are 4 macros used to add a test to a suite, they are:
+There are 5 macros used to add a test to a suite, they are:
 
 * :c:macro:`ZTEST` ``(suite_name, test_name)`` - Which can be used to add a test by ``test_name`` to a
   given suite by ``suite_name``.
+* :c:macro:`ZTEST_P` ``(suite_name, test_name)`` - Add a parameterized test to a given suite by specifying
+  the ``suite_name`` and ``test_name``. You can then access the passed parameter within
+  the body of the test using the ``data`` pointer.
 * :c:macro:`ZTEST_USER` ``(suite_name, test_name)`` - Which behaves the same as :c:macro:`ZTEST`, only
   that when :kconfig:option:`CONFIG_USERSPACE` is enabled, then the test will be run in a userspace
   thread.
@@ -83,7 +82,7 @@ This is achieved via fixtures in the following way:
    static void *my_suite_setup(void)
    {
    	/* Allocate the fixture with 256 byte buffer */
-   	struct my_suite_fixture *fixture = k_malloc(sizeof(struct my_suite_fixture) + 255);
+      struct my_suite_fixture *fixture = malloc(sizeof(struct my_suite_fixture) + 255);
 
    	zassume_not_null(fixture, NULL);
    	fixture->max_size = 256;
@@ -100,7 +99,7 @@ This is achieved via fixtures in the following way:
 
    static void my_suite_teardown(void *f)
    {
-   	k_free(f);
+      free(f);
    }
 
    ZTEST_SUITE(my_suite, NULL, my_suite_setup, my_suite_before, NULL, my_suite_teardown);
@@ -132,14 +131,14 @@ nature of the code, it's possible to annotate the test as such. For example:
 
     ZTEST_SUITE(my_suite, NULL, NULL, NULL, NULL, NULL);
 
-    ZTEST_EXPECT_FAIL(my_suite, test_fail)
+    ZTEST_EXPECT_FAIL(my_suite, test_fail);
     ZTEST(my_suite, test_fail)
     {
       /** This will fail the test */
       zassert_true(false, NULL);
     }
 
-    ZTEST_EXPECT_SKIP(my_suite, test_skip)
+    ZTEST_EXPECT_SKIP(my_suite, test_skip);
     ZTEST(my_suite, test_skip)
     {
       /** This will skip the test */
@@ -201,15 +200,15 @@ function can be written as follows:
 
         /* Only suites that use a predicate checking for phase == PWR_PHASE_0 will run. */
         state.phase = PWR_PHASE_0;
-        ztest_run_all(&state);
+        ztest_run_all(&state, false, 1, 1);
 
         /* Only suites that use a predicate checking for phase == PWR_PHASE_1 will run. */
         state.phase = PWR_PHASE_1;
-        ztest_run_all(&state);
+        ztest_run_all(&state, false, 1, 1);
 
         /* Only suites that use a predicate checking for phase == PWR_PHASE_2 will run. */
         state.phase = PWR_PHASE_2;
-        ztest_run_all(&state);
+        ztest_run_all(&state, false, 1, 1);
 
         /* Check that all the suites in this binary ran at least once. */
         ztest_verify_all_test_suites_ran();
@@ -219,24 +218,30 @@ function can be written as follows:
 Quick start - Integration testing
 *********************************
 
-A simple working base is located at :zephyr_file:`samples/subsys/testsuite/integration`.  Just
-copy the files to ``tests/`` and edit them for your needs. The test will then
-be automatically built and run by the twister script. If you are testing
-the **bar** component of **foo**, you should copy the sample folder to
-``tests/foo/bar``. It can then be tested with:
+A simple working base is located at :zephyr_file:`samples/subsys/testsuite/integration`.
+To make a test application for the **bar** component of **foo**, you should copy the
+sample folder to ``tests/foo/bar`` and edit files there adjusting for your test
+application's purposes.
 
-.. code-block:: console
-
-   ./scripts/twister -s tests/foo/bar/test-identifier
-
-In the example above ``tests/foo/bar`` signifies the path to the test and the
-``test-identifier`` references a test defined in the :file:`testcase.yaml` file.
-
-To run all tests defined in a test project, run:
+To build and execute all applicable test scenarios defined in your test application
+use the :ref:`Twister <twister_script>` tool, for example:
 
 .. code-block:: console
 
     ./scripts/twister -T tests/foo/bar/
+
+To select just one of the test scenarios, run Twister with ``--scenario`` command:
+
+.. code-block:: console
+
+   ./scripts/twister --scenario tests/foo/bar/your.test.scenario.name
+
+In the command line above ``tests/foo/bar`` is the path to your test application and
+``your.test.scenario.name`` references a test scenario defined in :file:`testcase.yaml`
+file, which is like ``sample.testing.ztest`` in the boilerplate test suite sample.
+
+See :ref:`Twister test project diagram <twister_test_project_diagram>` for more details
+on how Twister deals with Ztest application.
 
 The sample contains the following files:
 
@@ -258,7 +263,7 @@ prj.conf
    :language: text
    :linenos:
 
-src/main.c (see :ref:`best practices <main_c_bp>`)
+src/main.c
 
 .. literalinclude:: ../../../samples/subsys/testsuite/integration/src/main.c
    :language: c
@@ -271,13 +276,13 @@ src/main.c (see :ref:`best practices <main_c_bp>`)
 
 
 
-A test case project may consist of multiple sub-tests or smaller tests that
-either can be testing functionality or APIs. Functions implementing a test
+A test application may consist of multiple test suites that
+either can be testing functionality or APIs. Functions implementing a test case
 should follow the guidelines below:
 
-* Test cases function names should be prefix with **test_**
+* Test cases function names should be prefixed with **test_**
 * Test cases should be documented using doxygen
-* Test function names should be unique within the section or component being
+* Test case function names should be unique within the section or component being
   tested
 
 For example:
@@ -287,7 +292,7 @@ For example:
    /**
     * @brief Test Asserts
     *
-    * This test verifies the zassert_true macro.
+    * This test case verifies the zassert_true macro.
     */
    ZTEST(my_suite, test_assert)
    {
@@ -297,18 +302,18 @@ For example:
 Listing Tests
 =============
 
-Tests (test projects) in the Zephyr tree consist of many testcases that run as
+Tests (test applications) in the Zephyr tree consist of many test scenarios that run as
 part of a project and test similar functionality, for example an API or a
-feature. The ``twister`` script can parse the testcases in all
-test projects or a subset of them, and can generate reports on a granular
-level, i.e. if cases have passed or failed or if they were blocked or skipped.
+feature. The ``twister`` script can parse the test scenarios, suites and cases in all
+test applications or a subset of them, and can generate reports on a granular
+level, i.e. if test cases have passed or failed or if they were blocked or skipped.
 
 Twister parses the source files looking for test case names, so you
 can list all kernel test cases, for example, by running:
 
 .. code-block:: console
 
-   twister --list-tests -T tests/kernel
+   ./scripts/twister --list-tests -T tests/kernel
 
 Skipping Tests
 ==============
@@ -344,6 +349,8 @@ it needs to report either a pass or fail.  For example:
 
    ZTEST_SUITE(common, NULL, NULL, NULL, NULL, NULL);
 
+.. _ztest_unit_testing:
+
 Quick start - Unit testing
 **************************
 
@@ -352,6 +359,20 @@ entire Zephyr OS for testing a single function, you can focus the testing
 efforts into the specific module in question. This will speed up testing since
 only the module will have to be compiled in, and the tested functions will be
 called directly.
+
+Examples of unit tests can be found in the :zephyr_file:`tests/unit/` folder.
+In order to declare the unit tests present in a source folder, you need to add
+the relevant source files to the ``testbinary`` target from the CMake
+:zephyr_file:`unittest <cmake/modules/unittest.cmake>` component. See a minimal
+example below:
+
+.. code-block:: cmake
+
+   cmake_minimum_required(VERSION 3.20.0)
+
+   project(app)
+   find_package(Zephyr COMPONENTS unittest REQUIRED HINTS $ENV{ZEPHYR_BASE})
+   target_sources(testbinary PRIVATE main.c)
 
 Since you won't be including basic kernel data structures that most code
 depends on, you have to provide function stubs in the test. Ztest provides
@@ -363,21 +384,21 @@ interaction with an object occurred, and if required, to assert the order of
 that interaction.
 
 Best practices for declaring the test suite
-===========================================
+*******************************************
 
 *twister* and other validation tools need to obtain the list of
-subcases that a Zephyr *ztest* test image will expose.
+test cases that a Zephyr *ztest* test image will expose.
 
 .. admonition:: Rationale
 
    This all is for the purpose of traceability. It's not enough to
-   have only a semaphore test project.  We also need to show that we
+   have only a semaphore test application.  We also need to show that we
    have testpoints for all APIs and functionality, and we trace back
    to documentation of the API, and functional requirements.
 
-   The idea is that test reports show results for every sub-testcase
+   The idea is that test reports show results for every test case
    as passed, failed, blocked, or skipped.  Reporting on only the
-   high-level test project level, particularly when tests do too
+   high-level test application, particularly when tests do too
    many things, is too vague.
 
 Other questions:
@@ -387,9 +408,9 @@ Other questions:
   If C pre-processing or building fails because of any issue, then we
   won't be able to tell the subcases.
 
-- Why not declare them in the YAML testcase description?
+- Why not declare them in the YAML test configuration?
 
-  A separate testcase description file would be harder to maintain
+  A separate test case description file would be harder to maintain
   than just keeping the information in the test source files
   themselves -- only one file to update when changes are made
   eliminates duplication.
@@ -445,9 +466,9 @@ Configuration
 
 Static configuration of Ztress contains:
 
- - :c:macro:`ZTRESS_MAX_THREADS` - number of supported threads.
- - :c:macro:`ZTRESS_STACK_SIZE` - Stack size of created threads.
- - :c:macro:`ZTRESS_REPORT_PROGRESS_MS` - Test progress report interval.
+ - :kconfig:option:`CONFIG_ZTRESS_MAX_THREADS` - number of supported threads.
+ - :kconfig:option:`CONFIG_ZTRESS_STACK_SIZE` - Stack size of created threads.
+ - :kconfig:option:`CONFIG_ZTRESS_REPORT_PROGRESS_MS` - Test progress report interval.
 
 API reference
 *************
@@ -555,9 +576,6 @@ See :ref:`FFF Extensions <fff-extensions>`.
 
 Customizing Test Output
 ***********************
-The way output is presented when running tests can be customized.
-An example can be found in :zephyr_file:`tests/ztest/custom_output`.
-
 Customization is enabled by setting :kconfig:option:`CONFIG_ZTEST_TC_UTIL_USER_OVERRIDE` to "y"
 and adding a file :file:`tc_util_user_override.h` with your overrides.
 
@@ -581,18 +599,22 @@ Shuffling Test Sequence
 By default the tests are sorted and ran in alphanumerical order.  Test cases may
 be dependent on this sequence. Enable :kconfig:option:`CONFIG_ZTEST_SHUFFLE` to
 randomize the order. The output from the test will display the seed for failed
-tests.  For native posix builds you can provide the seed as an argument to
-twister with `--seed`
+tests.  For native simulator builds you can provide the seed as an argument to
+twister with ``--seed``.
 
-Static configuration of ZTEST_SHUFFLE contains:
 
- - :kconfig:option:`CONFIG_ZTEST_SHUFFLE_SUITE_REPEAT_COUNT` - Number of iterations the test suite will run.
- - :kconfig:option:`CONFIG_ZTEST_SHUFFLE_TEST_REPEAT_COUNT` - Number of iterations the test will run.
-
+Repeating Tests
+***********************
+By default the tests are executed once. The test cases and test suites
+may be executed multiple times. Enable :kconfig:option:`CONFIG_ZTEST_REPEAT` to
+execute the tests multiple times. By default the multiplication factors are 3, which
+means every test suite is executed 3 times and every test case is executed 3 times. This can
+be changed by the :kconfig:option:`CONFIG_ZTEST_SUITE_REPEAT_COUNT` and
+:kconfig:option:`CONFIG_ZTEST_TEST_REPEAT_COUNT` Kconfig options.
 
 Test Selection
 **************
-For POSIX enabled builds with ZTEST_NEW_API use command line arguments to list
+For tests built for native simulator, use command line arguments to list
 or select tests to run. The test argument expects a comma separated list
 of ``suite::test`` .  You can substitute the test name with an ``*`` to run all
 tests within a suite.

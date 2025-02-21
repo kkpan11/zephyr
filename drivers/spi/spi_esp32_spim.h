@@ -30,6 +30,8 @@ struct spi_esp32_config {
 	int duty_cycle;
 	int input_delay_ns;
 	int irq_source;
+	int irq_priority;
+	int irq_flags;
 	const struct pinctrl_dev_config *pcfg;
 	clock_control_subsys_t clock_subsys;
 	bool use_iomux;
@@ -39,6 +41,7 @@ struct spi_esp32_config {
 	int cs_setup;
 	int cs_hold;
 	bool line_idle_low;
+	spi_clock_source_t clock_source;
 };
 
 struct spi_esp32_data {
@@ -52,9 +55,9 @@ struct spi_esp32_data {
 	spi_hal_dev_config_t dev_config;
 	spi_hal_trans_config_t trans_config;
 	uint8_t dfs;
-	int irq_line;
 	lldesc_t dma_desc_tx;
 	lldesc_t dma_desc_rx;
+	uint32_t clock_source_hz;
 };
 
 #endif /* ZEPHYR_DRIVERS_SPI_ESP32_SPIM_H_ */

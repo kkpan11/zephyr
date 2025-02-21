@@ -80,7 +80,7 @@ static struct ext2_block *get_block_struct(void)
 	ret = k_mem_slab_alloc(&ext2_block_memory_slab, (void **)&b->data, K_NO_WAIT);
 	if (ret < 0) {
 		LOG_ERR("get block: alloc block memory error %d", ret);
-		k_mem_slab_free(&ext2_block_struct_slab, (void **)&b);
+		k_mem_slab_free(&ext2_block_struct_slab, (void *)b);
 		return NULL;
 	}
 	return b;
@@ -140,8 +140,8 @@ void ext2_drop_block(struct ext2_block *b)
 	}
 
 	if (b != NULL && b->data != NULL) {
-		k_mem_slab_free(&ext2_block_memory_slab, (void **)&b->data);
-		k_mem_slab_free(&ext2_block_struct_slab, (void **)&b);
+		k_mem_slab_free(&ext2_block_memory_slab, (void *)b->data);
+		k_mem_slab_free(&ext2_block_struct_slab, (void *)b);
 	}
 }
 
@@ -611,6 +611,7 @@ ssize_t ext2_inode_read(struct ext2_inode *inode, void *buf, uint32_t offset, si
 	int rc = 0;
 	ssize_t read = 0;
 	uint32_t block_size = inode->i_fs->block_size;
+	size_t nbytes_to_read = nbytes;
 
 	while (read < nbytes && offset < inode->i_size) {
 
@@ -624,11 +625,12 @@ ssize_t ext2_inode_read(struct ext2_inode *inode, void *buf, uint32_t offset, si
 
 		uint32_t left_on_blk = block_size - block_off;
 		uint32_t left_in_file = inode->i_size - offset;
-		size_t to_read = MIN(nbytes, MIN(left_on_blk, left_in_file));
+		size_t to_read = MIN(nbytes_to_read, MIN(left_on_blk, left_in_file));
 
 		memcpy((uint8_t *)buf + read, inode_current_block_mem(inode) + block_off, to_read);
 
 		read += to_read;
+		nbytes_to_read -= to_read;
 		offset += to_read;
 	}
 
@@ -952,7 +954,7 @@ static int ext2_add_direntry(struct ext2_inode *dir, struct ext2_direntry *entry
 	}
 
 	uint32_t offset = 0;
-	uint16_t reclen;
+	uint16_t reclen = 0;
 
 	struct ext2_disk_direntry *de = 0;
 
@@ -1466,7 +1468,7 @@ int ext2_inode_get(struct ext2_data *fs, uint32_t ino, struct ext2_inode **ret)
 		int rc2 = ext2_fetch_inode(fs, ino, inode);
 
 		if (rc2 < 0) {
-			k_mem_slab_free(&inode_struct_slab, (void **)&inode);
+			k_mem_slab_free(&inode_struct_slab, (void *)inode);
 			return rc2;
 		}
 	}
@@ -1523,7 +1525,7 @@ int ext2_inode_drop(struct ext2_inode *inode)
 			}
 		}
 
-		k_mem_slab_free(&inode_struct_slab, (void **)&inode);
+		k_mem_slab_free(&inode_struct_slab, (void *)inode);
 
 		/* copy last open in place of freed inode */
 		uint32_t last = fs->open_inodes - 1;

@@ -24,6 +24,7 @@ extern "C" {
 #define OS_MGMT_ID_RESET		5
 #define OS_MGMT_ID_MCUMGR_PARAMS	6
 #define OS_MGMT_ID_INFO			7
+#define OS_MGMT_ID_BOOTLOADER_INFO	8
 
 /**
  * Command result codes for OS management group.
@@ -37,6 +38,18 @@ enum os_mgmt_err_code_t {
 
 	/** The provided format value is not valid. */
 	OS_MGMT_ERR_INVALID_FORMAT,
+
+	/** Query was not recognized. */
+	OS_MGMT_ERR_QUERY_YIELDS_NO_ANSWER,
+
+	/** RTC is not set */
+	OS_MGMT_ERR_RTC_NOT_SET,
+
+	/** RTC command failed */
+	OS_MGMT_ERR_RTC_COMMAND_FAILED,
+
+	/** Query was recognized but there is no valid value for the response. */
+	OS_MGMT_ERR_QUERY_RESPONSE_VALUE_NOT_VALID,
 };
 
 /* Bitmask values used by the os info command handler. Note that the width of this variable is
@@ -75,7 +88,7 @@ struct os_mgmt_info_check {
 /* Structure provided in the MGMT_EVT_OP_OS_MGMT_INFO_APPEND notification callback */
 struct os_mgmt_info_append {
 	/* The format bitmask from the processed commands, the bits should be cleared once
-	 * processed, note that if all_format_specified is specified, the corrisponding bits here
+	 * processed, note that if all_format_specified is specified, the corresponding bits here
 	 * will not be set
 	 */
 	uint32_t *format_bitmask;

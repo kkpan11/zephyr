@@ -12,7 +12,7 @@
 #define ZEPHYR_INCLUDE_MGMT_MCUMGR_TRANSPORT_DUMMY_H_
 
 #include <zephyr/kernel.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/transport/serial.h>
 
@@ -97,5 +97,9 @@ void smp_dummy_disable(void);
  * @retval true if dummy SMP is enabled, false otherwise
  */
 bool smp_dummy_get_status(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ZEPHYR_INCLUDE_MGMT_MCUMGR_TRANSPORT_DUMMY_H_ */

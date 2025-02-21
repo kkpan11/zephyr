@@ -7,7 +7,7 @@
 #include <zephyr/ztest.h>
 #include <strings.h>
 #include "random_data.h"
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
 #define NUMBER_OF_REPETITIONS 5
 #define DATA_SIZE_SF          7
@@ -35,15 +35,12 @@ const struct isotp_fc_opts fc_opts_single = {
 	.bs = 0,
 	.stmin = 1
 };
+
 const struct isotp_msg_id rx_addr = {
 	.std_id = 0x10,
-	.ide = 0,
-	.use_ext_addr = 0
 };
 const struct isotp_msg_id tx_addr = {
 	.std_id = 0x11,
-	.ide = 0,
-	.use_ext_addr = 0
 };
 
 struct isotp_recv_ctx recv_ctx;

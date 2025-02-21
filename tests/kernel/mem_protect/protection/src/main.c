@@ -11,6 +11,7 @@
 #include <zephyr/ztest.h>
 #include <zephyr/kernel_structs.h>
 #include <zephyr/sys/barrier.h>
+#include <zephyr/toolchain.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -28,14 +29,13 @@
 
 #define INFO(fmt, ...) printk(fmt, ##__VA_ARGS__)
 
-void k_sys_fatal_error_handler(unsigned int reason, const z_arch_esf_t *pEsf)
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *pEsf)
 {
 	INFO("Caught system error -- reason %d\n", reason);
 	ztest_test_pass();
 }
 
-#ifdef CONFIG_CPU_CORTEX_M
-#include <cmsis_core.h>
+#ifdef CONFIG_COMPILER_ISA_THUMB2
 /* Must clear LSB of function address to access as data. */
 #define FUNC_TO_PTR(x) (void *)((uintptr_t)(x) & ~0x1)
 /* Must set LSB of function address to call in Thumb mode. */
@@ -50,7 +50,7 @@ void k_sys_fatal_error_handler(unsigned int reason, const z_arch_esf_t *pEsf)
 #define DO_BARRIERS() do { } while (0)
 #endif
 
-static int __attribute__((noinline)) add_one(int i)
+static int __noinline add_one(int i)
 {
 	return (i + 1);
 }

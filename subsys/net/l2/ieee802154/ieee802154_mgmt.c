@@ -37,6 +37,7 @@ enum net_verdict ieee802154_handle_beacon(struct net_if *iface,
 					  uint8_t lqi)
 {
 	struct ieee802154_context *ctx = net_if_l2_data(iface);
+	int beacon_hdr_len;
 
 	NET_DBG("Beacon received");
 
@@ -44,9 +45,7 @@ enum net_verdict ieee802154_handle_beacon(struct net_if *iface,
 		return NET_DROP;
 	}
 
-	if (!mpdu->beacon->sf.association) {
-		return NET_DROP;
-	}
+	ctx->scan_ctx->association_permitted = mpdu->beacon->sf.association;
 
 	k_sem_take(&ctx->scan_ctx_lock, K_FOREVER);
 
@@ -64,11 +63,15 @@ enum net_verdict ieee802154_handle_beacon(struct net_if *iface,
 				IEEE802154_EXT_ADDR_LENGTH);
 	}
 
+	beacon_hdr_len = ieee802514_beacon_header_length(mpdu->payload, mpdu->payload_length);
+	ctx->scan_ctx->beacon_payload_len = mpdu->payload_length - beacon_hdr_len;
+	ctx->scan_ctx->beacon_payload = (uint8_t *)mpdu->payload + beacon_hdr_len;
+
 	net_mgmt_event_notify(NET_EVENT_IEEE802154_SCAN_RESULT, iface);
 
 	k_sem_give(&ctx->scan_ctx_lock);
 
-	return NET_OK;
+	return NET_CONTINUE;
 }
 
 static int ieee802154_cancel_scan(uint32_t mgmt_request, struct net_if *iface,
@@ -94,10 +97,11 @@ NET_MGMT_REGISTER_REQUEST_HANDLER(NET_REQUEST_IEEE802154_CANCEL_SCAN,
 static int ieee802154_scan(uint32_t mgmt_request, struct net_if *iface,
 			   void *data, size_t len)
 {
+	const struct ieee802154_phy_supported_channels *supported_channels;
 	struct ieee802154_context *ctx = net_if_l2_data(iface);
+	struct ieee802154_attr_value attr_value;
 	struct ieee802154_req_params *scan;
 	struct net_pkt *pkt = NULL;
-	uint8_t channel;
 	int ret;
 
 	if (len != sizeof(struct ieee802154_req_params) || !data) {
@@ -127,7 +131,8 @@ static int ieee802154_scan(uint32_t mgmt_request, struct net_if *iface,
 		pkt = ieee802154_create_mac_cmd_frame(
 			iface, IEEE802154_CFI_BEACON_REQUEST, &params);
 		if (!pkt) {
-			NET_DBG("Could not create Beacon Request");
+			k_sem_give(&ctx->scan_ctx_lock);
+			NET_ERR("Could not create Beacon Request");
 			ret = -ENOBUFS;
 			goto out;
 		}
@@ -146,49 +151,59 @@ static int ieee802154_scan(uint32_t mgmt_request, struct net_if *iface,
 	ieee802154_radio_filter_pan_id(iface, IEEE802154_BROADCAST_PAN_ID);
 
 	if (ieee802154_radio_start(iface)) {
-		NET_DBG("Could not start device");
+		NET_ERR("Scan request failed: could not start device");
 		ret = -EIO;
 		goto out;
 	}
 
-	/* TODO: For now, we assume we are on 2.4Ghz
-	 * (device will have to export current channel page)
-	 */
-	for (channel = 11U; channel <= 26U; channel++) {
-		if (IEEE802154_IS_CHAN_UNSCANNED(scan->channel_set, channel)) {
-			continue;
-		}
+	if (ieee802154_radio_attr_get(iface, IEEE802154_ATTR_PHY_SUPPORTED_CHANNEL_RANGES,
+				      &attr_value)) {
+		NET_ERR("Scan request failed: could not determine supported channels");
+		ret = -ENOENT;
+		goto out;
+	}
+	supported_channels = attr_value.phy_supported_channels;
 
-		scan->channel = channel;
-		NET_DBG("Scanning channel %u", channel);
-		ieee802154_radio_set_channel(iface, channel);
+	for (int channel_range = 0; channel_range < supported_channels->num_ranges;
+	     channel_range++) {
+		for (uint16_t channel = supported_channels->ranges[channel_range].from_channel;
+		     channel <= supported_channels->ranges[channel_range].to_channel; channel++) {
+			if (IEEE802154_IS_CHAN_UNSCANNED(scan->channel_set, channel)) {
+				continue;
+			}
 
-		/* Active scan sends a beacon request */
-		if (mgmt_request == NET_REQUEST_IEEE802154_ACTIVE_SCAN) {
-			net_pkt_ref(pkt);
-			net_pkt_frag_ref(pkt->buffer);
+			scan->channel = channel;
+			NET_DBG("Scanning channel %u", channel);
+			ieee802154_radio_set_channel(iface, channel);
 
-			ret = ieee802154_radio_send(iface, pkt, pkt->buffer);
-			if (ret) {
-				NET_DBG("Could not send Beacon Request (%d)",
-					ret);
-				net_pkt_unref(pkt);
+			/* Active scan sends a beacon request */
+			if (mgmt_request == NET_REQUEST_IEEE802154_ACTIVE_SCAN) {
+				net_pkt_ref(pkt);
+				net_pkt_frag_ref(pkt->buffer);
+
+				ret = ieee802154_radio_send(iface, pkt, pkt->buffer);
+				if (ret) {
+					NET_ERR("Scan request failed: could not send Beacon "
+						"Request (%d)",
+						ret);
+					net_pkt_unref(pkt);
+					goto out;
+				}
+			}
+
+			/* Context aware sleep */
+			k_sleep(K_MSEC(scan->duration));
+
+			k_sem_take(&ctx->scan_ctx_lock, K_FOREVER);
+
+			if (!ctx->scan_ctx) {
+				NET_DBG("Scan request cancelled");
+				ret = -ECANCELED;
 				goto out;
 			}
+
+			k_sem_give(&ctx->scan_ctx_lock);
 		}
-
-		/* Context aware sleep */
-		k_sleep(K_MSEC(scan->duration));
-
-		k_sem_take(&ctx->scan_ctx_lock, K_FOREVER);
-
-		if (!ctx->scan_ctx) {
-			NET_DBG("Scan request cancelled");
-			ret = -ECANCELED;
-			goto out;
-		}
-
-		k_sem_give(&ctx->scan_ctx_lock);
 	}
 
 out:
@@ -357,7 +372,7 @@ enum net_verdict ieee802154_handle_mac_command(struct net_if *iface,
 
 		k_sem_give(&ctx->scan_ctx_lock);
 
-		return NET_OK;
+		return NET_CONTINUE;
 	}
 
 	if (mpdu->command->cfi == IEEE802154_CFI_DISASSOCIATION_NOTIFICATION) {
@@ -417,8 +432,7 @@ out:
 		return ret;
 	}
 
-	NET_DBG("Drop MAC command, unsupported CFI: 0x%x",
-		mpdu->command->cfi);
+	NET_WARN("Drop MAC command, unsupported CFI: 0x%x", mpdu->command->cfi);
 
 	return NET_DROP;
 }
@@ -434,6 +448,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 	int ret = 0;
 
 	if (len != sizeof(struct ieee802154_req_params) || !data) {
+		NET_ERR("Could not associate: invalid request");
 		return -EINVAL;
 	}
 
@@ -441,6 +456,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 
 	/* Validate the coordinator's PAN ID. */
 	if (req->pan_id == IEEE802154_PAN_ID_NOT_ASSOCIATED) {
+		NET_ERR("Could not associate: PAN ID is special value 'not associated'");
 		return -EINVAL;
 	}
 
@@ -456,6 +472,8 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 	if (req->len == IEEE802154_SHORT_ADDR_LENGTH) {
 		if (req->short_addr == IEEE802154_SHORT_ADDRESS_NOT_ASSOCIATED ||
 		    req->short_addr == IEEE802154_NO_SHORT_ADDRESS_ASSIGNED) {
+			NET_ERR("Could not associate: invalid short address ('not associated' or "
+				"'not assigned')");
 			return -EINVAL;
 		}
 
@@ -463,6 +481,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 	} else if (req->len == IEEE802154_EXT_ADDR_LENGTH) {
 		memcpy(params.dst.ext_addr, req->addr, sizeof(params.dst.ext_addr));
 	} else {
+		NET_ERR("Could not associate: invalid address type");
 		return -EINVAL;
 	}
 
@@ -472,6 +491,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 
 	if (is_associated(ctx)) {
 		k_sem_give(&ctx->ctx_lock);
+		NET_WARN("Could not associate: already associated");
 		return -EALREADY;
 	}
 
@@ -481,6 +501,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 		iface, IEEE802154_CFI_ASSOCIATION_REQUEST, &params);
 	if (!pkt) {
 		ret = -ENOBUFS;
+		NET_ERR("Could not associate: cannot allocate association request frame");
 		goto out;
 	}
 
@@ -512,6 +533,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 	 */
 	if (ieee802154_radio_set_channel(iface, req->channel)) {
 		ret = -EIO;
+		NET_ERR("Could not associate: cannot set channel %d", req->channel);
 		goto release;
 	}
 
@@ -545,6 +567,8 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 	if (ieee802154_radio_send(iface, pkt, pkt->buffer)) {
 		net_pkt_unref(pkt);
 		ret = -EIO;
+		k_sem_give(&ctx->scan_ctx_lock);
+		NET_ERR("Could not associate: cannot send association request");
 		goto out;
 	}
 
@@ -582,6 +606,7 @@ static int ieee802154_associate(uint32_t mgmt_request, struct net_if *iface,
 
 		if (!validated) {
 			ret = -EFAULT;
+			NET_ERR("Could not associate: invalid address assigned by coordinator");
 			goto release;
 		}
 
@@ -621,6 +646,7 @@ static int ieee802154_disassociate(uint32_t mgmt_request, struct net_if *iface,
 
 	if (!is_associated(ctx)) {
 		k_sem_give(&ctx->ctx_lock);
+		NET_WARN("Could not disassociate: not associated");
 		return -EALREADY;
 	}
 
@@ -653,6 +679,8 @@ static int ieee802154_disassociate(uint32_t mgmt_request, struct net_if *iface,
 	pkt = ieee802154_create_mac_cmd_frame(
 		iface, IEEE802154_CFI_DISASSOCIATION_NOTIFICATION, &params);
 	if (!pkt) {
+		NET_ERR("Could not disassociate: cannot allocate disassociation notification "
+			"frame");
 		return -ENOBUFS;
 	}
 
@@ -664,6 +692,7 @@ static int ieee802154_disassociate(uint32_t mgmt_request, struct net_if *iface,
 
 	if (ieee802154_radio_send(iface, pkt, pkt->buffer)) {
 		net_pkt_unref(pkt);
+		NET_ERR("Could not disassociate: cannot send disassociation notification");
 		return -EIO;
 	}
 
@@ -733,6 +762,7 @@ static int ieee802154_set_parameters(uint32_t mgmt_request,
 	if (is_associated(ctx) && !(mgmt_request == NET_REQUEST_IEEE802154_SET_SHORT_ADDR &&
 				    value == IEEE802154_SHORT_ADDRESS_NOT_ASSOCIATED)) {
 		ret = -EBUSY;
+		NET_ERR("Could not set parameter: already associated to a PAN");
 		goto out;
 	}
 
@@ -740,11 +770,16 @@ static int ieee802154_set_parameters(uint32_t mgmt_request,
 		if (ctx->channel != value) {
 			if (!ieee802154_radio_verify_channel(iface, value)) {
 				ret = -EINVAL;
+				NET_ERR("Could not set channel: channel %d not supported by "
+					"driver",
+					value);
 				goto out;
 			}
 
 			ret = ieee802154_radio_set_channel(iface, value);
-			if (!ret) {
+			if (ret) {
+				NET_ERR("Could not set channel: driver error (%d)", ret);
+			} else {
 				ctx->channel = value;
 			}
 		}
@@ -778,6 +813,8 @@ static int ieee802154_set_parameters(uint32_t mgmt_request,
 				 */
 				if (ctx->pan_id == IEEE802154_PAN_ID_NOT_ASSOCIATED) {
 					ret = -EPERM;
+					NET_ERR("Could not set short address: not yet associated "
+						"to a PAN");
 					goto out;
 				}
 				set_association(iface, ctx, value);
@@ -786,7 +823,9 @@ static int ieee802154_set_parameters(uint32_t mgmt_request,
 	} else if (mgmt_request == NET_REQUEST_IEEE802154_SET_TX_POWER) {
 		if (ctx->tx_power != (int16_t)value) {
 			ret = ieee802154_radio_set_tx_power(iface, (int16_t)value);
-			if (!ret) {
+			if (ret) {
+				NET_ERR("Could not set TX power (%d dB)", value);
+			} else {
 				ctx->tx_power = (int16_t)value;
 			}
 		}
@@ -826,10 +865,12 @@ static int ieee802154_get_parameters(uint32_t mgmt_request,
 
 	if (mgmt_request == NET_REQUEST_IEEE802154_GET_EXT_ADDR) {
 		if (len != IEEE802154_EXT_ADDR_LENGTH) {
+			NET_ERR("Could not get parameter: invalid extended address length");
 			return -EINVAL;
 		}
 	} else {
 		if (len != sizeof(uint16_t)) {
+			NET_ERR("Could not get parameter: invalid short address length");
 			return -EINVAL;
 		}
 	}
@@ -891,6 +932,7 @@ static int ieee802154_set_security_settings(uint32_t mgmt_request,
 
 	if (is_associated(ctx)) {
 		ret = -EBUSY;
+		NET_ERR("Could not set security parameters: already associated to a PAN");
 		goto out;
 	}
 
@@ -899,7 +941,7 @@ static int ieee802154_set_security_settings(uint32_t mgmt_request,
 	if (ieee802154_security_setup_session(&ctx->sec_ctx, params->level,
 					      params->key_mode, params->key,
 					      params->key_len)) {
-		NET_ERR("Could not set the security parameters");
+		NET_ERR("Could not set security parameters: invalid parameters");
 		ret = -EINVAL;
 	}
 

@@ -176,10 +176,10 @@ including the 8 principles from [SALT75]_:
 - limited attack surface (the set of the
   different points where an attacker can try to enter or extract data)
 
-- input validation with whitelists (inputs should typically be checked
+- input validation with allowlists (inputs should typically be checked
   to determine if they are valid before they are accepted; this
-  validation should use whitelists (which only accept known-good
-  values), not blacklists (which attempt to list known-bad values)).
+  validation should use allowlists (which only accept known-good
+  values), not blocklists (which attempt to list known-bad values)).
 
 Vulnerability Knowledge
 =======================
@@ -206,12 +206,23 @@ injection, OS injection, classic buffer overflow, cross-site
 scripting, missing authentication, and missing authorization. See the
 `CWE/SANS top 25`_ or `OWASP Top 10`_ for commonly used lists.
 
+A free class from the nonprofit OpenSecurityTraining2 for C/C++ developers
+is available at `OST2_1001`_. It teaches how to prevent, detect, and
+mitigate linear stack/heap buffer overflows, non-linear out of bound writes,
+integer overflows, and other integer issues. The follow-on class, `OST2_1002`_,
+covers uninitialized data access, race conditions, use-after-free, type confusion,
+and information disclosure vulnerabilities.
+
 .. Turn this into something specific. Can we find examples of
-   mistakes.  Perhaps an example of things Coverity has sent us.
+   mistakes.  Perhaps an example of things static analysis tool has sent us.
 
 .. _CWE/SANS top 25: http://cwe.mitre.org/top25/
 
 .. _OWASP Top 10: https://owasp.org/www-project-top-ten/
+
+.. _OST2_1001: https://ost2.fyi/Vulns1001
+
+.. _OST2_1002: https://ost2.fyi/Vulns1002
 
 Zephyr Security Subcommittee
 ============================

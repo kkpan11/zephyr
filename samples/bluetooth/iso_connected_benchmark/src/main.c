@@ -5,15 +5,21 @@
  */
 
 #include <ctype.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gap.h>
 #include <zephyr/kernel.h>
 #include <string.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/sys_clock.h>
 #include <zephyr/types.h>
 
 
 #include <zephyr/console/console.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/iso.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/sys/byteorder.h>
 
 #include <zephyr/logging/log.h>
@@ -28,6 +34,11 @@ enum benchmark_role {
 	ROLE_QUIT
 };
 
+enum sdu_dir {
+	DIR_C_TO_P,
+	DIR_P_TO_C
+};
+
 #define DEFAULT_CIS_RTN         2
 #define DEFAULT_CIS_INTERVAL_US 7500
 #define DEFAULT_CIS_LATENCY_MS  40
@@ -38,13 +49,13 @@ enum benchmark_role {
 #define DEFAULT_CIS_COUNT       1U
 #define DEFAULT_CIS_SEC_LEVEL   BT_SECURITY_L1
 
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 #define DEFAULT_CIS_NSE          BT_ISO_NSE_MIN
 #define DEFAULT_CIS_BN           BT_ISO_BN_MIN
 #define DEFAULT_CIS_PDU_SIZE     CONFIG_BT_ISO_TX_MTU
 #define DEFAULT_CIS_FT           BT_ISO_FT_MIN
 #define DEFAULT_CIS_ISO_INTERVAL DEFAULT_CIS_INTERVAL_US / 1250U /* N * 1.25 ms */
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 #define BUFFERS_ENQUEUED 2 /* Number of buffers enqueue for each channel */
 
@@ -91,43 +102,49 @@ static struct bt_iso_chan_io_qos iso_tx_qos = {
 	.sdu = DEFAULT_CIS_SDU_SIZE, /* bytes */
 	.rtn = DEFAULT_CIS_RTN,
 	.phy = DEFAULT_CIS_PHY,
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	.max_pdu = DEFAULT_CIS_PDU_SIZE,
 	.burst_number = DEFAULT_CIS_BN,
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 };
 
 static struct bt_iso_chan_io_qos iso_rx_qos = {
 	.sdu = DEFAULT_CIS_SDU_SIZE, /* bytes */
 	.rtn = DEFAULT_CIS_RTN,
 	.phy = DEFAULT_CIS_PHY,
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	.max_pdu = DEFAULT_CIS_PDU_SIZE,
 	.burst_number = DEFAULT_CIS_BN,
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 };
 
 static struct bt_iso_chan_qos iso_qos = {
 	.tx = &iso_tx_qos,
 	.rx = &iso_rx_qos,
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	.num_subevents = DEFAULT_CIS_NSE,
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 };
 
 static struct bt_iso_cig_param cig_create_param = {
-	.interval = DEFAULT_CIS_INTERVAL_US, /* in microseconds */
-	.latency = DEFAULT_CIS_LATENCY_MS, /* milliseconds */
+	.c_to_p_interval = DEFAULT_CIS_INTERVAL_US, /* in microseconds */
+	.p_to_c_interval = DEFAULT_CIS_INTERVAL_US, /* in microseconds */
+	.c_to_p_latency = DEFAULT_CIS_LATENCY_MS, /* milliseconds */
+	.p_to_c_latency = DEFAULT_CIS_LATENCY_MS, /* milliseconds */
 	.sca = BT_GAP_SCA_UNKNOWN,
 	.packing = DEFAULT_CIS_PACKING,
 	.framing = DEFAULT_CIS_FRAMING,
 	.cis_channels = cis,
 	.num_cis = DEFAULT_CIS_COUNT,
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	.c_to_p_ft = DEFAULT_CIS_FT,
 	.p_to_c_ft = DEFAULT_CIS_FT,
 	.iso_interval = DEFAULT_CIS_ISO_INTERVAL,
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
+};
+
+static const struct bt_data sd[] = {
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
 static enum benchmark_role device_role_select(void)
@@ -179,6 +196,7 @@ static void iso_send(struct bt_iso_chan *chan)
 	int ret;
 	struct net_buf *buf;
 	struct iso_chan_work *chan_work;
+	uint32_t interval;
 
 	chan_work = CONTAINER_OF(chan, struct iso_chan_work, chan);
 
@@ -186,22 +204,24 @@ static void iso_send(struct bt_iso_chan *chan)
 		return;
 	}
 
-	buf = net_buf_alloc(&tx_pool, K_FOREVER);
+	interval = (role == ROLE_CENTRAL) ?
+		   cig_create_param.c_to_p_interval : cig_create_param.p_to_c_interval;
+
+	buf = net_buf_alloc(&tx_pool, K_NO_WAIT);
 	if (buf == NULL) {
 		LOG_ERR("Could not allocate buffer");
-		k_work_reschedule(&chan_work->send_work, K_USEC(cig_create_param.interval));
+		k_work_reschedule(&chan_work->send_work, K_USEC(interval));
 		return;
 	}
 
 	net_buf_reserve(buf, BT_ISO_CHAN_SEND_RESERVE);
 	net_buf_add_mem(buf, iso_data, iso_tx_qos.sdu);
 
-	ret = bt_iso_chan_send(chan, buf, chan_work->seq_num++,
-			       BT_ISO_TIMESTAMP_NONE);
+	ret = bt_iso_chan_send(chan, buf, chan_work->seq_num++);
 	if (ret < 0) {
 		LOG_ERR("Unable to send data: %d", ret);
 		net_buf_unref(buf);
-		k_work_reschedule(&chan_work->send_work, K_USEC(cig_create_param.interval));
+		k_work_reschedule(&chan_work->send_work, K_USEC(interval));
 		return;
 	}
 
@@ -461,7 +481,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
 	if (err != 0 && role == ROLE_CENTRAL) {
-		LOG_INF("Failed to connect to %s: %u", addr, err);
+		LOG_INF("Failed to connect to %s: %u %s", addr, err, bt_hci_err_to_str(err));
 
 		bt_conn_unref(default_conn);
 		default_conn = NULL;
@@ -481,7 +501,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 
 	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
 
-	LOG_INF("Disconnected: %s (reason 0x%02x)", addr, reason);
+	LOG_INF("Disconnected: %s, reason 0x%02x %s", addr, reason, bt_hci_err_to_str(reason));
 
 	bt_conn_unref(default_conn);
 	default_conn = NULL;
@@ -535,14 +555,18 @@ static int parse_rtn_arg(struct bt_iso_chan_io_qos *qos)
 	return (int)rtn;
 }
 
-static int parse_interval_arg(void)
+static int parse_interval_arg(enum sdu_dir direction)
 {
 	char buffer[9];
 	size_t char_count;
 	uint64_t interval;
 
-	printk("Set interval (us) (current %u, default %u)\n",
-	       cig_create_param.interval, DEFAULT_CIS_INTERVAL_US);
+	interval = (direction == DIR_C_TO_P) ?
+		   cig_create_param.c_to_p_interval : cig_create_param.p_to_c_interval;
+
+	printk("Set %s interval (us) (current %llu, default %u)\n",
+	       (direction == DIR_C_TO_P) ? "C to P" : "P to C",
+	       interval, DEFAULT_CIS_INTERVAL_US);
 
 	char_count = get_chars(buffer, sizeof(buffer) - 1);
 	if (char_count == 0) {
@@ -550,7 +574,6 @@ static int parse_interval_arg(void)
 	}
 
 	interval = strtoul(buffer, NULL, 0);
-	/* TODO: Replace literal ints with a #define once it has been created */
 	if (interval < BT_ISO_SDU_INTERVAL_MIN || interval > BT_ISO_SDU_INTERVAL_MAX) {
 		printk("Invalid interval %llu", interval);
 		return -EINVAL;
@@ -559,14 +582,18 @@ static int parse_interval_arg(void)
 	return (int)interval;
 }
 
-static int parse_latency_arg(void)
+static int parse_latency_arg(enum sdu_dir direction)
 {
 	char buffer[6];
 	size_t char_count;
 	uint64_t latency;
 
-	printk("Set latency (ms) (current %u, default %u)\n",
-	       cig_create_param.latency, DEFAULT_CIS_LATENCY_MS);
+	latency = (direction == DIR_C_TO_P) ?
+		  cig_create_param.c_to_p_latency : cig_create_param.p_to_c_latency;
+
+	printk("Set %s latency (ms) (current %llu, default %u)\n",
+	       (direction == DIR_C_TO_P) ? "C to P" : "P to C",
+	       latency, DEFAULT_CIS_LATENCY_MS);
 
 	char_count = get_chars(buffer, sizeof(buffer) - 1);
 	if (char_count == 0) {
@@ -632,7 +659,7 @@ static int parse_sdu_arg(struct bt_iso_chan_io_qos *qos)
 	return (int)sdu;
 }
 
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 static int parse_c_to_p_ft_arg(void)
 {
 	char buffer[4];
@@ -778,7 +805,7 @@ static int parse_bn_arg(const struct bt_iso_chan_io_qos *qos)
 
 	return (int)bn;
 }
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 static int parse_cis_count_arg(void)
 {
@@ -805,15 +832,17 @@ static int parse_cis_count_arg(void)
 
 static int parse_cig_args(void)
 {
-	int interval;
-	int latency;
+	int c_to_p_interval;
+	int p_to_c_interval;
+	int c_to_p_latency;
+	int p_to_c_latency;
 	int cis_count;
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	int c_to_p_ft;
 	int p_to_c_ft;
 	int iso_interval;
 	int num_subevents;
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 	printk("Follow the prompts. Press enter to use default values.\n");
 
@@ -822,17 +851,27 @@ static int parse_cig_args(void)
 		return -EINVAL;
 	}
 
-	interval = parse_interval_arg();
-	if (interval < 0) {
+	c_to_p_interval = parse_interval_arg(DIR_C_TO_P);
+	if (c_to_p_interval < 0) {
 		return -EINVAL;
 	}
 
-	latency = parse_latency_arg();
-	if (latency < 0) {
+	p_to_c_interval = parse_interval_arg(DIR_P_TO_C);
+	if (p_to_c_interval < 0) {
 		return -EINVAL;
 	}
 
-#if defined(CONFIG_BT_ISO_ADVANCED)
+	c_to_p_latency = parse_latency_arg(DIR_C_TO_P);
+	if (c_to_p_latency < 0) {
+		return -EINVAL;
+	}
+
+	p_to_c_latency = parse_latency_arg(DIR_P_TO_C);
+	if (p_to_c_latency < 0) {
+		return -EINVAL;
+	}
+
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	c_to_p_ft = parse_c_to_p_ft_arg();
 	if (c_to_p_ft < 0) {
 		return -EINVAL;
@@ -852,17 +891,19 @@ static int parse_cig_args(void)
 	if (num_subevents < 0) {
 		return -EINVAL;
 	}
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
-	cig_create_param.interval = interval;
-	cig_create_param.latency = latency;
+	cig_create_param.c_to_p_interval = c_to_p_interval;
+	cig_create_param.p_to_c_interval = p_to_c_interval;
+	cig_create_param.c_to_p_latency = c_to_p_latency;
+	cig_create_param.p_to_c_latency = p_to_c_latency;
 	cig_create_param.num_cis = cis_count;
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	cig_create_param.c_to_p_ft = c_to_p_ft;
 	cig_create_param.p_to_c_ft = p_to_c_ft;
 	cig_create_param.iso_interval = iso_interval;
 	iso_qos.num_subevents = num_subevents;
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 	return 0;
 }
@@ -872,10 +913,10 @@ static int parse_cis_args(struct bt_iso_chan_io_qos *qos)
 	int rtn;
 	int phy;
 	int sdu;
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	int max_pdu;
 	int burst_number;
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 	printk("Follow the prompts. Press enter to use default values.\n");
 
@@ -894,7 +935,7 @@ static int parse_cis_args(struct bt_iso_chan_io_qos *qos)
 		return -EINVAL;
 	}
 
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	max_pdu = parse_pdu_arg(qos);
 	if (max_pdu < 0) {
 		return -EINVAL;
@@ -904,15 +945,15 @@ static int parse_cis_args(struct bt_iso_chan_io_qos *qos)
 	if (burst_number < 0) {
 		return -EINVAL;
 	}
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 	qos->rtn = rtn;
 	qos->phy = phy;
 	qos->sdu = sdu;
-#if defined(CONFIG_BT_ISO_ADVANCED)
+#if defined(CONFIG_BT_ISO_TEST_PARAMS)
 	qos->max_pdu = max_pdu;
 	qos->burst_number = burst_number;
-#endif /* CONFIG_BT_ISO_ADVANCED */
+#endif /* CONFIG_BT_ISO_TEST_PARAMS */
 
 	return 0;
 }
@@ -923,9 +964,11 @@ static int change_central_settings(void)
 	int err;
 
 	printk("Change CIG settings (y/N)? (Current settings: cis_count=%u, "
-	       "interval=%u, latency=%u)\n",
-	       cig_create_param.num_cis, cig_create_param.interval,
-	       cig_create_param.latency);
+	       "C to P interval=%u, P to C interval=%u "
+	       "C to P latency=%u, P to C latency=%u)\n",
+	       cig_create_param.num_cis, cig_create_param.c_to_p_interval,
+	       cig_create_param.p_to_c_interval, cig_create_param.c_to_p_latency,
+	       cig_create_param.p_to_c_latency);
 
 	c = tolower(console_getchar());
 	if (c == 'y') {
@@ -934,9 +977,12 @@ static int change_central_settings(void)
 			return err;
 		}
 
-		printk("New settings: cis_count=%u, inteval=%u, latency=%u\n",
-		       cig_create_param.num_cis, cig_create_param.interval,
-		       cig_create_param.latency);
+		printk("New settings: cis_count=%u, C to P interval=%u, "
+		       "P TO C interval=%u, C to P latency=%u "
+		       "P TO C latency=%u\n",
+		       cig_create_param.num_cis, cig_create_param.c_to_p_interval,
+		       cig_create_param.p_to_c_interval, cig_create_param.c_to_p_latency,
+		       cig_create_param.p_to_c_latency);
 	}
 
 	printk("Change TX settings (y/N)? (Current settings: rtn=%u, "
@@ -1005,6 +1051,12 @@ static int change_central_settings(void)
 
 static int central_create_connection(void)
 {
+	/* Give the controller a large range of intervals to pick from. In this benchmark sample we
+	 * want to prioritize ISO over ACL, but will leave the actual choice up to the controller.
+	 */
+	const struct bt_le_conn_param *conn_param =
+		BT_LE_CONN_PARAM(BT_GAP_INIT_CONN_INT_MIN, BT_GAP_MS_TO_CONN_INTERVAL(500U), 0,
+				 BT_GAP_MS_TO_CONN_TIMEOUT(4000));
 	int err;
 
 	advertiser_found = false;
@@ -1030,8 +1082,7 @@ static int central_create_connection(void)
 	}
 
 	LOG_INF("Connecting");
-	err = bt_conn_le_create(&adv_addr, BT_CONN_LE_CREATE_CONN,
-				BT_LE_CONN_PARAM_DEFAULT, &default_conn);
+	err = bt_conn_le_create(&adv_addr, BT_CONN_LE_CREATE_CONN, conn_param, &default_conn);
 	if (err != 0) {
 		LOG_ERR("Create connection failed: %d", err);
 		return err;
@@ -1048,7 +1099,6 @@ static int central_create_connection(void)
 
 static int central_create_cig(void)
 {
-	struct bt_iso_connect_param connect_param[CONFIG_BT_ISO_MAX_CHAN];
 	int err;
 
 	iso_conn_start_time = 0;
@@ -1060,6 +1110,16 @@ static int central_create_cig(void)
 		LOG_ERR("Failed to create CIG: %d", err);
 		return err;
 	}
+
+	return 0;
+}
+
+static int central_connect_cis(void)
+{
+	struct bt_iso_connect_param connect_param[CONFIG_BT_ISO_MAX_CHAN];
+	int err;
+
+	iso_conn_start_time = 0;
 
 	LOG_INF("Connecting ISO channels");
 
@@ -1164,15 +1224,26 @@ static int run_central(void)
 		}
 	}
 
+	/* Creating the CIG before connecting verified that it's possible before establishing a
+	 * connection, while also providing the controller information about our use case before
+	 * creating the connection, which should provide additional information to the controller
+	 * about which connection interval to use
+	 */
+	err = central_create_cig();
+	if (err != 0) {
+		LOG_ERR("Failed to create CIG: %d", err);
+		return err;
+	}
+
 	err = central_create_connection();
 	if (err != 0) {
 		LOG_ERR("Failed to create connection: %d", err);
 		return err;
 	}
 
-	err = central_create_cig();
+	err = central_connect_cis();
 	if (err != 0) {
-		LOG_ERR("Failed to create CIG or connect CISes: %d", err);
+		LOG_ERR("Failed to connect CISes: %d", err);
 		return err;
 	}
 
@@ -1238,12 +1309,7 @@ static int run_peripheral(void)
 	}
 
 	LOG_INF("Starting advertising");
-	err = bt_le_adv_start(
-		BT_LE_ADV_PARAM(BT_LE_ADV_OPT_ONE_TIME | BT_LE_ADV_OPT_CONNECTABLE |
-					BT_LE_ADV_OPT_USE_NAME |
-					BT_LE_ADV_OPT_FORCE_NAME_IN_AD,
-				BT_GAP_ADV_FAST_INT_MIN_2, BT_GAP_ADV_FAST_INT_MAX_2, NULL),
-		NULL, 0, NULL, 0);
+	err = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, NULL, 0, sd, ARRAY_SIZE(sd));
 	if (err != 0) {
 		LOG_ERR("Advertising failed to start: %d", err);
 		return err;

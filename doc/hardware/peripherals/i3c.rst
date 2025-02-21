@@ -21,7 +21,7 @@ I3C Controller API
 ******************
 
 Zephyr's I3C controller API is used when an I3C controller controls
-the bus, in particularly the start and stop conditions and the clock.
+the bus, particularly the start and stop conditions and the clock.
 This is the most common mode, used to interact with I3C target
 devices such as sensors.
 
@@ -84,7 +84,7 @@ initialization function:
 
    #. Do ``DISEC`` to disable any events from devices.
 
-   #. Do ``SETDASA`` to use static addresses as dynamic address
+   #. Do ``SETDASA`` to assign a dynamic address using the static address of the device
       if so desired.
 
       * ``SETAASA`` may not be supported for all connected devices
@@ -303,7 +303,7 @@ the controller.
 I\ :sup:`2`\ C Devices under I3C Bus
 ====================================
 
-Since I3C is backware compatible with I\ :sup:`2`\ C, the I3C controller
+Since I3C is backward compatible with I\ :sup:`2`\ C, the I3C controller
 API can accommodate I2C API calls without modifications if the controller
 device driver implements the I2C API. This has the advantage of using
 existing I2C devices without any modifications to their device drivers.

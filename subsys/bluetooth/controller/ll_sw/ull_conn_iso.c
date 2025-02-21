@@ -6,6 +6,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/bluetooth/hci_types.h>
 
 #include "util/util.h"
@@ -72,10 +73,6 @@ static void ticker_next_slot_get_op_cb(uint32_t status, void *param);
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 static void ticker_start_op_cb(uint32_t status, void *param);
 static void ticker_update_cig_op_cb(uint32_t status, void *param);
-static void ticker_resume_op_cb(uint32_t status, void *param);
-static void ticker_resume_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
-			     uint32_t remainder, uint16_t lazy, uint8_t force,
-			     void *param);
 static void cis_disabled_cb(void *param);
 static void ticker_stop_op_cb(uint32_t status, void *param);
 static void cig_disable(void *param);
@@ -299,6 +296,86 @@ ull_conn_iso_lll_stream_get_by_group(struct lll_conn_iso_group *cig_lll,
 	return &cis->lll;
 }
 
+/*
+ * Helper function to iterate and return CIS LLL context sorted based on
+ * ascending order of the CIS offset from associated ACL and the CIG.
+ * This implementation be used by peripheral LLL to schedule subevents
+ * as CISes can be created in any order and ascending/descending order of
+ * CIS offsets used when creating CISes to peripheral.
+ *
+ * NOTE: This implementation assumes CISes created from same ACL. Support
+ *       for CISes created from different peer centrals is not supported yet.
+ */
+struct lll_conn_iso_stream *
+ull_conn_iso_lll_stream_sorted_get_by_group(struct lll_conn_iso_group *cig_lll,
+					    uint16_t *handle_iter)
+{
+	struct ll_conn_iso_stream *cis_next = NULL;
+	struct ll_conn_iso_group *cig;
+	uint32_t cis_offset_curr;
+	uint32_t cis_offset_next;
+	uint16_t handle;
+
+	cig = HDR_LLL2ULL(cig_lll);
+
+	if ((handle_iter == NULL) || ((*handle_iter) == UINT16_MAX)) {
+		/* First in the iteration, start with a minimum offset value and
+		 * find the first CIS offset of the active CIS.
+		 */
+		cis_offset_curr = 0U;
+	} else {
+		/* Subsequent iteration, get reference to current CIS and use
+		 * its CIS offset to find the next active CIS with offset
+		 * greater than the current CIS.
+		 */
+		struct ll_conn_iso_stream *cis_curr;
+
+		cis_curr = ll_conn_iso_stream_get(*handle_iter);
+		cis_offset_curr = cis_curr->offset;
+	}
+
+	cis_offset_next = UINT32_MAX;
+
+	/* Loop through all CIS contexts */
+	for (handle = LL_CIS_HANDLE_BASE; handle <= LL_CIS_HANDLE_LAST;
+	     handle++) {
+		struct ll_conn_iso_stream *cis;
+
+		/* Get CIS reference corresponding to loop handle */
+		cis = ll_conn_iso_stream_get(handle);
+
+		/* Match CIS contexts associated with the CIG */
+		if (cis->group == cig) {
+			if (cis->offset <= cis_offset_curr) {
+				/* Skip already returned CISes with offsets less
+				 * than the current CIS.
+				 */
+				continue;
+			}
+
+			/* Remember CIS with offset greater than current but
+			 * lower than previous that we remember as the next CIS
+			 * in ascending order.
+			 */
+			if (cis->offset < cis_offset_next) {
+				cis_next = cis;
+				cis_offset_next = cis_next->offset;
+
+				if (handle_iter) {
+					(*handle_iter) = handle;
+				}
+			}
+		}
+	}
+
+	if (cis_next) {
+		/* Found the next CIS with offset in ascending order. */
+		return &cis_next->lll;
+	}
+
+	return NULL;
+}
+
 struct lll_conn_iso_group *
 ull_conn_iso_lll_group_get_by_stream(struct lll_conn_iso_stream *cis_lll)
 {
@@ -389,12 +466,15 @@ void ull_conn_iso_done(struct node_rx_event_done *done)
 			/* CIS was setup and is now expected to be going */
 			if (done->extra.trx_performed_bitmask &
 			    (1U << LL_CIS_IDX_FROM_HANDLE(cis->lll.handle))) {
-				if (done->extra.mic_state == LLL_CONN_MIC_FAIL) {
+				if (false) {
+#if defined(CONFIG_BT_CTLR_LE_ENC)
+				} else if (done->extra.mic_state == LLL_CONN_MIC_FAIL) {
 					/* MIC failure - stop CIS and defer cleanup to after
 					 * teardown.
 					 */
 					ull_conn_iso_cis_stop(cis, NULL,
 							      BT_HCI_ERR_TERM_DUE_TO_MIC_FAIL);
+#endif /* CONFIG_BT_CTLR_LE_ENC */
 				} else {
 					cis->event_expire = 0U;
 				}
@@ -409,22 +489,26 @@ void ull_conn_iso_done(struct node_rx_event_done *done)
 							conn->supervision_timeout * 10U * 1000U,
 							cig->iso_interval * CONN_INT_UNIT_US);
 
-				} else if (cis->event_expire > cig->lll.latency_event) {
-					cis->event_expire -= cig->lll.latency_event;
-
 				} else {
-					cis->event_expire = 0U;
+					uint16_t event_elapsed;
 
-					/* Stop CIS and defer cleanup to after teardown. This will
-					 * only generate a terminate event to the host if CIS has
-					 * been established. If CIS was not established, the
-					 * teardown will send CIS_ESTABLISHED with failure.
-					 */
-					ull_conn_iso_cis_stop(cis, NULL,
-							      cis->established ?
-							      BT_HCI_ERR_CONN_TIMEOUT :
-							      BT_HCI_ERR_CONN_FAIL_TO_ESTAB);
+					event_elapsed = cig->lll.latency_event +
+							cig->lll.lazy_prepare + 1U;
+					if (cis->event_expire > event_elapsed) {
+						cis->event_expire -= event_elapsed;
+					} else {
+						cis->event_expire = 0U;
 
+						/* Stop CIS and defer cleanup to after teardown.
+						 * This will only generate a terminate event to the
+						 * host if CIS has been established. If CIS was not
+						 * established, the teardown will send
+						 * CIS_ESTABLISHED with failure.
+						 */
+						ull_conn_iso_cis_stop(cis, NULL, cis->established ?
+								BT_HCI_ERR_CONN_TIMEOUT :
+								BT_HCI_ERR_CONN_FAIL_TO_ESTAB);
+					}
 				}
 			}
 		}
@@ -532,72 +616,6 @@ void ull_conn_iso_cis_stop(struct ll_conn_iso_stream *cis,
 	}
 }
 
-void ull_conn_iso_resume_ticker_start(struct lll_event *resume_event,
-				      uint16_t cis_handle,
-				      uint32_t ticks_anchor,
-				      uint32_t resume_timeout)
-{
-	struct lll_conn_iso_group *cig;
-	uint32_t resume_delay_us;
-	int32_t resume_offset_us;
-	uint8_t ticker_id;
-	uint32_t ret;
-
-	cig = resume_event->prepare_param.param;
-	ticker_id = TICKER_ID_CONN_ISO_RESUME_BASE + cig->handle;
-
-	if (cig->resume_cis != LLL_HANDLE_INVALID) {
-		/* Restarting resume ticker - must be stopped first */
-		(void)ticker_stop(TICKER_INSTANCE_ID_CTLR, TICKER_USER_ID_LLL,
-				  ticker_id, NULL, NULL);
-	}
-	cig->resume_cis = cis_handle;
-
-	resume_delay_us  = EVENT_OVERHEAD_START_US;
-	resume_delay_us += EVENT_TICKER_RES_MARGIN_US;
-
-	if (cig->role == BT_HCI_ROLE_PERIPHERAL) {
-		/* Add peripheral specific delay */
-		resume_delay_us += EVENT_JITTER_US;
-		if (0) {
-#if defined(CONFIG_BT_CTLR_PHY)
-		} else {
-			struct ll_conn_iso_stream *cis;
-			struct ll_conn *conn;
-
-			cis = ll_conn_iso_stream_get(cis_handle);
-			conn = ll_conn_get(cis->lll.acl_handle);
-
-			resume_delay_us +=
-				lll_radio_rx_ready_delay_get(conn->lll.phy_rx,
-							     PHY_FLAGS_S8);
-#else
-		} else {
-			resume_delay_us += lll_radio_rx_ready_delay_get(0, 0);
-#endif /* CONFIG_BT_CTLR_PHY */
-		}
-	}
-
-	resume_offset_us = (int32_t)(resume_timeout - resume_delay_us);
-	LL_ASSERT(resume_offset_us >= 0);
-
-	/* Setup resume timeout as single-shot */
-	ret = ticker_start(TICKER_INSTANCE_ID_CTLR,
-			   TICKER_USER_ID_LLL,
-			   ticker_id,
-			   ticks_anchor,
-			   HAL_TICKER_US_TO_TICKS(resume_offset_us),
-			   TICKER_NULL_PERIOD,
-			   TICKER_NULL_REMAINDER,
-			   TICKER_NULL_LAZY,
-			   TICKER_NULL_SLOT,
-			   ticker_resume_cb, resume_event,
-			   ticker_resume_op_cb, NULL);
-
-	LL_ASSERT((ret == TICKER_STATUS_SUCCESS) ||
-		  (ret == TICKER_STATUS_BUSY));
-}
-
 int ull_conn_iso_init(void)
 {
 	return init_reset();
@@ -693,17 +711,17 @@ void ull_conn_iso_ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 		 * has been reached, and offset calculated.
 		 */
 		if (cis->lll.handle != 0xFFFF && cis->lll.active) {
-			cis->lll.event_count += (lazy + 1U);
+			cis->lll.event_count_prepare += (lazy + 1U);
 
 #if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
-			cis->lll.event_count -= cis->lll.lazy_active;
+			cis->lll.event_count_prepare -= cis->lll.lazy_active;
 			cis->lll.lazy_active = 0U;
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 
 			leading_event_count = MAX(leading_event_count,
-						cis->lll.event_count);
+						cis->lll.event_count_prepare);
 
-			ull_iso_lll_event_prepare(cis->lll.handle, cis->lll.event_count);
+			ull_iso_lll_event_prepare(cis->lll.handle, cis->lll.event_count_prepare);
 		}
 
 		/* Latch datapath validity entering event */
@@ -774,18 +792,44 @@ void ull_conn_iso_ticker_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
 	ull_conn_iso_transmit_test_cig_interval(cig->lll.handle, ticks_at_expire);
 }
 
+static uint32_t cig_offset_calc(struct ll_conn_iso_group *cig, struct ll_conn_iso_stream *cis,
+				uint32_t cis_offset, uint32_t *ticks_at_expire, uint32_t remainder)
+{
+	uint32_t acl_to_cig_ref_point;
+	uint32_t cis_offs_to_cig_ref;
+	uint32_t remainder_us;
+
+	remainder_us = remainder;
+	hal_ticker_remove_jitter(ticks_at_expire, &remainder_us);
+
+	cis_offs_to_cig_ref = cig->sync_delay - cis->sync_delay;
+
+	/* Establish the CIG reference point by adjusting ACL-to-CIS offset
+	 * (cis->offset) by the difference between CIG- and CIS sync delays.
+	 */
+	acl_to_cig_ref_point = cis_offset - cis_offs_to_cig_ref;
+
+	/* Calculate the CIG reference point of first CIG event. This
+	 * calculation is inaccurate. However it is the best estimate available
+	 * until the first anchor point for the leading CIS is available.
+	 */
+	cig->cig_ref_point = isoal_get_wrapped_time_us(HAL_TICKER_TICKS_TO_US(*ticks_at_expire),
+						       remainder_us +
+						       EVENT_OVERHEAD_START_US +
+						       acl_to_cig_ref_point);
+	/* Calculate initial ticker offset */
+	return remainder_us + acl_to_cig_ref_point;
+}
+
 void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 			uint32_t ticks_at_expire, uint32_t remainder,
 			uint16_t instant_latency)
 {
 	struct ll_conn_iso_group *cig;
 	struct ll_conn_iso_stream *cis;
-	uint32_t acl_to_cig_ref_point;
-	uint32_t cis_offs_to_cig_ref;
 	uint32_t ticks_remainder;
 	uint32_t ticks_periodic;
 	uint32_t ticker_status;
-	uint32_t remainder_us;
 	int32_t cig_offset_us;
 	uint32_t ticks_slot;
 	uint8_t ticker_id;
@@ -793,9 +837,7 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 	cis = ll_conn_iso_stream_get(cis_handle);
 	cig = cis->group;
 
-	cis_offs_to_cig_ref = cig->sync_delay - cis->sync_delay;
-
-	cis->lll.offset = cis_offs_to_cig_ref;
+	cis->lll.offset = cig->sync_delay - cis->sync_delay;
 	cis->lll.handle = cis_handle;
 
 #if defined(CONFIG_BT_CTLR_LE_ENC)
@@ -851,6 +893,10 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 	 */
 	if (cig->state == CIG_STATE_ACTIVE) {
 #if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
+		/* Initialize CIS event lazy at CIS create */
+		cis->lll.lazy_active = 0U;
+
+		/* Deferred fill CIS event lazy value at CIS create */
 		cis_lazy_fill(cis);
 #else /* CONFIG_BT_CTLR_JIT_SCHEDULING */
 		/* Set CIS active in already active CIG */
@@ -863,25 +909,7 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 
 	ticker_id = TICKER_ID_CONN_ISO_BASE + ll_conn_iso_group_handle_get(cig);
 
-	remainder_us = remainder;
-	hal_ticker_remove_jitter(&ticks_at_expire, &remainder_us);
-
-	/* Establish the CIG reference point by adjusting ACL-to-CIS offset
-	 * (cis->offset) by the difference between CIG- and CIS sync delays.
-	 */
-	acl_to_cig_ref_point = cis->offset - cis_offs_to_cig_ref;
-
-	/* Calculate initial ticker offset */
-	cig_offset_us = remainder_us + acl_to_cig_ref_point;
-
-	/* Calculate the CIG reference point of first CIG event. This
-	 * calculation is inaccurate. However it is the best estimate available
-	 * until the first anchor point for the leading CIS is available.
-	 */
-	cig->cig_ref_point = isoal_get_wrapped_time_us(HAL_TICKER_TICKS_TO_US(ticks_at_expire),
-						       remainder_us +
-						       EVENT_OVERHEAD_START_US +
-						       acl_to_cig_ref_point);
+	cig_offset_us = cig_offset_calc(cig, cis, cis->offset, &ticks_at_expire, remainder);
 
 	if (false) {
 
@@ -895,8 +923,6 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 		 */
 		iso_interval_us_frac = EVENT_US_TO_US_FRAC(cig->iso_interval * ISO_INT_UNIT_US) -
 				       cig->lll.window_widening_periodic_us_frac;
-		ticks_periodic  = EVENT_US_FRAC_TO_TICKS(iso_interval_us_frac);
-		ticks_remainder = EVENT_US_FRAC_TO_REMAINDER(iso_interval_us_frac);
 
 #if defined(CONFIG_BT_CTLR_PERIPHERAL_ISO_EARLY_CIG_START)
 		bool early_start = (cis->offset < EVENT_OVERHEAD_START_US);
@@ -909,22 +935,66 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 				cig_offset_us += (conn->lll.interval * CONN_INT_UNIT_US);
 				cig->cig_ref_point = isoal_get_wrapped_time_us(cig->cig_ref_point,
 							conn->lll.interval * CONN_INT_UNIT_US);
-			} else {
-				LL_ASSERT(instant_latency == 1U);
+			} else if (instant_latency > 1U) {
+				/* We have passed the last possible event for a timely start. For
+				 * early_start this means the latency is actually one less.
+				 */
+				instant_latency--;
 			}
-		} else {
-			/* FIXME: Handle latency due to skipped ACL events around the
-			 * instant to start CIG
-			 */
-			LL_ASSERT(instant_latency == 0U);
 		}
-#else /* CONFIG_BT_CTLR_PERIPHERAL_ISO_EARLY_CIG_START */
-		/* FIXME: Handle latency due to skipped ACL events around the
-		 * instant to start CIG
-		 */
-		LL_ASSERT(instant_latency == 0U);
 #endif /* CONFIG_BT_CTLR_PERIPHERAL_ISO_EARLY_CIG_START */
 
+		if (instant_latency > 0U) {
+			/* Try to start the CIG late by finding the CIG event relative to current
+			 * ACL event, taking latency into consideration. Adjust ticker periodicity
+			 * with increased window widening.
+			 */
+			uint32_t lost_cig_events;
+			uint32_t iso_interval_us;
+			uint32_t acl_latency_us;
+			uint32_t lost_payloads;
+			uint32_t cis_offset;
+
+			acl_latency_us = instant_latency * conn->lll.interval * CONN_INT_UNIT_US;
+			iso_interval_us = cig->iso_interval * ISO_INT_UNIT_US;
+
+			if (acl_latency_us > iso_interval_us) {
+				/* Latency is greater than the ISO interval - find the offset from
+				 * this ACL event to the next active ISO event, and adjust the event
+				 * counter accordingly.
+				 */
+				lost_cig_events = DIV_ROUND_UP(acl_latency_us - cis->offset,
+							       iso_interval_us);
+				cis_offset = cis->offset + (lost_cig_events * iso_interval_us) -
+					     acl_latency_us;
+			} else {
+				/* Latency is less than- or equal to one ISO interval - start at
+				 * next ISO event.
+				 */
+				lost_cig_events = 1U;
+				cis_offset = cis->offset + iso_interval_us - acl_latency_us;
+			}
+
+			cis->lll.event_count_prepare += lost_cig_events;
+
+			lost_payloads = (lost_cig_events - (cis->lll.rx.ft - 1)) * cis->lll.rx.bn;
+			cis->lll.rx.payload_count += lost_payloads;
+
+			lost_payloads = (lost_cig_events - (cis->lll.tx.ft - 1)) * cis->lll.tx.bn;
+			cis->lll.tx.payload_count += lost_payloads;
+
+			/* Adjust for extra window widening */
+			iso_interval_us_frac = EVENT_US_TO_US_FRAC(cig->iso_interval *
+								   ISO_INT_UNIT_US);
+			iso_interval_us_frac -= cig->lll.window_widening_periodic_us_frac *
+						instant_latency;
+			/* Calculate new offset */
+			cig_offset_us = cig_offset_calc(cig, cis, cis_offset, &ticks_at_expire,
+							remainder);
+		}
+
+		ticks_periodic  = EVENT_US_FRAC_TO_TICKS(iso_interval_us_frac);
+		ticks_remainder = EVENT_US_FRAC_TO_REMAINDER(iso_interval_us_frac);
 #endif /* CONFIG_BT_CTLR_PERIPHERAL_ISO */
 
 	} else if (IS_CENTRAL(cig)) {
@@ -966,9 +1036,15 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 
 		/* FIXME: Time reservation for interleaved packing */
 		/* Below is time reservation for sequential packing */
-		slot_us = cis->lll.sub_interval * cis->lll.nse;
+		if (IS_ENABLED(CONFIG_BT_CTLR_PERIPHERAL_ISO_RESERVE_MAX)) {
+			slot_us = cis->lll.sub_interval * cis->lll.nse;
+		} else {
+			slot_us = cis->lll.sub_interval * MAX(cis->lll.tx.bn, cis->lll.rx.bn);
+		}
 
-		slot_us += EVENT_OVERHEAD_START_US + EVENT_OVERHEAD_END_US;
+		if (IS_ENABLED(CONFIG_BT_CTLR_EVENT_OVERHEAD_RESERVE_MAX)) {
+			slot_us += EVENT_OVERHEAD_START_US + EVENT_OVERHEAD_END_US;
+		}
 
 		/* FIXME: How to use ready_delay_us in the time reservation?
 		 *        i.e. when CISes use different PHYs? Is that even
@@ -983,7 +1059,7 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 			HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_XTAL_US);
 		cig->ull.ticks_preempt_to_start =
 			HAL_TICKER_US_TO_TICKS(EVENT_OVERHEAD_PREEMPT_MIN_US);
-		cig->ull.ticks_slot = HAL_TICKER_US_TO_TICKS(slot_us);
+		cig->ull.ticks_slot = HAL_TICKER_US_TO_TICKS_CEIL(slot_us);
 	}
 
 	ticks_slot_offset = MAX(cig->ull.ticks_active_to_start,
@@ -996,6 +1072,9 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 	}
 
 	ticks_slot = cig->ull.ticks_slot + ticks_slot_overhead;
+
+	/* Initialize CIS event lazy at CIS create */
+	cis->lll.lazy_active = 0U;
 #endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 
 	/* Start CIS peripheral CIG ticker */
@@ -1014,11 +1093,6 @@ void ull_conn_iso_start(struct ll_conn *conn, uint16_t cis_handle,
 	/* Set CIG and the first CIS state as active */
 	cig->state = CIG_STATE_ACTIVE;
 	cis->lll.active = 1U;
-
-#if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
-	/* CIS event lazy at CIS create */
-	cis->lll.lazy_active = 0U;
-#endif /* !CONFIG_BT_CTLR_JIT_SCHEDULING */
 }
 
 #if !defined(CONFIG_BT_CTLR_JIT_SCHEDULING)
@@ -1040,8 +1114,8 @@ static void mfy_cis_lazy_fill(void *param)
 	uint32_t ticks_to_expire;
 	uint32_t ticks_current;
 	uint32_t remainder;
+	uint16_t lazy = 0U;
 	uint8_t ticker_id;
-	uint16_t lazy;
 	uint8_t retry;
 	uint8_t id;
 
@@ -1130,46 +1204,6 @@ static void ticker_update_cig_op_cb(uint32_t status, void *param)
 	LL_ASSERT(status == TICKER_STATUS_SUCCESS ||
 		  param == ull_update_mark_get() ||
 		  param == ull_disable_mark_get());
-}
-
-static void ticker_resume_op_cb(uint32_t status, void *param)
-{
-	ARG_UNUSED(param);
-
-	LL_ASSERT(status == TICKER_STATUS_SUCCESS);
-}
-
-static void ticker_resume_cb(uint32_t ticks_at_expire, uint32_t ticks_drift,
-			     uint32_t remainder, uint16_t lazy, uint8_t force,
-			     void *param)
-{
-	static memq_link_t link;
-	static struct mayfly mfy = {0, 0, &link, NULL, lll_resume};
-	struct lll_conn_iso_group *cig;
-	struct lll_event *resume_event;
-	uint32_t ret;
-
-	ARG_UNUSED(ticks_drift);
-	LL_ASSERT(lazy == 0);
-
-	resume_event = param;
-
-	/* Append timing parameters */
-	resume_event->prepare_param.ticks_at_expire = ticks_at_expire;
-	resume_event->prepare_param.remainder = remainder;
-	resume_event->prepare_param.lazy = 0;
-	resume_event->prepare_param.force = force;
-	mfy.param = resume_event;
-
-	/* Mark resume as done */
-	cig = resume_event->prepare_param.param;
-	cig->resume_cis = LLL_HANDLE_INVALID;
-
-	/* Kick LLL resume */
-	ret = mayfly_enqueue(TICKER_USER_ID_ULL_HIGH, TICKER_USER_ID_LLL,
-			     0, &mfy);
-
-	LL_ASSERT(!ret);
 }
 
 static void cis_disabled_cb(void *param)
@@ -1435,8 +1469,7 @@ static void disable(uint16_t handle)
 
 	err = ull_ticker_stop_with_mark(TICKER_ID_CONN_ISO_BASE + handle,
 					cig, &cig->lll);
-
-	LL_ASSERT(err == 0 || err == -EALREADY);
+	LL_ASSERT_INFO2(err == 0 || err == -EALREADY, handle, err);
 
 	cig->lll.handle = LLL_HANDLE_INVALID;
 	cig->lll.resume_cis = LLL_HANDLE_INVALID;
@@ -1479,7 +1512,7 @@ void ull_conn_iso_transmit_test_cig_interval(uint16_t handle, uint32_t ticks_at_
 		cis = ll_conn_iso_stream_get_by_group(cig, &handle_iter);
 		LL_ASSERT(cis);
 
-		if (!cis->hdr.test_mode.tx_enabled || cis->lll.handle == LLL_HANDLE_INVALID) {
+		if (!cis->hdr.test_mode.tx.enabled || cis->lll.handle == LLL_HANDLE_INVALID) {
 			continue;
 		}
 
@@ -1487,16 +1520,16 @@ void ull_conn_iso_transmit_test_cig_interval(uint16_t handle, uint32_t ticks_at_
 		 * on 64-bit sdu_counter:
 		 *   (39 bits x 22 bits (4x10^6 us) = 61 bits / 8 bits (255 us) = 53 bits)
 		 */
-		sdu_counter = DIV_ROUND_UP((cis->lll.event_count + 1U) * iso_interval,
+		sdu_counter = DIV_ROUND_UP((cis->lll.event_count_prepare + 1U) * iso_interval,
 					       sdu_interval);
 
-		if (cis->hdr.test_mode.tx_sdu_counter == 0U) {
+		if (cis->hdr.test_mode.tx.sdu_counter == 0U) {
 			/* First ISO event. Align SDU counter for next event */
-			cis->hdr.test_mode.tx_sdu_counter = sdu_counter;
+			cis->hdr.test_mode.tx.sdu_counter = sdu_counter;
 			tx_sdu_count = 0U;
 		} else {
 			/* Calculate number of SDUs to produce for next ISO event */
-			tx_sdu_count = sdu_counter - cis->hdr.test_mode.tx_sdu_counter;
+			tx_sdu_count = sdu_counter - cis->hdr.test_mode.tx.sdu_counter;
 		}
 
 		/* Now process all SDUs due for next ISO event */

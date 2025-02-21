@@ -1233,7 +1233,7 @@ static int get_opaque(struct lwm2m_input_context *in, uint8_t *value, size_t buf
 	/* Decode from url safe to normal */
 	base64_url_safe_decode(data_ptr, val_opaque->length);
 
-	if (opaque->remaining == 0) {
+	if (opaque->offset == 0) {
 		size_t original_size = val_opaque->length;
 		size_t base64_length;
 
@@ -1260,10 +1260,9 @@ static int get_opaque(struct lwm2m_input_context *in, uint8_t *value, size_t buf
 			val_opaque->length += buffer_base64_length;
 		}
 		opaque->len = val_opaque->length;
-		opaque->remaining = val_opaque->length;
 	}
 
-	in_len = opaque->remaining;
+	in_len = opaque->len - opaque->offset;
 
 	if (in_len > buflen) {
 		in_len = buflen;
@@ -1273,8 +1272,7 @@ static int get_opaque(struct lwm2m_input_context *in, uint8_t *value, size_t buf
 		in_len = val_opaque->length;
 	}
 
-	opaque->remaining -= in_len;
-	if (opaque->remaining == 0U) {
+	if (opaque->offset + in_len >= opaque->len) {
 		*last_block = true;
 	}
 	/* Copy data to buffer */
@@ -1653,7 +1651,7 @@ int do_composite_read_op_senml_json(struct lwm2m_message *msg)
 	/* Clear path which are part are part of recursive path /1 will include /1/0/1 */
 	lwm2m_engine_clear_duplicate_path(&path_list, &free_list);
 
-	return do_composite_read_op_for_parsed_list_senml_json(msg, &path_list);
+	return do_composite_read_op_for_parsed_list(msg, LWM2M_FORMAT_APP_SEML_JSON, &path_list);
 }
 
 int do_send_op_senml_json(struct lwm2m_message *msg, sys_slist_t *lwm2m_path_list)

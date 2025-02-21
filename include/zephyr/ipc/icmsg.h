@@ -12,8 +12,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/mbox.h>
 #include <zephyr/ipc/ipc_service.h>
+#include <zephyr/ipc/pbuf.h>
 #include <zephyr/sys/atomic.h>
-#include <zephyr/sys/spsc_pbuf.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,25 +27,64 @@ extern "C" {
  */
 
 enum icmsg_state {
+	/** Instance is not initialized yet. In this state: sending will fail, opening allowed.
+	 */
 	ICMSG_STATE_OFF,
-	ICMSG_STATE_BUSY,
-	ICMSG_STATE_READY,
+
+	/** Instance is initializing without session handshake. In this state: sending will fail,
+	 * opening will fail.
+	 */
+	ICMSG_STATE_INITIALIZING_SID_DISABLED,
+
+	/** Instance is initializing with session handshake. It is waiting for remote to acknowledge
+	 * local session id. In this state: sending will fail, opening is allowed (local session id
+	 * will change, so the remote may get unbound() callback).
+	 */
+	ICMSG_STATE_INITIALIZING_SID_ENABLED,
+
+	/** Instance is initializing with detection of session handshake support on remote side.
+	 * It is waiting for remote to acknowledge local session id or to send magic bytes.
+	 * In this state: sending will fail, opening is allowed (local session id
+	 * will change, so the remote may get unbound() callback if it supports it).
+	 */
+	ICMSG_STATE_INITIALIZING_SID_DETECT,
+
+	/** Instance was closed on remote side. The unbound() callback was send on local side.
+	 * In this state: sending will be silently discarded (there may be outdated sends),
+	 * opening is allowed.
+	 */
+	ICMSG_STATE_DISCONNECTED,
+
+	/* Connected states must be at the end. */
+
+	/** Instance is connected without session handshake support. In this state: sending will be
+	 * successful, opening will fail.
+	 */
+	ICMSG_STATE_CONNECTED_SID_DISABLED,
+
+	/** Instance is connected with session handshake support. In this state: sending will be
+	 * successful, opening is allowed (session will change and remote will get unbound()
+	 * callback).
+	 */
+	ICMSG_STATE_CONNECTED_SID_ENABLED,
+};
+
+enum icmsg_unbound_mode {
+	ICMSG_UNBOUND_MODE_DISABLE = ICMSG_STATE_INITIALIZING_SID_DISABLED,
+	ICMSG_UNBOUND_MODE_ENABLE = ICMSG_STATE_INITIALIZING_SID_ENABLED,
+	ICMSG_UNBOUND_MODE_DETECT = ICMSG_STATE_INITIALIZING_SID_DETECT,
 };
 
 struct icmsg_config_t {
-	uintptr_t tx_shm_addr;
-	uintptr_t rx_shm_addr;
-	size_t tx_shm_size;
-	size_t rx_shm_size;
-	struct mbox_channel mbox_tx;
-	struct mbox_channel mbox_rx;
+	struct mbox_dt_spec mbox_tx;
+	struct mbox_dt_spec mbox_rx;
+	enum icmsg_unbound_mode unbound_mode;
 };
 
 struct icmsg_data_t {
 	/* Tx/Rx buffers. */
-	struct spsc_pbuf *tx_ib;
-	struct spsc_pbuf *rx_ib;
-	atomic_t tx_buffer_state;
+	struct pbuf *tx_pb;
+	struct pbuf *rx_pb;
 #ifdef CONFIG_IPC_SERVICE_ICMSG_SHMEM_ACCESS_SYNC
 	struct k_mutex tx_lock;
 #endif
@@ -56,15 +95,12 @@ struct icmsg_data_t {
 
 	/* General */
 	const struct icmsg_config_t *cfg;
-	struct k_work_delayable notify_work;
+#ifdef CONFIG_MULTITHREADING
 	struct k_work mbox_work;
-	atomic_t state;
-	/* No-copy */
-#ifdef CONFIG_IPC_SERVICE_ICMSG_NOCOPY_RX
-	atomic_t rx_buffer_state;
-	const void *rx_buffer;
-	uint16_t rx_len;
 #endif
+	uint16_t remote_sid;
+	uint16_t local_sid;
+	atomic_t state;
 };
 
 /** @brief Open an icmsg instance
@@ -75,7 +111,7 @@ struct icmsg_data_t {
  *  completed.
  *  This function is intended to be called late in the initialization process,
  *  possibly from a thread which can be safely blocked while handshake with the
- *  remote instance is being pefromed.
+ *  remote instance is being performed.
  *
  *  @param[in] conf Structure containing configuration parameters for the icmsg
  *                  instance.
@@ -122,7 +158,7 @@ int icmsg_close(const struct icmsg_config_t *conf,
  *  @param[in] len Size of data in the @p msg buffer.
  *
  *
- *  @retval 0 on success.
+ *  @retval Number of sent bytes.
  *  @retval -EBUSY when the instance has not finished handshake with the remote
  *                 instance.
  *  @retval -ENODATA when the requested data to send is empty.
@@ -133,151 +169,6 @@ int icmsg_close(const struct icmsg_config_t *conf,
 int icmsg_send(const struct icmsg_config_t *conf,
 	       struct icmsg_data_t *dev_data,
 	       const void *msg, size_t len);
-
-/** @brief Get an empty TX buffer to be sent using @ref icmsg_send_nocopy
- *
- *  This function can be called to get an empty TX buffer so that the
- *  application can directly put its data into the sending buffer avoiding copy
- *  performed by the icmsg library.
- *
- *  It is the application responsibility to correctly fill the allocated TX
- *  buffer with data and passing correct parameters to @ref
- *  icmsg_send_nocopy function to perform data no-copy-send mechanism.
- *
- *  The size parameter can be used to request a buffer with a certain size:
- *  - if the size can be accommodated the function returns no errors and the
- *    buffer is allocated
- *  - if the requested size is too big, the function returns -ENOMEM and the
- *    the buffer is not allocated.
- *  - if the requested size is '0' the buffer is allocated with the maximum
- *    allowed size.
- *
- *  In all the cases on return the size parameter contains the maximum size for
- *  the returned buffer.
- *
- *  When the function returns no errors, the buffer is intended as allocated
- *  and it is released under one of two conditions: (1) when sending the buffer
- *  using @ref icmsg_send_nocopy (and in this case the buffer is automatically
- *  released by the backend), (2) when using @ref icmsg_drop_tx_buffer on a
- *  buffer not sent.
- *
- *  @param[in] conf Structure containing configuration parameters for the icmsg
- *                  instance.
- *  @param[inout] dev_data Structure containing run-time data used by the icmsg
- *                         instance.
- *  @param[out] data Pointer to the empty TX buffer.
- *  @param[inout] size Pointer to store the requested TX buffer size. If the
- *		       function returns -ENOMEM, this parameter returns the
- *		       maximum allowed size.
- *
- *  @retval -ENOBUFS when there are no TX buffers available.
- *  @retval -EALREADY when a buffer was already claimed and not yet released.
- *  @retval -ENOMEM when the requested size is too big (and the size parameter
- *		    contains the maximum allowed size).
- *
- *  @retval 0 on success.
- */
-int icmsg_get_tx_buffer(const struct icmsg_config_t *conf,
-			struct icmsg_data_t *dev_data,
-			void **data, size_t *size);
-
-/** @brief Drop and release a TX buffer
- *
- *  Drop and release a TX buffer. It is possible to drop only TX buffers
- *  obtained by using @ref icmsg_get_tx_buffer.
- *
- *  @param[in] conf Structure containing configuration parameters for the icmsg
- *                  instance.
- *  @param[inout] dev_data Structure containing run-time data used by the icmsg
- *                         instance.
- *  @param[in] data Pointer to the TX buffer.
- *
- *  @retval -EALREADY when the buffer was already dropped.
- *  @retval -ENXIO when the buffer was not obtained using @ref
- *		   ipc_service_get_tx_buffer
- *
- *  @retval 0 on success.
- */
-int icmsg_drop_tx_buffer(const struct icmsg_config_t *conf,
-			 struct icmsg_data_t *dev_data,
-			 const void *data);
-
-/** @brief Send a message from a buffer obtained by @ref icmsg_get_tx_buffer
- *         to the remote icmsg instance.
- *
- *  This is equivalent to @ref icmsg_send but in this case the TX buffer must
- *  have been obtained by using @ref icmsg_get_tx_buffer.
- *
- *  The API user has to take the responsibility for getting the TX buffer using
- *  @ref icmsg_get_tx_buffer and filling the TX buffer with the data.
- *
- *  After the @ref icmsg_send_nocopy function is issued the TX buffer is no
- *  more owned by the sending task and must not be touched anymore unless the
- *  function fails and returns an error.
- *
- *  If this function returns an error, @ref icmsg_drop_tx_buffer can be used
- *  to drop the TX buffer.
- *
- *  @param[in] conf Structure containing configuration parameters for the icmsg
- *                  instance.
- *  @param[inout] dev_data Structure containing run-time data used by the icmsg
- *                         instance.
- *  @param[in] msg Pointer to a buffer containing data to send.
- *  @param[in] len Size of data in the @p msg buffer.
- *
- *
- *  @return Size of sent data on success.
- *  @retval -EBUSY when the instance has not finished handshake with the remote
- *                 instance.
- *  @retval -ENODATA when the requested data to send is empty.
- *  @retval -EBADMSG when the requested data to send is too big.
- *  @retval -ENXIO when the buffer was not obtained using @ref
- *		   ipc_service_get_tx_buffer
- *  @retval other errno codes from dependent modules.
- */
-int icmsg_send_nocopy(const struct icmsg_config_t *conf,
-		      struct icmsg_data_t *dev_data,
-		      const void *msg, size_t len);
-
-#ifdef CONFIG_IPC_SERVICE_ICMSG_NOCOPY_RX
-/** @brief Hold RX buffer to be used outside of the received callback.
- *
- *  @param[in] conf Structure containing configuration parameters for the icmsg
- *                  instance.
- *  @param[inout] dev_data Structure containing run-time data used by the icmsg
- *                         instance.
- *  @param[in] data Pointer to the buffer to be held.
- *
- *  @retval 0 on success.
- *  @retval -EBUSY when the instance has not finished handshake with the remote
- *                 instance.
- *  @retval -EINVAL when the @p data argument does not point to a valid RX
- *                  buffer.
- *  @retval -EALREADY when the buffer is already held.
- */
-int icmsg_hold_rx_buffer(const struct icmsg_config_t *conf,
-			 struct icmsg_data_t *dev_data,
-			 const void *data);
-
-/** @brief Release RX buffer for future use.
- *
- *  @param[in] conf Structure containing configuration parameters for the icmsg
- *                  instance.
- *  @param[inout] dev_data Structure containing run-time data used by the icmsg
- *                         instance.
- *  @param[in] data Pointer to the buffer to be released.
- *
- *  @retval 0 on success.
- *  @retval -EBUSY when the instance has not finished handshake with the remote
- *                 instance.
- *  @retval -EINVAL when the @p data argument does not point to a valid RX
- *                  buffer.
- *  @retval -EALREADY when the buffer is not held.
- */
-int icmsg_release_rx_buffer(const struct icmsg_config_t *conf,
-			    struct icmsg_data_t *dev_data,
-			    const void *data);
-#endif
 
 /**
  * @}

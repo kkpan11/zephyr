@@ -140,7 +140,7 @@ static void process(const struct log_backend *const backend,
 	}
 
 	zassert_equal(msg->log.hdr.timestamp, exp->timestamp,
-#if CONFIG_LOG_TIMESTAMP_64BIT
+#ifdef CONFIG_LOG_TIMESTAMP_64BIT
 		      "Got: %llu, expected: %llu",
 #else
 		      "Got: %u, expected: %u",
@@ -157,9 +157,7 @@ static void process(const struct log_backend *const backend,
 	} else if (source == NULL) {
 		source_id = 0;
 	} else {
-		source_id = IS_ENABLED(CONFIG_LOG_RUNTIME_FILTERING) ?
-		    log_dynamic_source_id((struct log_source_dynamic_data *)source) :
-		    log_const_source_id((const struct log_source_const_data *)source);
+		source_id = log_source_id(source);
 	}
 
 	zassert_equal(source_id, exp->source_id, "source_id:%p (exp: %d)",
@@ -167,8 +165,10 @@ static void process(const struct log_backend *const backend,
 
 	size_t len;
 	uint8_t *data;
+	struct cbprintf_package_desc *package_desc;
 
 	data = log_msg_get_data(&msg->log, &len);
+
 	zassert_equal(exp->data_len, len);
 	if (exp->data_len <= sizeof(exp->data)) {
 		zassert_equal(memcmp(data, exp->data, len), 0);
@@ -178,6 +178,15 @@ static void process(const struct log_backend *const backend,
 	struct test_str s = { .str = str };
 
 	data = log_msg_get_package(&msg->log, &len);
+	package_desc = (struct cbprintf_package_desc *)data;
+
+	if (IS_ENABLED(CONFIG_LOG_MSG_APPEND_RO_STRING_LOC)) {
+		/* If RO string locations are appended there is always at least 1: format string. */
+		zassert_true(package_desc->ro_str_cnt > 0);
+	} else {
+		zassert_equal(package_desc->ro_str_cnt, 0);
+	}
+
 	len = cbpprintf(out, &s, data);
 	if (len > 0) {
 		str[len] = '\0';

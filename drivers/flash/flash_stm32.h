@@ -10,12 +10,16 @@
 #define ZEPHYR_DRIVERS_FLASH_FLASH_STM32_H_
 
 #include <zephyr/drivers/flash.h>
+#include "stm32_hsem.h"
 
 #if DT_NODE_HAS_PROP(DT_INST(0, st_stm32_flash_controller), clocks) || \
 	DT_NODE_HAS_PROP(DT_INST(0, st_stm32h7_flash_controller), clocks)
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #endif
+
+/* Get the base address of the flash from the DTS node */
+#define FLASH_STM32_BASE_ADDRESS DT_REG_ADDR(DT_INST(0, st_stm32_nv_flash))
 
 struct flash_stm32_priv {
 	FLASH_TypeDef *regs;
@@ -41,6 +45,17 @@ struct flash_stm32_priv {
 #define FLASH_NSSR_BSY FLASH_SR_BSY
 #define OPTR OPTCR
 #endif /* CONFIG_SOC_SERIES_STM32H5X */
+
+/* Register mapping for the stm32H7RS serie (single bank)*/
+#if defined(CONFIG_SOC_SERIES_STM32H7RSX)
+#define FLASH_NB_32BITWORD_IN_FLASHWORD 4 /* 128 bits */
+#define CR1 CR
+#define SR1 SR
+/* flash sectore Nb [0-7] */
+#define FLASH_CR_SNB FLASH_CR_SSN
+#define FLASH_CR_SNB_Pos FLASH_CR_SSN_Pos
+#define KEYR1 KEYR
+#endif /* CONFIG_SOC_SERIES_STM32H7RSX */
 
 /* Differentiate between arm trust-zone non-secure/secure, and others. */
 #if defined(FLASH_NSSR_NSBSY) || defined(FLASH_NSSR_BSY) /* For mcu w. TZ in non-secure mode */
@@ -257,6 +272,40 @@ static inline bool flash_stm32_range_exists(const struct device *dev,
 }
 #endif	/* CONFIG_FLASH_PAGE_LAYOUT */
 
+
+#if defined(CONFIG_MULTITHREADING) || defined(CONFIG_STM32H7_DUAL_CORE)
+/*
+ * This is named flash_stm32_sem_take instead of flash_stm32_lock (and
+ * similarly for flash_stm32_sem_give) to avoid confusion with locking
+ * actual flash pages.
+ */
+
+static inline void _flash_stm32_sem_take(const struct device *dev)
+{
+	k_sem_take(&FLASH_STM32_PRIV(dev)->sem, K_FOREVER);
+	z_stm32_hsem_lock(CFG_HW_FLASH_SEMID, HSEM_LOCK_WAIT_FOREVER);
+}
+
+static inline void _flash_stm32_sem_give(const struct device *dev)
+{
+	z_stm32_hsem_unlock(CFG_HW_FLASH_SEMID);
+	k_sem_give(&FLASH_STM32_PRIV(dev)->sem);
+}
+
+#define flash_stm32_sem_init(dev) k_sem_init(&FLASH_STM32_PRIV(dev)->sem, 1, 1)
+#define flash_stm32_sem_take(dev) _flash_stm32_sem_take(dev)
+#define flash_stm32_sem_give(dev) _flash_stm32_sem_give(dev)
+#else
+#define flash_stm32_sem_init(dev)
+#define flash_stm32_sem_take(dev)
+#define flash_stm32_sem_give(dev)
+#endif /* CONFIG_MULTITHREADING */
+
+#ifdef CONFIG_FLASH_EX_OP_ENABLED
+int flash_stm32_ex_op(const struct device *dev, uint16_t code,
+			     const uintptr_t in, void *out);
+#endif /* CONFIG_FLASH_EX_OP_ENABLED */
+
 static inline bool flash_stm32_valid_write(off_t offset, uint32_t len)
 {
 	return ((offset % FLASH_STM32_WRITE_BLOCK_SIZE == 0) &&
@@ -277,6 +326,11 @@ int flash_stm32_wait_flash_idle(const struct device *dev);
 
 int flash_stm32_option_bytes_lock(const struct device *dev, bool enable);
 
+uint32_t flash_stm32_option_bytes_read(const struct device *dev);
+
+int flash_stm32_option_bytes_write(const struct device *dev, uint32_t mask,
+				   uint32_t value);
+
 #ifdef CONFIG_SOC_SERIES_STM32WBX
 int flash_stm32_check_status(const struct device *dev);
 #endif /* CONFIG_SOC_SERIES_STM32WBX */
@@ -290,29 +344,21 @@ void flash_stm32_page_layout(const struct device *dev,
 #if defined(CONFIG_FLASH_STM32_WRITE_PROTECT)
 
 int flash_stm32_update_wp_sectors(const struct device *dev,
-				  uint32_t changed_sectors,
-				  uint32_t protected_sectors);
+				  uint64_t changed_sectors,
+				  uint64_t protected_sectors);
 
 int flash_stm32_get_wp_sectors(const struct device *dev,
-			       uint32_t *protected_sectors);
+			       uint64_t *protected_sectors);
 #endif
 #if defined(CONFIG_FLASH_STM32_READOUT_PROTECTION)
+uint8_t flash_stm32_get_rdp_level(const struct device *dev);
 
-int flash_stm32_update_rdp(const struct device *dev, bool enable,
-			   bool permanent);
-
-int flash_stm32_get_rdp(const struct device *dev, bool *enabled,
-			bool *permanent);
+void flash_stm32_set_rdp_level(const struct device *dev, uint8_t level);
 #endif
 
-/* Flash extended operations */
-#if defined(CONFIG_FLASH_STM32_WRITE_PROTECT)
-int flash_stm32_ex_op_sector_wp(const struct device *dev, const uintptr_t in,
-				void *out);
-#endif
-#if defined(CONFIG_FLASH_STM32_READOUT_PROTECTION)
-int flash_stm32_ex_op_rdp(const struct device *dev, const uintptr_t in,
-			  void *out);
+#if defined(CONFIG_FLASH_STM32_BLOCK_REGISTERS)
+int flash_stm32_control_register_disable(const struct device *dev);
+int flash_stm32_option_bytes_disable(const struct device *dev);
 #endif
 
 #endif /* ZEPHYR_DRIVERS_FLASH_FLASH_STM32_H_ */

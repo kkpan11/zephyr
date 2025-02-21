@@ -2,11 +2,18 @@
 
 cmake_minimum_required(VERSION 3.20.0)
 
+include(extensions)
+include(west)
+include(yaml)
 include(root)
+include(zephyr_module)
 include(boards)
-include(arch)
+include(hwm_v2)
 include(configuration_files)
+
 include(kconfig)
+include(arch_v2)
+include(soc_v2)
 
 find_package(TargetTools)
 
@@ -52,8 +59,30 @@ include(${ZEPHYR_BASE}/cmake/kobj.cmake)
 add_dependencies(test_interface ${KOBJ_TYPES_H_TARGET})
 gen_kobj(KOBJ_GEN_DIR)
 
+# Generates empty header files to build
+set(INCL_GENERATED_DIR ${APPLICATION_BINARY_DIR}/zephyr/include/generated/zephyr)
+set(INCL_GENERATED_SYSCALL_DIR ${INCL_GENERATED_DIR}/syscalls)
+list(APPEND INCL_GENERATED_HEADERS
+  ${INCL_GENERATED_DIR}/devicetree_generated.h
+  ${INCL_GENERATED_DIR}/offsets.h
+  ${INCL_GENERATED_DIR}/syscall_list.h
+  ${INCL_GENERATED_DIR}/syscall_macros.h
+  ${INCL_GENERATED_SYSCALL_DIR}/kernel.h
+  ${INCL_GENERATED_SYSCALL_DIR}/kobject.h
+  ${INCL_GENERATED_SYSCALL_DIR}/log_core.h
+  ${INCL_GENERATED_SYSCALL_DIR}/log_ctrl.h
+  ${INCL_GENERATED_SYSCALL_DIR}/log_msg.h
+  ${INCL_GENERATED_SYSCALL_DIR}/sys_clock.h
+)
+
+file(MAKE_DIRECTORY ${INCL_GENERATED_SYSCALL_DIR})
+foreach(header ${INCL_GENERATED_HEADERS})
+  file(TOUCH ${header})
+endforeach()
+
 list(APPEND INCLUDE
   subsys/testsuite/ztest/include/zephyr
+  subsys/testsuite/ztest/unittest/include
   subsys/testsuite/include/zephyr
   subsys/testsuite/ztest/include
   subsys/testsuite/include
@@ -83,6 +112,7 @@ target_compile_options(test_interface INTERFACE
   ${EXTRA_CFLAGS_AS_LIST}
   $<$<COMPILE_LANGUAGE:CXX>:${EXTRA_CXXFLAGS_AS_LIST}>
   $<$<COMPILE_LANGUAGE:ASM>:${EXTRA_AFLAGS_AS_LIST}>
+  -Wno-format-zero-length
   )
 
 target_link_options(testbinary PRIVATE
@@ -93,29 +123,28 @@ target_link_libraries(testbinary PRIVATE
   ${EXTRA_LDFLAGS_AS_LIST}
   )
 
+target_compile_options(test_interface INTERFACE $<TARGET_PROPERTY:compiler,debug>)
+
 if(CONFIG_COVERAGE)
   target_compile_options(test_interface INTERFACE $<TARGET_PROPERTY:compiler,coverage>)
 
   target_link_libraries(testbinary PRIVATE $<TARGET_PROPERTY:linker,coverage>)
 endif()
 
+if (CONFIG_COMPILER_WARNINGS_AS_ERRORS)
+  target_compile_options(test_interface INTERFACE $<TARGET_PROPERTY:compiler,warnings_as_errors>)
+endif()
+
 if(LIBS)
   message(FATAL_ERROR "This variable is not supported, see SOURCES instead")
 endif()
 
-if(CONFIG_ZTEST_NEW_API)
-  target_sources(testbinary PRIVATE
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_new.c
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_mock.c
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_rules.c
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_defaults.c
-      )
-else()
-  target_sources(testbinary PRIVATE
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest.c
-      ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_mock.c
-      )
-endif()
+target_sources(testbinary PRIVATE
+  ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest.c
+  ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_mock.c
+  ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_rules.c
+  ${ZEPHYR_BASE}/subsys/testsuite/ztest/src/ztest_defaults.c
+)
 
 target_compile_definitions(test_interface INTERFACE ZTEST_UNITTEST)
 
@@ -132,6 +161,13 @@ if(VALGRIND_PROGRAM)
     --log-file=valgrind.log
     )
 endif()
+
+add_custom_target(run
+  COMMAND
+  $<TARGET_FILE:testbinary>
+  DEPENDS testbinary
+  WORKING_DIRECTORY ${APPLICATION_BINARY_DIR}
+  )
 
 add_custom_target(run-test
   COMMAND

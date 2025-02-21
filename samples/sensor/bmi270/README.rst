@@ -1,7 +1,8 @@
-.. _bmi270:
+.. zephyr:code-sample:: bmi270
+   :name: BMI270 6-axis IMU sensor
+   :relevant-api: sensor_interface
 
-BMI270: 6 axis inertial measurement unit
-########################################
+   Configure and read accelerometer and gyroscope data from a BMI270 sensor.
 
 Description
 ***********
@@ -34,7 +35,7 @@ In this example below the :ref:`nrf52840dk_nrf52840` board is used.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/sensor/bmi270
-   :board: nrf52840dk_nrf52840
+   :board: nrf52840dk/nrf52840
    :goals: build flash
 
 Sample Output

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022 Nordic Semiconductor ASA
+ * Copyright (c) 2022,2025 Nordic Semiconductor ASA
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -8,44 +8,90 @@
 #include <zephyr/device.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/devicetree.h>
-#include "usbh_internal.h"
+#include <zephyr/init.h>
 #include <zephyr/sys/iterable_sections.h>
+
+#include "usbh_internal.h"
+#include "usbh_device.h"
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(uhs, CONFIG_USBH_LOG_LEVEL);
 
 static K_KERNEL_STACK_DEFINE(usbh_stack, CONFIG_USBH_STACK_SIZE);
 static struct k_thread usbh_thread_data;
 
-/* TODO */
-static struct usbh_class_data *class_data;
+static K_KERNEL_STACK_DEFINE(usbh_bus_stack, CONFIG_USBH_STACK_SIZE);
+static struct k_thread usbh_bus_thread_data;
 
 K_MSGQ_DEFINE(usbh_msgq, sizeof(struct uhc_event),
+	      CONFIG_USBH_MAX_UHC_MSG, sizeof(uint32_t));
+
+K_MSGQ_DEFINE(usbh_bus_msgq, sizeof(struct uhc_event),
 	      CONFIG_USBH_MAX_UHC_MSG, sizeof(uint32_t));
 
 static int usbh_event_carrier(const struct device *dev,
 			      const struct uhc_event *const event)
 {
-	return k_msgq_put(&usbh_msgq, event, K_NO_WAIT);
-}
+	int err;
 
-static int event_ep_request(struct usbh_contex *const ctx,
-			    struct uhc_event *const event)
-{
-	struct uhc_transfer *xfer = event->xfer;
-	const struct device *dev = ctx->dev;
-
-	if (class_data && class_data->request) {
-		return class_data->request(ctx, event->xfer, event->status);
+	if (event->type == UHC_EVT_EP_REQUEST) {
+		err = k_msgq_put(&usbh_msgq, event, K_NO_WAIT);
+	} else {
+		err = k_msgq_put(&usbh_bus_msgq, event, K_NO_WAIT);
 	}
 
-	while (!k_fifo_is_empty(&xfer->done)) {
-		struct net_buf *buf;
+	return err;
+}
 
-		buf = net_buf_get(&xfer->done, K_NO_WAIT);
-		if (buf) {
-			LOG_HEXDUMP_INF(buf->data, buf->len, "buf");
-			uhc_xfer_buf_free(dev, buf);
-		}
+static void dev_connected_handler(struct usbh_contex *const ctx,
+				  const struct uhc_event *const event)
+{
+
+	LOG_DBG("Device connected event");
+	if (ctx->root != NULL) {
+		LOG_ERR("Device already connected");
+		usbh_device_free(ctx->root);
+		ctx->root = NULL;
+	}
+
+	ctx->root = usbh_device_alloc(ctx);
+	if (ctx->root == NULL) {
+		LOG_ERR("Failed allocate new device");
+		return;
+	}
+
+	ctx->root->state = USB_STATE_DEFAULT;
+
+	if (event->type == UHC_EVT_DEV_CONNECTED_HS) {
+		ctx->root->speed = USB_SPEED_SPEED_HS;
+	} else {
+		ctx->root->speed = USB_SPEED_SPEED_FS;
+	}
+
+	if (usbh_device_init(ctx->root)) {
+		LOG_ERR("Failed to reset new USB device");
+	}
+}
+
+static void dev_removed_handler(struct usbh_contex *const ctx)
+{
+	if (ctx->root != NULL) {
+		usbh_device_free(ctx->root);
+		ctx->root = NULL;
+		LOG_DBG("Device removed");
+	} else {
+		LOG_DBG("Spurious device removed event");
+	}
+}
+
+static int discard_ep_request(struct usbh_contex *const ctx,
+			      struct uhc_transfer *const xfer)
+{
+	const struct device *dev = ctx->dev;
+
+	if (xfer->buf) {
+		LOG_HEXDUMP_INF(xfer->buf->data, xfer->buf->len, "buf");
+		uhc_xfer_buf_free(dev, xfer->buf);
 	}
 
 	return uhc_xfer_free(dev, xfer);
@@ -58,49 +104,29 @@ static ALWAYS_INLINE int usbh_event_handler(struct usbh_contex *const ctx,
 
 	switch (event->type) {
 	case UHC_EVT_DEV_CONNECTED_LS:
+		LOG_ERR("Low speed device not supported (connected event)");
+		break;
 	case UHC_EVT_DEV_CONNECTED_FS:
 	case UHC_EVT_DEV_CONNECTED_HS:
-		LOG_DBG("Device connected event");
-		if (class_data && class_data->connected) {
-			ret = class_data->connected(ctx);
-		}
+		dev_connected_handler(ctx, event);
 		break;
 	case UHC_EVT_DEV_REMOVED:
-		LOG_DBG("Device removed event");
-		if (class_data && class_data->removed) {
-			ret = class_data->removed(ctx);
-		}
+		dev_removed_handler(ctx);
 		break;
 	case UHC_EVT_RESETED:
 		LOG_DBG("Bus reset");
-		/* TODO */
-		if (class_data && class_data->removed) {
-			ret = class_data->removed(ctx);
-		}
 		break;
 	case UHC_EVT_SUSPENDED:
 		LOG_DBG("Bus suspended");
-		if (class_data && class_data->suspended) {
-			ret = class_data->suspended(ctx);
-		}
 		break;
 	case UHC_EVT_RESUMED:
 		LOG_DBG("Bus resumed");
-		if (class_data && class_data->resumed) {
-			ret = class_data->resumed(ctx);
-		}
 		break;
 	case UHC_EVT_RWUP:
 		LOG_DBG("RWUP event");
-		if (class_data && class_data->rwup) {
-			ret = class_data->rwup(ctx);
-		}
-		break;
-	case UHC_EVT_EP_REQUEST:
-		event_ep_request(ctx, event);
 		break;
 	case UHC_EVT_ERROR:
-		LOG_DBG("Error event");
+		LOG_DBG("Error event %d", event->status);
 		break;
 	default:
 		break;
@@ -109,17 +135,49 @@ static ALWAYS_INLINE int usbh_event_handler(struct usbh_contex *const ctx,
 	return ret;
 }
 
-static void usbh_thread(const struct device *dev)
+static void usbh_bus_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	struct usbh_contex *uhs_ctx;
 	struct uhc_event event;
+
+	while (true) {
+		k_msgq_get(&usbh_bus_msgq, &event, K_FOREVER);
+
+		uhs_ctx = (void *)uhc_get_event_ctx(event.dev);
+		usbh_event_handler(uhs_ctx, &event);
+	}
+}
+
+static void usbh_thread(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	struct usbh_contex *uhs_ctx;
+	struct uhc_event event;
+	usbh_udev_cb_t cb;
+	int ret;
 
 	while (true) {
 		k_msgq_get(&usbh_msgq, &event, K_FOREVER);
 
-		STRUCT_SECTION_FOREACH(usbh_contex, uhs_ctx) {
-			if (uhs_ctx->dev == event.dev) {
-				usbh_event_handler(uhs_ctx, &event);
-			}
+		__ASSERT(event.type == UHC_EVT_EP_REQUEST, "Wrong event type");
+		uhs_ctx = (void *)uhc_get_event_ctx(event.dev);
+		cb = event.xfer->cb;
+
+		if (event.xfer->cb) {
+			ret = cb(event.xfer->udev, event.xfer);
+		} else {
+			ret = discard_ep_request(uhs_ctx, event.xfer);
+		}
+
+		if (ret) {
+			LOG_ERR("Failed to handle request completion callback");
 		}
 	}
 }
@@ -128,16 +186,19 @@ int usbh_init_device_intl(struct usbh_contex *const uhs_ctx)
 {
 	int ret;
 
-	ret = uhc_init(uhs_ctx->dev, usbh_event_carrier);
+	ret = uhc_init(uhs_ctx->dev, usbh_event_carrier, uhs_ctx);
 	if (ret != 0) {
 		LOG_ERR("Failed to init device driver");
 		return ret;
 	}
 
+	sys_dlist_init(&uhs_ctx->udevs);
+
 	STRUCT_SECTION_FOREACH(usbh_class_data, cdata) {
-		LOG_DBG("class data %p", cdata);
-		/* TODO */
-		class_data = cdata;
+		/*
+		 * For now, we have not implemented any class drivers,
+		 * so just keep it as placeholder.
+		 */
 		break;
 	}
 
@@ -148,11 +209,19 @@ static int uhs_pre_init(void)
 {
 	k_thread_create(&usbh_thread_data, usbh_stack,
 			K_KERNEL_STACK_SIZEOF(usbh_stack),
-			(k_thread_entry_t)usbh_thread,
+			usbh_thread,
 			NULL, NULL, NULL,
 			K_PRIO_COOP(9), 0, K_NO_WAIT);
 
 	k_thread_name_set(&usbh_thread_data, "usbh");
+
+	k_thread_create(&usbh_bus_thread_data, usbh_bus_stack,
+			K_KERNEL_STACK_SIZEOF(usbh_bus_stack),
+			usbh_bus_thread,
+			NULL, NULL, NULL,
+			K_PRIO_COOP(9), 0, K_NO_WAIT);
+
+	k_thread_name_set(&usbh_thread_data, "usbh_bus");
 
 	return 0;
 }

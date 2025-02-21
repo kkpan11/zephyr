@@ -26,6 +26,10 @@
 extern "C" {
 #endif
 
+#ifndef CONFIG_SHELL_PROMPT_BUFF_SIZE
+#define CONFIG_SHELL_PROMPT_BUFF_SIZE 0
+#endif
+
 #ifndef CONFIG_SHELL_CMD_BUFF_SIZE
 #define CONFIG_SHELL_CMD_BUFF_SIZE 0
 #endif
@@ -69,6 +73,8 @@ extern "C" {
 /**
  * @brief Shell API
  * @defgroup shell_api Shell API
+ * @since 1.14
+ * @version 1.0.0
  * @ingroup os_services
  * @{
  */
@@ -126,6 +132,56 @@ const struct device *shell_device_lookup(size_t idx,
 				   const char *prefix);
 
 /**
+ * @brief Filter callback type, for use with shell_device_lookup_filter
+ *
+ * This is used as an argument of shell_device_lookup_filter to only return
+ * devices that match a specific condition, implemented by the filter.
+ *
+ * @param dev pointer to a struct device.
+ *
+ * @return bool, true if the filter matches the device type.
+ */
+typedef bool (*shell_device_filter_t)(const struct device *dev);
+
+/**
+ * @brief Get a device by index and filter.
+ *
+ * This can be used to return devices matching a specific type.
+ *
+ * Devices that the filter returns false for, failed to initialize or do not
+ * have a non-empty name are excluded from the candidates for a match.
+ *
+ * @param idx the device number starting from zero.
+ *
+ * @param filter a pointer to a shell_device_filter_t function that returns
+ * true if the device matches the filter.
+ */
+const struct device *shell_device_filter(size_t idx,
+					 shell_device_filter_t filter);
+
+/**
+ * @brief Get a @ref device reference from its @ref device.name field or label.
+ *
+ * This function iterates through the devices on the system. If a device with
+ * the given @p name field is found, and that device initialized successfully at
+ * boot time, this function returns a pointer to the device.
+ *
+ * If no device has the given @p name, this function returns `NULL`.
+ *
+ * This function also returns NULL when a device is found, but it failed to
+ * initialize successfully at boot time. (To troubleshoot this case, set a
+ * breakpoint on your device driver's initialization function.)
+ *
+ * @param name device name to search for. A null pointer, or a pointer to an
+ * empty string, will cause NULL to be returned.
+ *
+ * @return pointer to device structure with the given name; `NULL` if the device
+ * is not found or if the device with that name's initialization function
+ * failed.
+ */
+const struct device *shell_device_get_binding(const char *name);
+
+/**
  * @brief Shell command handler prototype.
  *
  * @param sh Shell instance.
@@ -157,7 +213,7 @@ typedef int (*shell_dict_cmd_handler)(const struct shell *sh, size_t argc,
 				      char **argv, void *data);
 
 /* When entries are added to the memory section a padding is applied for
- * native_posix_64 and x86_64 targets. Adding padding to allow handle data
+ * the posix architecture with 64bits builds and x86_64 targets. Adding padding to allow handle data
  * in the memory section as array.
  */
 #if (defined(CONFIG_ARCH_POSIX) && defined(CONFIG_64BIT)) || defined(CONFIG_X86_64)
@@ -350,8 +406,8 @@ struct shell_static_entry {
 			SHELL_EXPR_CMD_ARG(1, _syntax, _subcmd, _help, \
 					   _handler, _mand, _opt)\
 		), \
-		(static shell_cmd_handler dummy_##syntax##_handler __unused = _handler;\
-		 static const union shell_cmd_entry dummy_subcmd_##syntax __unused = { \
+		(static shell_cmd_handler dummy_handler_##_syntax __unused = _handler;\
+		 static const union shell_cmd_entry dummy_subcmd_##_syntax __unused = { \
 			.entry = (const struct shell_static_entry *)_subcmd\
 		 } \
 		) \
@@ -530,7 +586,7 @@ static int UTIL_CAT(UTIL_CAT(cmd_dict_, UTIL_CAT(_handler, _)),		\
  * @param[in] _name	Name of the dictionary subcommand set
  * @param[in] _handler	Command handler common for all dictionary commands.
  *			@see shell_dict_cmd_handler
- * @param[in] ...	Dictionary pairs: (command_syntax, value). Value will be
+ * @param[in] ...	Dictionary triplets: (command_syntax, value, helper). Value will be
  *			passed to the _handler as user data.
  *
  * Example usage:
@@ -743,6 +799,7 @@ struct shell_backend_ctx_flags {
 	uint32_t cmd_ctx      :1; /*!< Shell is executing command */
 	uint32_t print_noinit :1; /*!< Print request from not initialized shell */
 	uint32_t sync_mode    :1; /*!< Shell in synchronous mode */
+	uint32_t handle_log   :1; /*!< Shell is handling logger backend */
 };
 
 BUILD_ASSERT((sizeof(struct shell_backend_ctx_flags) == sizeof(uint32_t)),
@@ -776,7 +833,11 @@ enum shell_signal {
  * @brief Shell instance context.
  */
 struct shell_ctx {
-	const char *prompt; /*!< shell current prompt. */
+#if defined(CONFIG_SHELL_PROMPT_CHANGE) && CONFIG_SHELL_PROMPT_CHANGE
+	char prompt[CONFIG_SHELL_PROMPT_BUFF_SIZE]; /*!< shell current prompt. */
+#else
+	const char *prompt;
+#endif
 
 	enum shell_state state; /*!< Internal module state.*/
 	enum shell_receive_state receive_state;/*!< Escape sequence indicator.*/
@@ -797,6 +858,9 @@ struct shell_ctx {
 
 	/** When bypass is set, all incoming data is passed to the callback. */
 	shell_bypass_cb_t bypass;
+
+	/*!< Logging level for a backend. */
+	uint32_t log_level;
 
 #if defined CONFIG_SHELL_GETOPT
 	/*!< getopt context for a shell backend. */
@@ -863,13 +927,48 @@ struct shell {
 
 	LOG_INSTANCE_PTR_DECLARE(log);
 
-	const char *thread_name;
+	const char *name;
 	struct k_thread *thread;
 	k_thread_stack_t *stack;
 };
 
 extern void z_shell_print_stream(const void *user_ctx, const char *data,
 				 size_t data_len);
+
+/** @brief Internal macro for defining a shell instance.
+ *
+ * As it does not create the default shell logging backend it allows to use
+ * custom approach for integrating logging with shell.
+ *
+ * @param[in] _name		Instance name.
+ * @param[in] _prompt		Shell default prompt string.
+ * @param[in] _transport_iface	Pointer to the transport interface.
+ * @param[in] _out_buf		Output buffer.
+ * @param[in] _log_backend	Pointer to the log backend instance.
+ * @param[in] _shell_flag	Shell output newline sequence.
+ */
+#define Z_SHELL_DEFINE(_name, _prompt, _transport_iface, _out_buf, _log_backend, _shell_flag)      \
+	static const struct shell _name;                                                           \
+	static struct shell_ctx UTIL_CAT(_name, _ctx);                                             \
+	Z_SHELL_HISTORY_DEFINE(_name##_history, CONFIG_SHELL_HISTORY_BUFFER);                      \
+	Z_SHELL_FPRINTF_DEFINE(_name##_fprintf, &_name, _out_buf, CONFIG_SHELL_PRINTF_BUFF_SIZE,   \
+			       IS_ENABLED(CONFIG_SHELL_PRINTF_AUTOFLUSH), z_shell_print_stream);   \
+	LOG_INSTANCE_REGISTER(shell, _name, CONFIG_SHELL_LOG_LEVEL);                               \
+	Z_SHELL_STATS_DEFINE(_name);                                                               \
+	static K_KERNEL_STACK_DEFINE(_name##_stack, CONFIG_SHELL_STACK_SIZE);                      \
+	static struct k_thread _name##_thread;                                                     \
+	static const STRUCT_SECTION_ITERABLE(shell, _name) = {                                     \
+		.default_prompt = _prompt,                                                         \
+		.iface = _transport_iface,                                                         \
+		.ctx = &UTIL_CAT(_name, _ctx),                                                     \
+		.history = IS_ENABLED(CONFIG_SHELL_HISTORY) ? &_name##_history : NULL,             \
+		.shell_flag = _shell_flag,                                                         \
+		.fprintf_ctx = &_name##_fprintf,                                                   \
+		.stats = Z_SHELL_STATS_PTR(_name),                                                 \
+		.log_backend = _log_backend,                                                       \
+		LOG_INSTANCE_PTR_INIT(log, shell, _name).name =                                    \
+			STRINGIFY(_name), .thread = &_name##_thread, .stack = _name##_stack}
+
 /**
  * @brief Macro for defining a shell instance.
  *
@@ -883,37 +982,12 @@ extern void z_shell_print_stream(const void *user_ctx, const char *data,
  *				message is dropped.
  * @param[in] _shell_flag	Shell output newline sequence.
  */
-#define SHELL_DEFINE(_name, _prompt, _transport_iface,			      \
-		     _log_queue_size, _log_timeout, _shell_flag)	      \
-	static const struct shell _name;				      \
-	static struct shell_ctx UTIL_CAT(_name, _ctx);			      \
-	static uint8_t _name##_out_buffer[CONFIG_SHELL_PRINTF_BUFF_SIZE];     \
-	Z_SHELL_LOG_BACKEND_DEFINE(_name, _name##_out_buffer,		      \
-				 CONFIG_SHELL_PRINTF_BUFF_SIZE,		      \
-				 _log_queue_size, _log_timeout);	      \
-	Z_SHELL_HISTORY_DEFINE(_name##_history, CONFIG_SHELL_HISTORY_BUFFER); \
-	Z_SHELL_FPRINTF_DEFINE(_name##_fprintf, &_name, _name##_out_buffer,   \
-			     CONFIG_SHELL_PRINTF_BUFF_SIZE,		      \
-			     true, z_shell_print_stream);		      \
-	LOG_INSTANCE_REGISTER(shell, _name, CONFIG_SHELL_LOG_LEVEL);	      \
-	Z_SHELL_STATS_DEFINE(_name);					      \
-	static K_KERNEL_STACK_DEFINE(_name##_stack, CONFIG_SHELL_STACK_SIZE); \
-	static struct k_thread _name##_thread;				      \
-	static const STRUCT_SECTION_ITERABLE(shell, _name) = {		      \
-		.default_prompt = _prompt,				      \
-		.iface = _transport_iface,				      \
-		.ctx = &UTIL_CAT(_name, _ctx),				      \
-		.history = IS_ENABLED(CONFIG_SHELL_HISTORY) ?		      \
-				&_name##_history : NULL,		      \
-		.shell_flag = _shell_flag,				      \
-		.fprintf_ctx = &_name##_fprintf,			      \
-		.stats = Z_SHELL_STATS_PTR(_name),			      \
-		.log_backend = Z_SHELL_LOG_BACKEND_PTR(_name),		      \
-		LOG_INSTANCE_PTR_INIT(log, shell, _name)		      \
-		.thread_name = STRINGIFY(_name),			      \
-		.thread = &_name##_thread,				      \
-		.stack = _name##_stack					      \
-	}
+#define SHELL_DEFINE(_name, _prompt, _transport_iface, _log_queue_size, _log_timeout, _shell_flag) \
+	static uint8_t _name##_out_buffer[CONFIG_SHELL_PRINTF_BUFF_SIZE];                          \
+	Z_SHELL_LOG_BACKEND_DEFINE(_name, _name##_out_buffer, CONFIG_SHELL_PRINTF_BUFF_SIZE,       \
+				   _log_queue_size, _log_timeout);                                 \
+	Z_SHELL_DEFINE(_name, _prompt, _transport_iface, _name##_out_buffer,                       \
+		       Z_SHELL_LOG_BACKEND_PTR(_name), _shell_flag)
 
 /**
  * @brief Function for initializing a transport layer and internal shell state.
@@ -994,9 +1068,10 @@ int shell_stop(const struct shell *sh);
  * @param[in] fmt	Format string.
  * @param[in] ...	List of parameters to print.
  */
-void __printf_like(3, 4) shell_fprintf(const struct shell *sh,
-				       enum shell_vt100_color color,
-				       const char *fmt, ...);
+void __printf_like(3, 4) shell_fprintf_impl(const struct shell *sh, enum shell_vt100_color color,
+					    const char *fmt, ...);
+
+#define shell_fprintf(sh, color, fmt, ...) shell_fprintf_impl(sh, color, fmt, ##__VA_ARGS__)
 
 /**
  * @brief vprintf-like function which sends formatted data stream to the shell.
@@ -1050,7 +1125,8 @@ void shell_hexdump(const struct shell *sh, const uint8_t *data, size_t len);
  * @param[in] ... List of parameters to print.
  */
 #define shell_info(_sh, _ft, ...) \
-	shell_fprintf(_sh, SHELL_INFO, _ft "\n", ##__VA_ARGS__)
+	shell_fprintf_info(_sh, _ft "\n", ##__VA_ARGS__)
+void __printf_like(2, 3) shell_fprintf_info(const struct shell *sh, const char *fmt, ...);
 
 /**
  * @brief Print normal message to the shell.
@@ -1062,7 +1138,8 @@ void shell_hexdump(const struct shell *sh, const uint8_t *data, size_t len);
  * @param[in] ... List of parameters to print.
  */
 #define shell_print(_sh, _ft, ...) \
-	shell_fprintf(_sh, SHELL_NORMAL, _ft "\n", ##__VA_ARGS__)
+	shell_fprintf_normal(_sh, _ft "\n", ##__VA_ARGS__)
+void __printf_like(2, 3) shell_fprintf_normal(const struct shell *sh, const char *fmt, ...);
 
 /**
  * @brief Print warning message to the shell.
@@ -1074,7 +1151,8 @@ void shell_hexdump(const struct shell *sh, const uint8_t *data, size_t len);
  * @param[in] ... List of parameters to print.
  */
 #define shell_warn(_sh, _ft, ...) \
-	shell_fprintf(_sh, SHELL_WARNING, _ft "\n", ##__VA_ARGS__)
+	shell_fprintf_warn(_sh, _ft "\n", ##__VA_ARGS__)
+void __printf_like(2, 3) shell_fprintf_warn(const struct shell *sh, const char *fmt, ...);
 
 /**
  * @brief Print error message to the shell.
@@ -1086,7 +1164,8 @@ void shell_hexdump(const struct shell *sh, const uint8_t *data, size_t len);
  * @param[in] ... List of parameters to print.
  */
 #define shell_error(_sh, _ft, ...) \
-	shell_fprintf(_sh, SHELL_ERROR, _ft "\n", ##__VA_ARGS__)
+	shell_fprintf_error(_sh, _ft "\n", ##__VA_ARGS__)
+void __printf_like(2, 3) shell_fprintf_error(const struct shell *sh, const char *fmt, ...);
 
 /**
  * @brief Process function, which should be executed when data is ready in the
@@ -1261,6 +1340,11 @@ int shell_get_return_value(const struct shell *sh);
 
 #ifdef __cplusplus
 }
+#endif
+
+#ifdef CONFIG_SHELL_CUSTOM_HEADER
+/* This include must always be at the end of shell.h */
+#include <zephyr_custom_shell.h>
 #endif
 
 #endif /* SHELL_H__ */

@@ -3,10 +3,8 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
-#include <zephyr/kernel.h>
-#include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/printk.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/byteorder.h>
@@ -15,7 +13,15 @@
 #include <zephyr/bluetooth/audio/bap.h>
 #include <zephyr/bluetooth/audio/pacs.h>
 #include <zephyr/bluetooth/audio/csip.h>
+#include <zephyr/bluetooth/gap.h>
 #include <zephyr/bluetooth/services/ias.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/__assert.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
+#include <zephyr/sys/util_macro.h>
 
 #include "hap_ha.h"
 
@@ -24,11 +30,8 @@
 				BT_AUDIO_CONTEXT_TYPE_MEDIA | \
 				BT_AUDIO_CONTEXT_TYPE_LIVE)
 
-#define AVAILABLE_SINK_CONTEXT CONFIG_BT_PACS_SNK_CONTEXT
-#define AVAILABLE_SOURCE_CONTEXT CONFIG_BT_PACS_SRC_CONTEXT
-
-BUILD_ASSERT((CONFIG_BT_PACS_SNK_CONTEXT & MANDATORY_SINK_CONTEXT) == MANDATORY_SINK_CONTEXT,
-	     "Need to support mandatory Supported_Sink_Contexts");
+#define AVAILABLE_SINK_CONTEXT   MANDATORY_SINK_CONTEXT
+#define AVAILABLE_SOURCE_CONTEXT MANDATORY_SINK_CONTEXT
 
 static uint8_t unicast_server_addata[] = {
 	BT_UUID_16_ENCODE(BT_UUID_ASCS_VAL), /* ASCS UUID */
@@ -48,6 +51,7 @@ static const struct bt_data ad[] = {
 	BT_DATA(BT_DATA_CSIS_RSI, csis_rsi_addata, ARRAY_SIZE(csis_rsi_addata)),
 #endif /* CONFIG_BT_CSIP_SET_MEMBER */
 	BT_DATA(BT_DATA_SVC_DATA16, unicast_server_addata, ARRAY_SIZE(unicast_server_addata)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME, sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
 static struct k_work_delayable adv_work;
@@ -102,8 +106,8 @@ static void adv_work_handler(struct k_work *work)
 	int err;
 
 	if (ext_adv == NULL) {
-		/* Create a non-connectable non-scannable advertising set */
-		err = bt_le_ext_adv_create(BT_LE_EXT_ADV_CONN_NAME, &adv_cb, &ext_adv);
+		/* Create a connectable advertising set */
+		err = bt_le_ext_adv_create(BT_LE_EXT_ADV_CONN, &adv_cb, &ext_adv);
 		if (err) {
 			printk("Failed to create advertising set (err %d)\n", err);
 		}

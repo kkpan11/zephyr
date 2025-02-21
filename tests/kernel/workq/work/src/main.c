@@ -237,7 +237,7 @@ static void test_queue_start(void)
 
 		zassert_true(tn != cfg.name);
 		zassert_true(tn != NULL);
-		zassert_equal(strcmp(tn, cfg.name), 0);
+		zassert_str_equal(tn, cfg.name);
 	}
 
 	cfg.name = NULL;
@@ -251,7 +251,7 @@ static void test_queue_start(void)
 
 		zassert_true(tn != cfg.name);
 		zassert_true(tn != NULL);
-		zassert_equal(strcmp(tn, ""), 0);
+		zassert_str_equal(tn, "");
 	}
 
 	cfg.name = "wq.coophi";
@@ -875,6 +875,7 @@ static void test_drain_wait_cb(struct k_timer *timer)
 ZTEST(work_1cpu, test_1cpu_drain_wait)
 {
 	struct test_drain_wait_timer *ctx = &test_drain_wait_ctx;
+	struct k_work *wp = &ctx->work;
 	int rc;
 
 	/* Reset state, allow one re-submission, and use the delaying
@@ -882,10 +883,10 @@ ZTEST(work_1cpu, test_1cpu_drain_wait)
 	 */
 	reset_counters();
 	atomic_set(&resubmits_left, 1);
-	k_work_init(&common_work, delay_handler);
+	k_work_init(wp, delay_handler);
 
 	/* Submit to the cooperative queue. */
-	rc = k_work_submit_to_queue(&coophi_queue, &common_work);
+	rc = k_work_submit_to_queue(&coophi_queue, wp);
 	zassert_equal(rc, 1);
 	zassert_equal(coophi_counter(), 0);
 
@@ -1037,7 +1038,7 @@ static void handle_1cpu_basic_schedule_running(struct k_work *work)
 	 */
 	if (atomic_dec(&resubmits_left) > 0) {
 		/* Schedule again on current queue */
-		state->schedule_res = k_work_schedule_for_queue(NULL, one_dwork,
+		state->schedule_res = k_work_schedule_for_queue(one_dwork->work.queue, one_dwork,
 								K_MSEC(DELAY_MS));
 	} else {
 		/* Flag that it didn't schedule */
@@ -1262,7 +1263,7 @@ ZTEST(work_1cpu, test_1cpu_immed_reschedule)
 	zassert_equal(rc, 1);
 }
 
-/* Test no-yield behavior, returns true iff work queue priority is
+/* Test no-yield behavior, returns true if and only if work queue priority is
  * higher than test thread priority
  */
 static bool try_queue_no_yield(struct k_work_q *wq)

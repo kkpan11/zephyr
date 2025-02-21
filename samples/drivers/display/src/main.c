@@ -50,16 +50,16 @@ static void fill_buffer_argb8888(enum corner corner, uint8_t grey, uint8_t *buf,
 
 	switch (corner) {
 	case TOP_LEFT:
-		color = 0x00FF0000u;
+		color = 0xFFFF0000u;
 		break;
 	case TOP_RIGHT:
-		color = 0x0000FF00u;
+		color = 0xFF00FF00u;
 		break;
 	case BOTTOM_RIGHT:
-		color = 0x000000FFu;
+		color = 0xFF0000FFu;
 		break;
 	case BOTTOM_LEFT:
-		color = grey << 16 | grey << 8 | grey;
+		color = 0xFF000000u | grey << 16 | grey << 8 | grey;
 		break;
 	}
 
@@ -140,21 +140,34 @@ static void fill_buffer_bgr565(enum corner corner, uint8_t grey, uint8_t *buf,
 	}
 }
 
-static void fill_buffer_mono(enum corner corner, uint8_t grey, uint8_t *buf,
-			     size_t buf_size)
+static void fill_buffer_mono(enum corner corner, uint8_t grey,
+			     uint8_t black, uint8_t white,
+			     uint8_t *buf, size_t buf_size)
 {
 	uint16_t color;
 
 	switch (corner) {
 	case BOTTOM_LEFT:
-		color = (grey & 0x01u) ? 0xFFu : 0x00u;
+		color = (grey & 0x01u) ? white : black;
 		break;
 	default:
-		color = 0;
+		color = black;
 		break;
 	}
 
 	memset(buf, color, buf_size);
+}
+
+static inline void fill_buffer_mono01(enum corner corner, uint8_t grey,
+				      uint8_t *buf, size_t buf_size)
+{
+	fill_buffer_mono(corner, grey, 0x00u, 0xFFu, buf, buf_size);
+}
+
+static inline void fill_buffer_mono10(enum corner corner, uint8_t grey,
+				      uint8_t *buf, size_t buf_size)
+{
+	fill_buffer_mono(corner, grey, 0xFFu, 0x00u, buf, buf_size);
 }
 
 int main(void)
@@ -166,6 +179,7 @@ int main(void)
 	size_t h_step;
 	size_t scale;
 	size_t grey_count;
+	uint8_t bg_color;
 	uint8_t *buf;
 	int32_t grey_scale_sleep;
 	const struct device *display_dev;
@@ -196,8 +210,17 @@ int main(void)
 		rect_h = 1;
 	}
 
-	h_step = rect_h;
-	scale = (capabilities.x_resolution / 8) / rect_h;
+	if ((capabilities.x_resolution < 3 * rect_w) ||
+	    (capabilities.y_resolution < 3 * rect_h) ||
+	    (capabilities.x_resolution < 8 * rect_h)) {
+		rect_w = capabilities.x_resolution * 40 / 100;
+		rect_h = capabilities.y_resolution * 40 / 100;
+		h_step = capabilities.y_resolution * 20 / 100;
+		scale = 1;
+	} else {
+		h_step = rect_h;
+		scale = (capabilities.x_resolution / 8) / rect_h;
+	}
 
 	rect_w *= scale;
 	rect_h *= scale;
@@ -208,6 +231,10 @@ int main(void)
 		grey_scale_sleep = 100;
 	}
 
+	if (capabilities.screen_info & SCREEN_INFO_X_ALIGNMENT_WIDTH) {
+		rect_w = capabilities.x_resolution;
+	}
+
 	buf_size = rect_w * rect_h;
 
 	if (buf_size < (capabilities.x_resolution * h_step)) {
@@ -216,25 +243,36 @@ int main(void)
 
 	switch (capabilities.current_pixel_format) {
 	case PIXEL_FORMAT_ARGB_8888:
+		bg_color = 0x00u;
 		fill_buffer_fnc = fill_buffer_argb8888;
 		buf_size *= 4;
 		break;
 	case PIXEL_FORMAT_RGB_888:
+		bg_color = 0xFFu;
 		fill_buffer_fnc = fill_buffer_rgb888;
 		buf_size *= 3;
 		break;
 	case PIXEL_FORMAT_RGB_565:
+		bg_color = 0xFFu;
 		fill_buffer_fnc = fill_buffer_rgb565;
 		buf_size *= 2;
 		break;
 	case PIXEL_FORMAT_BGR_565:
+		bg_color = 0xFFu;
 		fill_buffer_fnc = fill_buffer_bgr565;
 		buf_size *= 2;
 		break;
 	case PIXEL_FORMAT_MONO01:
+		bg_color = 0xFFu;
+		fill_buffer_fnc = fill_buffer_mono01;
+		buf_size = DIV_ROUND_UP(DIV_ROUND_UP(
+			buf_size, NUM_BITS(uint8_t)), sizeof(uint8_t));
+		break;
 	case PIXEL_FORMAT_MONO10:
-		fill_buffer_fnc = fill_buffer_mono;
-		buf_size /= 8;
+		bg_color = 0x00u;
+		fill_buffer_fnc = fill_buffer_mono10;
+		buf_size = DIV_ROUND_UP(DIV_ROUND_UP(
+			buf_size, NUM_BITS(uint8_t)), sizeof(uint8_t));
 		break;
 	default:
 		LOG_ERR("Unsupported pixel format. Aborting sample.");
@@ -256,14 +294,30 @@ int main(void)
 #endif
 	}
 
-	(void)memset(buf, 0xFFu, buf_size);
+	(void)memset(buf, bg_color, buf_size);
 
 	buf_desc.buf_size = buf_size;
 	buf_desc.pitch = capabilities.x_resolution;
 	buf_desc.width = capabilities.x_resolution;
 	buf_desc.height = h_step;
 
+	/*
+	 * The following writes will only render parts of the image,
+	 * so turn this option on.
+	 * This allows double-buffered displays to hold the pixels
+	 * back until the image is complete.
+	 */
+	buf_desc.frame_incomplete = true;
+
 	for (int idx = 0; idx < capabilities.y_resolution; idx += h_step) {
+		/*
+		 * Tweaking the height value not to draw outside of the display.
+		 * It is required when using a monochrome display whose vertical
+		 * resolution can not be divided by 8.
+		 */
+		if ((capabilities.y_resolution - idx) < h_step) {
+			buf_desc.height = (capabilities.y_resolution - idx);
+		}
 		display_write(display_dev, 0, idx, &buf_desc, buf);
 	}
 
@@ -281,6 +335,13 @@ int main(void)
 	y = 0;
 	display_write(display_dev, x, y, &buf_desc, buf);
 
+	/*
+	 * This is the last write of the frame, so turn this off.
+	 * Double-buffered displays will now present the new image
+	 * to the user.
+	 */
+	buf_desc.frame_incomplete = false;
+
 	fill_buffer_fnc(BOTTOM_RIGHT, 0, buf, buf_size);
 	x = capabilities.x_resolution - rect_w;
 	y = capabilities.y_resolution - rect_h;
@@ -292,13 +353,15 @@ int main(void)
 	x = 0;
 	y = capabilities.y_resolution - rect_h;
 
+	LOG_INF("Display starts");
 	while (1) {
 		fill_buffer_fnc(BOTTOM_LEFT, grey_count, buf, buf_size);
 		display_write(display_dev, x, y, &buf_desc, buf);
 		++grey_count;
 		k_msleep(grey_scale_sleep);
 #if CONFIG_TEST
-		if (grey_count >= 1024) {
+		if (grey_count >= 30) {
+			LOG_INF("Display sample test mode done %s", display_dev->name);
 			break;
 		}
 #endif

@@ -4,8 +4,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#define DT_DRV_COMPAT nuvoton_npcx_shi
-
 #include "ec_host_cmd_backend_shi.h"
 
 #include <zephyr/drivers/clock_control.h>
@@ -15,10 +13,18 @@
 #include <zephyr/mgmt/ec_host_cmd/ec_host_cmd.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/pm/device_runtime.h>
+#include <zephyr/pm/policy.h>
 
 #include <soc_miwu.h>
 
+#if DT_HAS_COMPAT_STATUS_OKAY(nuvoton_npcx_shi)
+#define DT_DRV_COMPAT nuvoton_npcx_shi
+#elif DT_HAS_COMPAT_STATUS_OKAY(nuvoton_npcx_shi_enhanced)
+#define DT_DRV_COMPAT nuvoton_npcx_shi_enhanced
+#endif
 BUILD_ASSERT(DT_NUM_INST_STATUS_OKAY(DT_DRV_COMPAT) == 1, "Invalid number of NPCX SHI peripherals");
+BUILD_ASSERT(!(DT_HAS_COMPAT_STATUS_OKAY(nuvoton_npcx_shi) &&
+	       DT_HAS_COMPAT_STATUS_OKAY(nuvoton_npcx_shi_enhanced)));
 
 LOG_MODULE_REGISTER(host_cmd_shi_npcx, CONFIG_EC_HC_LOG_LEVEL);
 
@@ -95,6 +101,11 @@ enum shi_npcx_state {
 	SHI_STATE_BAD_RECEIVED_DATA,
 };
 
+enum shi_npcx_pm_policy_state_flag {
+	SHI_NPCX_PM_POLICY_FLAG,
+	SHI_NPCX_PM_POLICY_FLAG_COUNT,
+};
+
 /* Device config */
 struct shi_npcx_config {
 	/* Serial Host Interface (SHI) base address */
@@ -127,6 +138,18 @@ struct shi_npcx_data {
 			       SHI_OUT_END_PAD] __aligned(4);
 	uint8_t *const out_msg;
 	uint8_t in_msg[CONFIG_EC_HOST_CMD_BACKEND_SHI_MAX_REQUEST] __aligned(4);
+	ATOMIC_DEFINE(pm_policy_state_flag, SHI_NPCX_PM_POLICY_FLAG_COUNT);
+#ifdef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
+	struct miwu_callback shi_cs_wui_cb;
+	/*
+	 * With the workaround,  CS assertion/de-assertion INT and SHI module's INT come from
+	 * different sources. CS failing IRQ and IBHF2 IRQ may happen at the same time.
+	 * In this case, IBHF2 ISR is called first because it has lower INT number.
+	 * (with the same priority). This flag is used to guarantee CS assertion ISR is executed
+	 * first.
+	 */
+	bool is_entered_cs_asserted_wui_isr;
+#endif
 };
 
 struct ec_host_cmd_shi_npcx_ctx {
@@ -144,6 +167,22 @@ struct ec_host_cmd_shi_npcx_ctx {
 /* Forward declaration */
 static void shi_npcx_reset_prepare(const struct device *dev);
 
+static void shi_npcx_pm_policy_state_lock_get(struct shi_npcx_data *data,
+					      enum shi_npcx_pm_policy_state_flag flag)
+{
+	if (atomic_test_and_set_bit(data->pm_policy_state_flag, flag) == 0) {
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+
+static void shi_npcx_pm_policy_state_lock_put(struct shi_npcx_data *data,
+					      enum shi_npcx_pm_policy_state_flag flag)
+{
+	if (atomic_test_and_clear_bit(data->pm_policy_state_flag, flag) == 1) {
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+
 /* Read pointer of input or output buffer by consecutive reading */
 static uint32_t shi_npcx_read_buf_pointer(struct shi_reg *const inst)
 {
@@ -158,12 +197,39 @@ static uint32_t shi_npcx_read_buf_pointer(struct shi_reg *const inst)
 }
 
 /*
+ * Write pointer of output buffer by consecutive reading
+ * Note: this function (OBUFSTAT) should only be usd in Enhanced Buffer Mode.
+ */
+static uint32_t shi_npcx_write_buf_pointer(struct shi_reg *const inst)
+{
+	uint8_t stat;
+
+	/* Wait for two consecutive equal values are read */
+	do {
+		stat = inst->OBUFSTAT;
+	} while (stat != inst->OBUFSTAT);
+
+	return stat;
+}
+
+/*
  * Valid offset of SHI output buffer to write.
- * When SIMUL bit is set, IBUFPTR can be used instead of OBUFPTR
+ * - In Simultaneous Standard FIFO Mode (SIMUL = 1 and EBUFMD = 0):
+ *   OBUFPTR cannot be used. IBUFPTR can be used instead because it points to
+ *   the same location as OBUFPTR.
+ * - In Simultaneous Enhanced FIFO Mode (SIMUL = 1 and EBUFMD = 1):
+ *   IBUFPTR may not point to the same location as OBUFPTR.
+ *   In this case OBUFPTR reflects the 128-byte payload buffer pointer only
+ *   during the SPI transaction.
  */
 static uint32_t shi_npcx_valid_obuf_offset(struct shi_reg *const inst)
 {
-	return (shi_npcx_read_buf_pointer(inst) + EC_SHI_OUT_PREAMBLE_LENGTH) % SHI_OBUF_FULL_SIZE;
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		return shi_npcx_write_buf_pointer(inst) % SHI_OBUF_FULL_SIZE;
+	} else {
+		return (shi_npcx_read_buf_pointer(inst) + EC_SHI_OUT_PREAMBLE_LENGTH) %
+		       SHI_OBUF_FULL_SIZE;
+	}
 }
 
 /*
@@ -223,6 +289,16 @@ static void shi_npcx_fill_out_status(struct shi_reg *const inst, uint8_t status)
 	volatile uint8_t *fill_end;
 	volatile uint8_t *obuf_end;
 
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		/*
+		 * In Enhanced Buffer Mode, SHI module outputs the status code
+		 * in SBOBUF repeatedly.
+		 */
+		inst->SBOBUF = status;
+
+		return;
+	}
+
 	/*
 	 * Disable interrupts in case the interfere by the other interrupts.
 	 * Use __disable_irq/__enable_irq instead of using irq_lock/irq_unlock
@@ -258,6 +334,10 @@ static void shi_npcx_bad_received_data(const struct device *dev)
 {
 	struct shi_npcx_data *data = dev->data;
 	struct shi_reg *const inst = HAL_INSTANCE(dev);
+
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		inst->EVENABLE &= ~IBF_IBHF_EN_MASK;
+	}
 
 	/* State machine mismatch, timeout, or protocol we can't handle. */
 	shi_npcx_fill_out_status(inst, EC_SHI_RX_BAD_DATA);
@@ -337,12 +417,17 @@ static void shi_npcx_handle_host_package(const struct device *dev)
 
 	/* Read remaining bytes from input buffer */
 	if (!shi_npcx_read_inbuf_wait(dev, remain_bytes)) {
-		return shi_npcx_bad_received_data(dev);
+		shi_npcx_bad_received_data(dev);
+		return;
 	}
 
 	/* Move to processing state */
 	data->state = SHI_STATE_PROCESSING;
 	LOG_DBG("PRC-");
+
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		inst->EVENABLE &= ~IBF_IBHF_EN_MASK;
+	}
 
 	/* Fill output buffer to indicate we`re processing request */
 	shi_npcx_fill_out_status(inst, EC_SHI_PROCESSING);
@@ -380,7 +465,8 @@ static void shi_npcx_parse_header(const struct device *dev)
 
 	/* Wait for version, command, length bytes */
 	if (!shi_npcx_read_inbuf_wait(dev, 3)) {
-		return shi_npcx_bad_received_data(dev);
+		shi_npcx_bad_received_data(dev);
+		return;
 	}
 
 	if (data->in_msg[0] == EC_HOST_REQUEST_VERSION) {
@@ -396,13 +482,15 @@ static void shi_npcx_parse_header(const struct device *dev)
 
 		/* Wait for the rest of the command header */
 		if (!shi_npcx_read_inbuf_wait(dev, sizeof(*r) - 3)) {
-			return shi_npcx_bad_received_data(dev);
+			shi_npcx_bad_received_data(dev);
+			return;
 		}
 
 		/* Check how big the packet should be */
 		pkt_size = shi_npcx_host_request_expected_size(r);
 		if (pkt_size == 0 || pkt_size > sizeof(data->in_msg)) {
-			return shi_npcx_bad_received_data(dev);
+			shi_npcx_bad_received_data(dev);
+			return;
 		}
 
 		/* Computing total bytes need to receive */
@@ -411,7 +499,8 @@ static void shi_npcx_parse_header(const struct device *dev)
 		shi_npcx_handle_host_package(dev);
 	} else {
 		/* Invalid version number */
-		return shi_npcx_bad_received_data(dev);
+		shi_npcx_bad_received_data(dev);
+		return;
 	}
 }
 
@@ -495,6 +584,8 @@ static void shi_npcx_handle_cs_assert(const struct device *dev)
 	 * irrelevant now that CS is re-asserted.
 	 */
 	inst->EVSTAT = BIT(NPCX_EVSTAT_EOR);
+
+	shi_npcx_pm_policy_state_lock_get(data, SHI_NPCX_PM_POLICY_FLAG);
 }
 
 static void shi_npcx_handle_cs_deassert(const struct device *dev)
@@ -530,7 +621,7 @@ static void shi_npcx_handle_cs_deassert(const struct device *dev)
 
 	/* Error state for checking*/
 	if (data->state != SHI_STATE_SENDING) {
-		shi_npcx_log_unexpected_state(dev, "CSNRE");
+		shi_npcx_log_unexpected_state(dev, "CS DE-AST");
 	}
 
 	/* reset SHI and prepare to next transaction again */
@@ -546,7 +637,8 @@ static void shi_npcx_handle_input_buf_half_full(const struct device *dev)
 	if (data->state == SHI_STATE_RECEIVING) {
 		/* Read data from input to msg buffer */
 		shi_npcx_read_half_inbuf(dev);
-		return shi_npcx_handle_host_package(dev);
+		shi_npcx_handle_host_package(dev);
+		return;
 	} else if (data->state == SHI_STATE_SENDING) {
 		/* Write data from msg buffer to output buffer */
 		if (data->tx_buf == inst->OBUF + SHI_OBUF_FULL_SIZE) {
@@ -572,7 +664,8 @@ static void shi_npcx_handle_input_buf_full(const struct device *dev)
 		shi_npcx_read_half_inbuf(dev);
 		/* Read to bottom address again */
 		data->rx_buf = inst->IBUF;
-		return shi_npcx_handle_host_package(dev);
+		shi_npcx_handle_host_package(dev);
+		return;
 	} else if (data->state == SHI_STATE_SENDING) {
 		/* Write data from msg buffer to output buffer */
 		if (data->tx_buf == inst->OBUF + SHI_OBUF_HALF_SIZE) {
@@ -595,11 +688,20 @@ static void shi_npcx_isr(const struct device *dev)
 	uint8_t stat;
 	uint8_t stat2;
 
+#ifdef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
+	struct shi_npcx_data *data = dev->data;
+
+	if (data->is_entered_cs_asserted_wui_isr != true) {
+		return;
+	}
+#endif
+
 	/* Read status register and clear interrupt status early */
 	stat = inst->EVSTAT;
 	inst->EVSTAT = stat;
 	stat2 = inst->EVSTAT2;
 
+#ifndef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
 	/* SHI CS pin is asserted in EVSTAT2 */
 	if (IS_BIT_SET(stat2, NPCX_EVSTAT2_CSNFE)) {
 		/* Clear pending bit of CSNFE */
@@ -617,7 +719,6 @@ static void shi_npcx_isr(const struct device *dev)
 
 		shi_npcx_handle_cs_assert(dev);
 	}
-
 	/*
 	 * End of data for read/write transaction. i.e. SHI_CS is deasserted.
 	 * Host completed or aborted transaction
@@ -635,8 +736,10 @@ static void shi_npcx_isr(const struct device *dev)
 		 * Mark not ready to abort next transaction
 		 */
 		LOG_DBG("CSH-");
-		return shi_npcx_handle_cs_deassert(dev);
+		shi_npcx_handle_cs_deassert(dev);
+		return;
 	}
+#endif
 
 	/*
 	 * The number of bytes received reaches the size of
@@ -657,7 +760,8 @@ static void shi_npcx_isr(const struct device *dev)
 	 * Transaction is processing.
 	 */
 	if (IS_BIT_SET(stat, NPCX_EVSTAT_IBHF)) {
-		return shi_npcx_handle_input_buf_half_full(dev);
+		shi_npcx_handle_input_buf_half_full(dev);
+		return;
 	}
 
 	/*
@@ -665,7 +769,8 @@ static void shi_npcx_isr(const struct device *dev)
 	 * Transaction is processing.
 	 */
 	if (IS_BIT_SET(stat, NPCX_EVSTAT_IBF)) {
-		return shi_npcx_handle_input_buf_full(dev);
+		shi_npcx_handle_input_buf_full(dev);
+		return;
 	}
 }
 
@@ -694,14 +799,20 @@ static void shi_npcx_reset_prepare(const struct device *dev)
 	data->sz_request = 0;
 	data->sz_response = 0;
 
-	/*
-	 * Fill output buffer to indicate we`re
-	 * ready to receive next transaction.
-	 */
-	for (i = 1; i < SHI_OBUF_FULL_SIZE; i++) {
-		inst->OBUF[i] = EC_SHI_RECEIVING;
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		inst->SBOBUF = EC_SHI_RX_READY;
+		inst->SBOBUF = EC_SHI_RECEIVING;
+		inst->EVENABLE |= IBF_IBHF_EN_MASK;
+		inst->EVENABLE &= ~(BIT(NPCX_EVENABLE_OBEEN) | BIT(NPCX_EVENABLE_OBHEEN));
+	} else {
+		/*
+		 * Fill output buffer to indicate we`re ready to receive next transaction.
+		 */
+		for (i = 1; i < SHI_OBUF_FULL_SIZE; i++) {
+			inst->OBUF[i] = EC_SHI_RECEIVING;
+		}
+		inst->OBUF[0] = EC_SHI_RX_READY;
 	}
-	inst->OBUF[0] = EC_SHI_RX_READY;
 
 	/* SHI/Host Write/input buffer wrap-around enable */
 	inst->SHICFG1 = BIT(NPCX_SHICFG1_IWRAP) | BIT(NPCX_SHICFG1_WEN) | BIT(NPCX_SHICFG1_EN);
@@ -711,6 +822,8 @@ static void shi_npcx_reset_prepare(const struct device *dev)
 
 	shi_npcx_sec_ibf_int_enable(inst, 1);
 	irq_enable(DT_INST_IRQN(0));
+
+	shi_npcx_pm_policy_state_lock_put(data, SHI_NPCX_PM_POLICY_FLAG);
 
 	LOG_DBG("RDY-");
 }
@@ -738,6 +851,11 @@ static int shi_npcx_enable(const struct device *dev)
 	}
 
 	NVIC_ClearPendingIRQ(DT_INST_IRQN(0));
+	/*
+	 * Clear the pending bit because switching the pinmux (pinctrl) might casue a faking WUI
+	 * pending bit set.
+	 */
+	npcx_miwu_irq_get_and_clear_pending(&config->shi_cs_wui);
 	npcx_miwu_irq_enable(&config->shi_cs_wui);
 	irq_enable(DT_INST_IRQN(0));
 
@@ -769,8 +887,31 @@ static int shi_npcx_disable(const struct device *dev)
 		return ret;
 	}
 
+	/*
+	 * Allow deep sleep again in case CS dropped before ec was
+	 * informed in hook function and turn off SHI's interrupt in time.
+	 */
+	shi_npcx_pm_policy_state_lock_put(data, SHI_NPCX_PM_POLICY_FLAG);
+
 	return 0;
 }
+
+#ifdef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
+static void shi_npcx_cs_wui_isr(const struct device *dev, struct npcx_wui *wui)
+{
+
+	struct shi_reg *const inst = HAL_INSTANCE(dev);
+	struct shi_npcx_data *data = dev->data;
+
+	if (IS_BIT_SET(inst->SHICFG2, NPCX_SHICFG2_BUSY)) {
+		data->is_entered_cs_asserted_wui_isr = true;
+		shi_npcx_handle_cs_assert(dev);
+	} else {
+		shi_npcx_handle_cs_deassert(dev);
+		data->is_entered_cs_asserted_wui_isr = false;
+	}
+}
+#endif
 
 static int shi_npcx_init_registers(const struct device *dev)
 {
@@ -784,11 +925,6 @@ static int shi_npcx_init_registers(const struct device *dev)
 	if (ret < 0) {
 		LOG_ERR("Turn on SHI clock fail %d", ret);
 		return ret;
-	}
-
-	/* If booter doesn't set the host interface type */
-	if (!NPCX_BOOTER_IS_HIF_TYPE_SET()) {
-		npcx_host_interface_sel(NPCX_HIF_TYPE_ESPI_SHI);
 	}
 
 	/*
@@ -828,8 +964,7 @@ static int shi_npcx_init_registers(const struct device *dev)
 	 * [1] - OBHEEN = 0: Output Buffer Half Empty Interrupt Enable
 	 * [0] - OBEEN  = 0: Output Buffer Empty Interrupt Enable
 	 */
-	inst->EVENABLE =
-		BIT(NPCX_EVENABLE_EOREN) | BIT(NPCX_EVENABLE_IBHFEN) | BIT(NPCX_EVENABLE_IBFEN);
+	inst->EVENABLE = IBF_IBHF_EN_MASK;
 
 	/*
 	 * EVENABLE2 (Event Enable 2) setting
@@ -837,12 +972,29 @@ static int shi_npcx_init_registers(const struct device *dev)
 	 * [1] - CSNREEN = 1: SHI_CS Rising Edge Interrupt Enable
 	 * [0] - IBHF2EN = 0: Input Buffer Half Full 2 Interrupt Enable
 	 */
+#ifndef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
 	inst->EVENABLE2 = BIT(NPCX_EVENABLE2_CSNREEN) | BIT(NPCX_EVENABLE2_CSNFEEN);
+#endif
 
 	/* Clear SHI events status register */
 	inst->EVSTAT = 0xff;
 
+	if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		inst->SHICFG6 |= BIT(NPCX_SHICFG6_EBUFMD);
+	}
+
+#ifdef CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_CS_DETECT_WORKAROUND
+	struct shi_npcx_data *data = dev->data;
+
+	npcx_miwu_interrupt_configure(&config->shi_cs_wui, NPCX_MIWU_MODE_EDGE,
+				      NPCX_MIWU_TRIG_BOTH);
+
+	npcx_miwu_init_dev_callback(&data->shi_cs_wui_cb, &config->shi_cs_wui, shi_npcx_cs_wui_isr,
+				    dev);
+	npcx_miwu_manage_callback(&data->shi_cs_wui_cb, true);
+#else
 	npcx_miwu_interrupt_configure(&config->shi_cs_wui, NPCX_MIWU_MODE_EDGE, NPCX_MIWU_TRIG_LOW);
+#endif
 
 	/* SHI interrupt installation */
 	IRQ_CONNECT(DT_INST_IRQN(0), DT_INST_IRQ(0, priority), shi_npcx_isr, DEVICE_DT_INST_GET(0),
@@ -882,6 +1034,7 @@ static int shi_npcx_backend_init(const struct ec_host_cmd_backend *backend,
 	data->tx = tx;
 
 	rx_ctx->buf = data->in_msg;
+	rx_ctx->len_max = CONFIG_EC_HOST_CMD_BACKEND_SHI_MAX_REQUEST;
 	tx->buf = data->out_msg_padded + SHI_OUT_START_PAD;
 	tx->len_max = CONFIG_EC_HOST_CMD_BACKEND_SHI_MAX_RESPONSE;
 
@@ -894,13 +1047,15 @@ static int shi_npcx_backend_send(const struct ec_host_cmd_backend *backend)
 	struct shi_npcx_data *data = hc_shi->dev->data;
 	uint8_t *out_buf = data->out_msg + EC_SHI_FRAME_START_LENGTH;
 
-	/*
-	 * Disable interrupts. This routine is not called from interrupt context and buffer
-	 * underrun will likely occur if it is preempted after writing its initial reply byte.
-	 * Also, we must be sure our state doesn't unexpectedly change, in case we're expected
-	 * to take RESP_NOT_RDY actions.
-	 */
-	__disable_irq();
+	if (!IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		/*
+		 * Disable interrupts. This routine is not called from interrupt context and buffer
+		 * underrun will likely occur if it is preempted after writing its initial reply
+		 * byte. Also, we must be sure our state doesn't unexpectedly change, in case we're
+		 * expected to take RESP_NOT_RDY actions.
+		 */
+		__disable_irq();
+	}
 
 	if (data->state == SHI_STATE_PROCESSING) {
 		/* Append our past-end byte, which we reserved space for. */
@@ -914,6 +1069,17 @@ static int shi_npcx_backend_send(const struct ec_host_cmd_backend *backend)
 
 		/* Transmit the reply */
 		data->state = SHI_STATE_SENDING;
+		if (IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+			struct shi_reg *const inst = HAL_INSTANCE(hc_shi->dev);
+
+			/*
+			 * Enable output buffer half/full empty interrupt and
+			 * switch output mode from the repeated single byte mode
+			 * to FIFO mode.
+			 */
+			inst->EVENABLE |= BIT(NPCX_EVENABLE_OBEEN) | BIT(NPCX_EVENABLE_OBHEEN);
+			inst->SHICFG6 |= BIT(NPCX_SHICFG6_OBUF_SL);
+		}
 		LOG_DBG("SND-");
 	} else if (data->state == SHI_STATE_CNL_RESP_NOT_RDY) {
 		/*
@@ -927,7 +1093,10 @@ static int shi_npcx_backend_send(const struct ec_host_cmd_backend *backend)
 		LOG_ERR("Unexpected state %d in response handler", data->state);
 	}
 
-	__enable_irq();
+	if (!IS_ENABLED(CONFIG_EC_HOST_CMD_BACKEND_SHI_NPCX_ENHANCED_BUF_MODE)) {
+		__enable_irq();
+	}
+
 	return 0;
 }
 

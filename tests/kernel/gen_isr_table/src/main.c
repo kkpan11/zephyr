@@ -19,6 +19,29 @@ extern uint32_t _irq_vector_table[];
 #endif
 
 #if defined(CONFIG_RISCV)
+#if defined(CONFIG_NRFX_CLIC)
+
+#if defined(CONFIG_SOC_SERIES_NRF54LX) && defined(CONFIG_RISCV_CORE_NORDIC_VPR)
+#define ISR1_OFFSET	16
+#define ISR3_OFFSET	17
+#define ISR5_OFFSET	18
+#define TRIG_CHECK_SIZE	19
+#elif defined(CONFIG_SOC_NRF54H20_CPUPPR) || defined(CONFIG_SOC_NRF54H20_CPUFLPR)
+#define ISR1_OFFSET	14
+#define ISR3_OFFSET	15
+#define ISR5_OFFSET	16
+#define TRIG_CHECK_SIZE	17
+#else
+#error "Target not supported"
+#endif
+
+#elif defined(CONFIG_RISCV_HAS_CLIC)
+#define ISR1_OFFSET	3
+#define ISR3_OFFSET	17
+#define ISR5_OFFSET	18
+#define TRIG_CHECK_SIZE	19
+#else
+
 /* RISC-V has very few IRQ lines which can be triggered from software */
 #define ISR3_OFFSET	1
 
@@ -30,10 +53,16 @@ extern uint32_t _irq_vector_table[];
 #else
 #define ISR5_OFFSET	5
 #endif
+#define TRIG_CHECK_SIZE	6
+#endif
 
 #define IRQ_LINE(offset)        offset
+#if defined(CONFIG_RISCV_RESERVED_IRQ_ISR_TABLES_OFFSET)
+#define TABLE_INDEX(offset)     offset + CONFIG_RISCV_RESERVED_IRQ_ISR_TABLES_OFFSET
+#else
 #define TABLE_INDEX(offset)     offset
-#define TRIG_CHECK_SIZE		6
+#endif
+
 #else
 #define ISR1_OFFSET	0
 #define ISR2_OFFSET	1
@@ -47,8 +76,8 @@ extern uint32_t _irq_vector_table[];
  * with isr used here, so add a workaround
  */
 #define TEST_NUM_IRQS	105
-#elif defined(CONFIG_SOC_NRF5340_CPUAPP) || defined(CONFIG_SOC_NRF9160)
-/* In nRF9160 and application core in nRF5340, not all interrupts with highest
+#elif defined(CONFIG_SOC_NRF5340_CPUAPP) || defined(CONFIG_SOC_SERIES_NRF91X)
+/* In the application core of nRF5340 and nRF9 series, not all interrupts with highest
  * numbers are implemented. Thus, limit the number of interrupts reported to
  * the test, so that it does not try to use some unavailable ones.
  */
@@ -88,6 +117,12 @@ extern uint32_t _irq_vector_table[];
 #define ISR4_ARG	0xca55e77e
 #define ISR5_ARG	0xf0ccac1a
 #define ISR6_ARG	0xba5eba11
+
+#if defined(CONFIG_RISCV_HAS_CLIC)
+#define IRQ_FLAGS 1 /* rising edge */
+#else
+#define IRQ_FLAGS 0
+#endif
 
 static volatile int trigger_check[TRIG_CHECK_SIZE];
 
@@ -261,7 +296,7 @@ ZTEST(gen_isr_table, test_build_time_direct_interrupt)
 #else
 
 #ifdef ISR1_OFFSET
-	IRQ_DIRECT_CONNECT(IRQ_LINE(ISR1_OFFSET), 0, isr1, 0);
+	IRQ_DIRECT_CONNECT(IRQ_LINE(ISR1_OFFSET), 0, isr1, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR1_OFFSET));
 	TC_PRINT("isr1 isr=%p irq=%d\n", isr1, IRQ_LINE(ISR1_OFFSET));
 	zassert_ok(check_vector(isr1, ISR1_OFFSET),
@@ -269,7 +304,7 @@ ZTEST(gen_isr_table, test_build_time_direct_interrupt)
 #endif
 
 #ifdef ISR2_OFFSET
-	IRQ_DIRECT_CONNECT(IRQ_LINE(ISR2_OFFSET), 0, isr2, 0);
+	IRQ_DIRECT_CONNECT(IRQ_LINE(ISR2_OFFSET), 0, isr2, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR2_OFFSET));
 	TC_PRINT("isr2 isr=%p irq=%d\n", isr2, IRQ_LINE(ISR2_OFFSET));
 
@@ -304,7 +339,7 @@ ZTEST(gen_isr_table, test_build_time_interrupt)
 	TC_PRINT("_sw_isr_table at location %p\n", _sw_isr_table);
 
 #ifdef ISR3_OFFSET
-	IRQ_CONNECT(IRQ_LINE(ISR3_OFFSET), 1, isr3, ISR3_ARG, 0);
+	IRQ_CONNECT(IRQ_LINE(ISR3_OFFSET), 1, isr3, ISR3_ARG, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR3_OFFSET));
 	TC_PRINT("isr3 isr=%p irq=%d param=%p\n", isr3, IRQ_LINE(ISR3_OFFSET),
 		 (void *)ISR3_ARG);
@@ -314,7 +349,7 @@ ZTEST(gen_isr_table, test_build_time_interrupt)
 #endif
 
 #ifdef ISR4_OFFSET
-	IRQ_CONNECT(IRQ_LINE(ISR4_OFFSET), 1, isr4, ISR4_ARG, 0);
+	IRQ_CONNECT(IRQ_LINE(ISR4_OFFSET), 1, isr4, ISR4_ARG, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR4_OFFSET));
 	TC_PRINT("isr4 isr=%p irq=%d param=%p\n", isr4, IRQ_LINE(ISR4_OFFSET),
 		 (void *)ISR4_ARG);
@@ -350,7 +385,7 @@ ZTEST(gen_isr_table, test_run_time_interrupt)
 
 #ifdef ISR5_OFFSET
 	irq_connect_dynamic(IRQ_LINE(ISR5_OFFSET), 1, isr5,
-			    (const void *)ISR5_ARG, 0);
+			    (const void *)ISR5_ARG, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR5_OFFSET));
 	TC_PRINT("isr5 isr=%p irq=%d param=%p\n", isr5, IRQ_LINE(ISR5_OFFSET),
 		 (void *)ISR5_ARG);
@@ -360,7 +395,7 @@ ZTEST(gen_isr_table, test_run_time_interrupt)
 
 #ifdef ISR6_OFFSET
 	irq_connect_dynamic(IRQ_LINE(ISR6_OFFSET), 1, isr6,
-			    (const void *)ISR6_ARG, 0);
+			    (const void *)ISR6_ARG, IRQ_FLAGS);
 	irq_enable(IRQ_LINE(ISR6_OFFSET));
 	TC_PRINT("isr6 isr=%p irq=%d param=%p\n", isr6, IRQ_LINE(ISR6_OFFSET),
 		 (void *)ISR6_ARG);
@@ -375,103 +410,7 @@ static void *gen_isr_table_setup(void)
 {
 	TC_PRINT("IRQ configuration (total lines %d):\n", CONFIG_NUM_IRQS);
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-label"
-
 	return NULL;
 }
-
-#ifdef CONFIG_MULTI_LEVEL_INTERRUPTS
-ZTEST(gen_isr_table, test_multi_level_bit_masks_sec)
-{
-#if CONFIG_1ST_LEVEL_INTERRUPT_BITS < 10 && CONFIG_2ND_LEVEL_INTERRUPT_BITS < 10
-	ztest_test_skip();
-#endif
-	/* 0x400 is an l2 interrupt */
-	unsigned int irq = 0x400;
-	unsigned int level = 0;
-	unsigned int ret_irq = 0;
-
-	level = irq_get_level(irq);
-
-	zassert_equal(2, level);
-
-	/* 0x40 is l1 interrupt since it is less than 10 bits */
-	irq = 0x40;
-	level = irq_get_level(irq);
-	zassert_equal(1, level);
-
-	/* this is an l2 interrupt since it is more than 10 bits */
-	irq = 0x800;
-	ret_irq = irq_from_level_2(irq);
-	zassert_equal(1, ret_irq);
-
-	/* convert l1 interrupt to l2 */
-	irq = 0x1;
-	ret_irq = irq_to_level_2(irq);
-	zassert_equal(0x800, ret_irq);
-
-	/* get the parent of this l2 interrupt */
-	irq = 0x401;
-	ret_irq = irq_parent_level_2(irq);
-	zassert_equal(1, ret_irq);
-}
-#endif
-
-#ifdef CONFIG_3RD_LEVEL_INTERRUPTS
-ZTEST(gen_isr_table, test_multi_level_bit_masks_thr)
-{
-#if CONFIG_2ND_LEVEL_INTERRUPT_BITS < 10 && CONFIG_3RD_LEVEL_INTERRUPT_BITS < 9
-	ztest_test_skip();
-# endif
-	/* 0x400 is an l2 interrupt */
-	unsigned int irq = 0x400;
-	unsigned int level = 0;
-	unsigned int ret_irq = 0;
-
-
-	/* note the first part of this test is the same as the above
-	 * test this is to ensure the values are true after enabling l3 interrupts
-	 */
-	level = irq_get_level(irq);
-
-	zassert_equal(2, level);
-
-	/* this irq is within 10 bits so it is a l1 interrupt */
-	irq = 0x40;
-	level = irq_get_level(irq);
-	zassert_equal(1, level);
-
-	/* this irq is in the second 10 bits so it is a l2 interrupt */
-	irq = 0x800;
-	ret_irq = irq_from_level_2(irq);
-	zassert_equal(1, ret_irq);
-
-	/* convert a l1 interrupt to an l2 0x1 is less than 10 bits so it is l1 */
-	irq = 0x1;
-	ret_irq = irq_to_level_2(irq);
-	zassert_equal(0x800, ret_irq);
-
-	/* get the parent of an l2 interrupt 0x401 is an l2 interrupt with parent 1 */
-	irq = 0x401;
-	ret_irq = irq_parent_level_2(irq);
-	zassert_equal(1, ret_irq);
-
-	/* get the irq from level 3 this value is an l3 interrupt */
-	irq = 0x200000;
-	ret_irq = irq_from_level_3(irq);
-	zassert_equal(1, ret_irq);
-
-	/* convert the zero interrupt to l3 */
-	irq = 0x0;
-	ret_irq = irq_to_level_3(irq);
-	zassert_equal(0x100000, ret_irq);
-
-	/* parent of the l3 interrupt */
-	irq = 0x101000;
-	ret_irq = irq_parent_level_3(irq);
-	zassert_equal(0x4, ret_irq);
-}
-#endif
 
 ZTEST_SUITE(gen_isr_table, NULL, gen_isr_table_setup, NULL, NULL, NULL);

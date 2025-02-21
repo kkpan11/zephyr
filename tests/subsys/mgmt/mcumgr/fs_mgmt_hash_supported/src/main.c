@@ -6,7 +6,7 @@
 
 #include <zephyr/ztest.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/transport/smp_dummy.h>
@@ -97,7 +97,7 @@ ZTEST(fs_mgmt_hash_supported, test_supported)
 
 	/* Search expected type array for this type and update details */
 	zcbor_new_decode_state(state, 10, &nb->data[sizeof(struct smp_hdr)],
-			       (nb->len - sizeof(struct smp_hdr)), 1);
+			       (nb->len - sizeof(struct smp_hdr)), 1, NULL, 0);
 
 	ok = zcbor_map_start_decode(state);
 

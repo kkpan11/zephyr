@@ -10,14 +10,11 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/ztest.h>
 
-#define REG_INIT(node_id, prop, idx) \
-	DEVICE_DT_GET(DT_PHANDLE_BY_IDX(node_id, prop, idx)),
-
 #define ADC_INIT(node_id, prop, idx) \
 	ADC_DT_SPEC_GET_BY_IDX(node_id, idx),
 
 static const struct device *regs[] = {
-	DT_FOREACH_PROP_ELEM(DT_NODELABEL(resources), regulators, REG_INIT)
+	DT_FOREACH_PROP_ELEM_SEP(DT_NODELABEL(resources), regulators, DEVICE_DT_GET_BY_IDX, (,))
 };
 
 static const struct adc_dt_spec adc_chs[] = {
@@ -83,7 +80,7 @@ ZTEST(regulator_voltage, test_output_voltage)
 			}
 
 			for (unsigned int k = 0U; k < adc_avg_count; k++) {
-				ret = adc_read(adc_chs[i].dev, &sequence);
+				ret = adc_read_dt(&adc_chs[i], &sequence);
 				zassert_equal(ret, 0);
 
 				val_mv += buf;

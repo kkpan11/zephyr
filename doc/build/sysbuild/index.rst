@@ -65,7 +65,7 @@ The following are some key sysbuild features indicated in this figure:
 
 - Sysbuild itself is also configured using Kconfig. For example, you can
   instruct sysbuild to build the MCUboot bootloader, as well as to build and
-  link your main Zephyr application as an MCUboot child image, using sysbuild's
+  link your main Zephyr application as an MCUboot-bootable image, using sysbuild's
   Kconfig files.
 
 - Sysbuild integrates with west's :ref:`west-build-flash-debug` commands. It
@@ -95,7 +95,7 @@ As mentioned above, you can run sysbuild via ``west build`` or ``cmake``.
 
       .. zephyr-app-commands::
          :tool: west
-         :app: samples/hello_world
+         :zephyr-app: samples/hello_world
          :board: reel_board
          :goals: build
          :west-args: --sysbuild
@@ -104,21 +104,27 @@ As mentioned above, you can run sysbuild via ``west build`` or ``cmake``.
       .. tip::
 
          To configure ``west build`` to use ``--sysbuild`` by default from now on,
-         run::
+         run:
 
-           west config build.sysbuild True
+         .. code-block:: shell
+
+            west config build.sysbuild True
 
          Since sysbuild supports both single- and multi-image builds, this lets you
          use sysbuild all the time, without worrying about what type of build you are
          running.
 
-         To turn this off, run this before generating your build system::
+         To turn this off, run this before generating your build system:
 
-           west config build.sysbuild False
+         .. code-block:: shell
 
-         To turn this off for just one ``west build`` command, run::
+            west config build.sysbuild False
 
-           west build --no-sysbuild ...
+         To turn this off for just one ``west build`` command, run:
+
+         .. code-block:: shell
+
+            west build --no-sysbuild ...
 
    .. group-tab:: ``cmake``
 
@@ -151,7 +157,7 @@ To handle this, sysbuild has namespaces for configuration variables. You can use
 namespaces to direct settings either to sysbuild itself or to a specific Zephyr
 application managed by sysbuild using the information in these sections.
 
-The following example shows how to build :ref:`hello_world` with MCUboot enabled,
+The following example shows how to build :zephyr:code-sample:`hello_world` with MCUboot enabled,
 applying to both images debug optimizations:
 
 .. tabs::
@@ -160,11 +166,11 @@ applying to both images debug optimizations:
 
       .. zephyr-app-commands::
          :tool: west
-         :app: samples/hello_world
+         :zephyr-app: samples/hello_world
          :board: reel_board
          :goals: build
          :west-args: --sysbuild
-         :gen-args: -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -DCONFIG_DEBUG_OPTIMIZATIONS=y -Dmcuboot_DEBUG_OPTIMIZATIONS=y
+         :gen-args: -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -DCONFIG_DEBUG_OPTIMIZATIONS=y -Dmcuboot_CONFIG_DEBUG_OPTIMIZATIONS=y
          :compact:
 
    .. group-tab:: ``cmake``
@@ -174,7 +180,7 @@ applying to both images debug optimizations:
          :app: share/sysbuild
          :board: reel_board
          :goals: build
-         :gen-args: -DAPP_DIR=samples/hello_world -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -DCONFIG_DEBUG_OPTIMIZATIONS=y -Dmcuboot_DEBUG_OPTIMIZATIONS=y
+         :gen-args: -DAPP_DIR=samples/hello_world -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -DCONFIG_DEBUG_OPTIMIZATIONS=y -Dmcuboot_CONFIG_DEBUG_OPTIMIZATIONS=y
          :compact:
 
 See the following subsections for more information.
@@ -206,15 +212,15 @@ build system to the value ``BAR``, run the following commands:
 
    .. group-tab:: ``west build``
 
-      ::
+      .. code-block:: shell
 
          west build --sysbuild ... -- -Dmy_sample_FOO=BAR
 
    .. group-tab:: ``cmake``
 
-      ::
+      .. code-block:: shell
 
-        cmake -Dmy_sample_FOO=BAR ...
+         cmake -Dmy_sample_FOO=BAR ...
 
 .. _sysbuild_kconfig_namespacing:
 
@@ -242,13 +248,13 @@ build system to the value ``BAR``, run the following commands:
 
    .. group-tab:: ``west build``
 
-      ::
+      .. code-block:: shell
 
          west build --sysbuild ... -- -Dmy_sample_CONFIG_FOO=BAR
 
    .. group-tab:: ``cmake``
 
-      ::
+      .. code-block:: shell
 
         cmake -Dmy_sample_CONFIG_FOO=BAR ...
 
@@ -263,13 +269,13 @@ build system to the value ``BAR``, run the following commands:
    the same syntax for setting Kconfig values at CMake time.
    For example, the following commands will work in the same way:
 
-   ::
+   .. code-block:: shell
 
-     west build -b <board> my_sample -- -DCONFIG_FOO=BAR
+      west build -b <board> my_sample -- -DCONFIG_FOO=BAR
 
-   ::
+   .. code-block:: shell
 
-     west build -b <board> --sysbuild my_sample -- -DCONFIG_FOO=BAR
+      west build -b <board> --sysbuild my_sample -- -DCONFIG_FOO=BAR
 
 Sysbuild flashing using ``west flash``
 **************************************
@@ -310,7 +316,7 @@ enable MCUboot and build and flash the sample as follows:
 
       .. zephyr-app-commands::
          :tool: west
-         :app: samples/hello_world
+         :zephyr-app: samples/hello_world
          :board: reel_board
          :goals: build
          :west-args: --sysbuild
@@ -359,7 +365,7 @@ MCUboot whenever sysbuild is used:
    └── sysbuild.conf
 
 
-.. code-block:: none
+.. code-block:: cfg
 
    SB_CONFIG_BOOTLOADER_MCUBOOT=y
 
@@ -375,7 +381,7 @@ specify this file when building with sysbuild, as follows:
 
       .. zephyr-app-commands::
          :tool: west
-         :app: samples/hello_world
+         :zephyr-app: samples/hello_world
          :board: reel_board
          :goals: build
          :west-args: --sysbuild
@@ -417,8 +423,8 @@ Dedicated image build targets
 Not all build targets for images are given equivalent prefixed build targets
 when sysbuild is used, for example build targets like ``ram_report``,
 ``rom_report``, ``footprint``, ``puncover`` and ``pahole`` are not exposed.
-When using :ref:`Trusted Firmware <tfm_build_system>`, this includes build
-targets prefix with ``tfm_`` and ``bl2_``, for example: ``tfm_rom_report``
+When using :ref:`Trusted Firmware <tfm_build_system>`, the build targets prefixed
+with ``tfm_`` and ``bl2_`` are also not exposed, for example: ``tfm_rom_report``
 and ``bl2_ram_report``. To run these build targets, the build directory of the
 image can be provided to west/ninja/make along with the name of the build
 target to execute and it will run.
@@ -432,9 +438,16 @@ target to execute and it will run.
       location, the ``rom_report`` build target for ``mcuboot`` can be ran
       with:
 
-      .. code-block:: bash
+      .. code-block:: shell
 
          west build -d build/mcuboot -t rom_report
+
+      For TF-M projects using TF-M targets, the application build directory is
+      used like so:
+
+      .. code-block:: shell
+
+         west build -d build/<app_name> -t tfm_rom_report
 
    .. group-tab:: ``ninja``
 
@@ -442,9 +455,16 @@ target to execute and it will run.
       using ``ninja`` using sysbuild with mcuboot enabled, the ``rom_report``
       build target for ``mcuboot`` can be ran with:
 
-      .. code-block:: bash
+      .. code-block:: shell
 
          ninja -C mcuboot rom_report
+
+      For TF-M projects using TF-M targets, the application build directory is
+      used like so:
+
+      .. code-block:: shell
+
+         ninja -C <app_name> -t tfm_rom_report
 
    .. group-tab:: ``make``
 
@@ -452,9 +472,16 @@ target to execute and it will run.
       using ``make`` using sysbuild with mcuboot enabled, the ``rom_report``
       build target for ``mcuboot`` can be ran with:
 
-      .. code-block:: bash
+      .. code-block:: shell
 
          make -C mcuboot rom_report
+
+      For TF-M projects using TF-M targets, the application build directory is
+      used like so:
+
+      .. code-block:: shell
+
+         make -C <app_name> -t tfm_rom_report
 
 .. _sysbuild_zephyr_application:
 
@@ -493,8 +520,8 @@ In sysbuild and Zephyr CMake build system a board may refer to:
 * A specific SoC on a physical board with multiple SoCs, such as
   :ref:`nrf9160dk_nrf9160` and :ref:`nrf9160dk_nrf52840`.
 
-If your main application, for example, is built for ``mps2_an521``, and your
-helper application must target the ``mps2_an521_remote`` board (cpu1), add
+If your main application, for example, is built for ``mps2/an521/cpu0``, and your
+helper application must target the ``mps2/an521/cpu1`` board target, add
 a CMake function call that is structured as follows:
 
 .. code-block:: cmake
@@ -502,7 +529,7 @@ a CMake function call that is structured as follows:
    ExternalZephyrProject_Add(
      APPLICATION my_sample
      SOURCE_DIR <path-to>/my_sample
-     BOARD mps2_an521_remote
+     BOARD mps2/an521/cpu1
    )
 
 This could be useful, for example, if your main application requires another
@@ -569,12 +596,20 @@ You can mark ``my_sample`` as a build-only application in this manner:
    )
 
 As a result, ``my_sample`` will be built as part of the sysbuild build invocation,
-but neither ``west flash`` nor ``west debug`` will be aware of this application.
+but it will be excluded from the default image sequence used by ``west flash``.
 Instead, you may use the outputs of this domain for other purposes - for example,
 to produce a secondary image for DFU, or to merge multiple images together.
 
 You can also replace ``TRUE`` with another boolean constant in CMake, such as
 a Kconfig option, which would make ``my_sample`` conditionally build-only.
+
+.. note::
+
+   Applications marked as build-only can still be flashed manually, using
+   ``west flash --domain my_sample``. As such, the ``BUILD_ONLY`` option only
+   controls the default behavior of ``west flash``.
+
+.. _sysbuild_application_configuration:
 
 Zephyr application configuration
 ================================
@@ -601,7 +636,7 @@ file or a devicetree overlay :file:`sysbuild/my_sample.overlay`.
 
 A Kconfig fragment could look as:
 
-.. code-block:: none
+.. code-block:: cfg
 
    # sysbuild/my_sample.conf
    CONFIG_FOO=n
@@ -638,6 +673,118 @@ configuration files for ``my_sample`` will be ignored.
 
 This give you full control on how images are configured when integrating those
 with ``application``.
+
+.. _sysbuild_file_suffixes:
+
+Sysbuild file suffix support
+----------------------------
+
+File suffix support through the :makevar:`FILE_SUFFIX` is supported in sysbuild
+(see :ref:`application-file-suffixes` for details on this feature in applications). For sysbuild,
+a globally provided option will be passed down to all images. In addition, the image configuration
+file will have this value applied and used (instead of the build type) if the file exists.
+
+Given the example project:
+
+.. code-block:: none
+
+   <home>/application
+   ├── CMakeLists.txt
+   ├── prj.conf
+   ├── sysbuild.conf
+   ├── sysbuild_test_key.conf
+   └── sysbuild
+       ├── mcuboot.conf
+       ├── mcuboot_max_log.conf
+       └── my_sample.conf
+
+* If ``FILE_SUFFIX`` is not defined and both ``mcuboot`` and ``my_sample`` images are included,
+  ``mcuboot`` will use the ``mcuboot.conf`` Kconfig fragment file and ``my_sample`` will use the
+  ``my_sample.conf`` Kconfig fragment file. Sysbuild itself will use the ``sysbuild.conf``
+  Kconfig fragment file.
+
+* If ``FILE_SUFFIX`` is set to ``max_log`` and both ``mcuboot`` and ``my_sample`` images are
+  included, ``mcuboot`` will use the ``mcuboot_max_log.conf`` Kconfig fragment file and
+  ``my_sample`` will use the ``my_sample.conf`` Kconfig fragment file (as it will fallback to the
+  file without the suffix). Sysbuild itself will use the ``sysbuild.conf`` Kconfig fragment file
+  (as it will fallback to the file without the suffix).
+
+* If ``FILE_SUFFIX`` is set to ``test_key`` and both ``mcuboot`` and ``my_sample`` images are
+  included, ``mcuboot`` will use the ``mcuboot.conf`` Kconfig fragment file and
+  ``my_sample`` will use the ``my_sample.conf`` Kconfig fragment file (as it will fallback to the
+  files without the suffix). Sysbuild itself will use the ``sysbuild_test_key.conf`` Kconfig
+  fragment file. This can be used to apply a different sysbuild configuration, for example to use
+  a different signing key in MCUboot and when signing the main application.
+
+The ``FILE_SUFFIX`` can also be applied only to single images by prefixing the variable with the
+image name:
+
+.. tabs::
+
+   .. group-tab:: ``west build``
+
+      .. zephyr-app-commands::
+         :tool: west
+         :app: file_suffix_example
+         :board: reel_board
+         :goals: build
+         :west-args: --sysbuild
+         :gen-args: -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -Dmcuboot_FILE_SUFFIX="max_log"
+         :compact:
+
+   .. group-tab:: ``cmake``
+
+      .. zephyr-app-commands::
+         :tool: cmake
+         :app: share/sysbuild
+         :board: reel_board
+         :goals: build
+         :gen-args: -DAPP_DIR=<app_dir> -DSB_CONFIG_BOOTLOADER_MCUBOOT=y -Dmcuboot_FILE_SUFFIX="max_log"
+         :compact:
+
+.. _sysbuild_zephyr_application_dependencies:
+
+Adding dependencies among Zephyr applications
+=============================================
+
+Sometimes, in a multi-image build, you may want certain Zephyr applications to
+be configured or flashed in a specific order. For example, if you need some
+information from one application's build system to be available to another's,
+then the first thing to do is to add a configuration dependency between them.
+Separately, you can also add flashing dependencies to control the sequence of
+images used by ``west flash``; this could be used if a specific flashing order
+is required by an SoC, a _runner_, or something else.
+
+By default, sysbuild will configure and flash applications in the order that
+they are added, as ``ExternalZephyrProject_Add()`` calls are processed by CMake.
+You can use the ``sysbuild_add_dependencies()`` function to make adjustments to
+this order, according to your needs. Its usage is similar to the standard
+``add_dependencies()`` function in CMake.
+
+Here is an example of adding configuration dependencies for ``my_sample``:
+
+.. code-block:: cmake
+
+   sysbuild_add_dependencies(IMAGE CONFIGURE my_sample sample_a sample_b)
+
+This will ensure that sysbuild will run CMake for ``sample_a`` and ``sample_b``
+(in some order) before doing the same for ``my_sample``, when building these
+domains in a single invocation.
+
+If you want to add flashing dependencies instead, then do it like this:
+
+.. code-block:: cmake
+
+   sysbuild_add_dependencies(IMAGE FLASH my_sample sample_a sample_b)
+
+As a result, ``my_sample`` will be flashed after ``sample_a`` and ``sample_b``
+(in some order), when flashing these domains in a single invocation.
+
+.. note::
+
+   Adding flashing dependencies is not allowed for build-only applications.
+   If ``my_sample`` had been created with ``BUILD_ONLY TRUE``, then the above
+   call to ``sysbuild_add_dependencies()`` would have produced an error.
 
 Adding non-Zephyr applications to sysbuild
 ******************************************

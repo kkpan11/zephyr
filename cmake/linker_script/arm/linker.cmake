@@ -16,10 +16,17 @@ math(EXPR FLASH_ADDR
      OUTPUT_FORMAT HEXADECIMAL
 )
 
-math(EXPR FLASH_SIZE
-     "(${CONFIG_FLASH_SIZE} + 0) * 1024 - (${CONFIG_FLASH_LOAD_OFFSET} + 0)"
-     OUTPUT_FORMAT HEXADECIMAL
-)
+if(CONFIG_FLASH_LOAD_SIZE GREATER 0)
+  math(EXPR FLASH_SIZE
+       "(${CONFIG_FLASH_LOAD_SIZE} + 0) - (${CONFIG_ROM_END_OFFSET} + 0)"
+       OUTPUT_FORMAT HEXADECIMAL
+  )
+else()
+  math(EXPR FLASH_SIZE
+       "(${CONFIG_FLASH_SIZE} + 0) * 1024 - (${CONFIG_FLASH_LOAD_OFFSET} + 0) - (${CONFIG_ROM_END_OFFSET} + 0)"
+       OUTPUT_FORMAT HEXADECIMAL
+  )
+endif()
 
 set(RAM_ADDR ${CONFIG_SRAM_BASE_ADDRESS})
 math(EXPR RAM_SIZE "(${CONFIG_SRAM_SIZE} + 0) * 1024" OUTPUT_FORMAT HEXADECIMAL)
@@ -34,10 +41,9 @@ zephyr_linker_memory(NAME FLASH    FLAGS rx START ${FLASH_ADDR} SIZE ${FLASH_SIZ
 zephyr_linker_memory(NAME RAM      FLAGS wx START ${RAM_ADDR}   SIZE ${RAM_SIZE})
 zephyr_linker_memory(NAME IDT_LIST FLAGS wx START ${IDT_ADDR}   SIZE 2K)
 
-# Only use 'rw' as FLAGS. It's not used anyway.
 dt_comp_path(paths COMPATIBLE "zephyr,memory-region")
 foreach(path IN LISTS paths)
-  zephyr_linker_dts_memory(PATH ${path} FLAGS rw)
+  zephyr_linker_dts_memory(PATH ${path})
 endforeach()
 
 if(CONFIG_XIP)
@@ -137,6 +143,7 @@ endif()
 
 include(${COMMON_ZEPHYR_LINKER_DIR}/ram-end.cmake)
 
+zephyr_linker_symbol(SYMBOL __ramfunc_region_start EXPR "ADDR(.ramfunc)")
 zephyr_linker_symbol(SYMBOL __kernel_ram_start EXPR "(@__bss_start@)")
 zephyr_linker_symbol(SYMBOL __kernel_ram_end  EXPR "(${RAM_ADDR} + ${RAM_SIZE})")
 zephyr_linker_symbol(SYMBOL __kernel_ram_size EXPR "(@__kernel_ram_end@ - @__bss_start@)")

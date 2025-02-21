@@ -6,8 +6,9 @@
 config UART_RCAR
 	bool "Renesas R-Car UART Driver"
 	default y
-	depends on DT_HAS_RENESAS_RCAR_SCIF_ENABLED
+	depends on DT_HAS_RENESAS_RCAR_SCIF_ENABLED || DT_HAS_RENESAS_RCAR_HSCIF_ENABLED
 	select SERIAL_HAS_DRIVER
 	select SERIAL_SUPPORT_INTERRUPT
+	select PINCTRL
 	help
 	  Enable Renesas R-Car UART Driver.

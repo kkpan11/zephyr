@@ -17,7 +17,6 @@ if ADC
 
 config ADC_SHELL
 	bool "ADC Shell"
-	default y
 	depends on SHELL
 	help
 	  Enable ADC Shell for testing.
@@ -32,6 +31,11 @@ config ADC_CONFIGURABLE_INPUTS
 # required to explicitly specify for the excitation current source the pin
 # which should be used.
 config ADC_CONFIGURABLE_EXCITATION_CURRENT_SOURCE_PIN
+	bool
+
+# By selecting or not this option particular ADC drivers indicate if they
+# allow a configurable voltage bias pin.
+config ADC_CONFIGURABLE_VBIAS_PIN
 	bool
 
 config ADC_ASYNC
@@ -96,7 +100,9 @@ source "drivers/adc/Kconfig.ads1119"
 
 source "drivers/adc/Kconfig.ads7052"
 
-source "drivers/adc/Kconfig.ads114s0x"
+source "drivers/adc/Kconfig.ads1x4s0x"
+
+source "drivers/adc/Kconfig.ads131m02"
 
 source "drivers/adc/Kconfig.rpi_pico"
 
@@ -108,10 +114,30 @@ source "drivers/adc/Kconfig.ifx_cat1"
 
 source "drivers/adc/Kconfig.smartbond"
 
-source "drivers/adc/Kconfig.tla2021"
+source "drivers/adc/Kconfig.tla202x"
 
 source "drivers/adc/Kconfig.nxp_s32"
 
 source "drivers/adc/Kconfig.max1125x"
+
+source "drivers/adc/Kconfig.max11102_17"
+
+source "drivers/adc/Kconfig.ad559x"
+
+source "drivers/adc/Kconfig.ltc2451"
+
+source "drivers/adc/Kconfig.numaker"
+
+source "drivers/adc/Kconfig.ene"
+
+source "drivers/adc/Kconfig.ambiq"
+
+source "drivers/adc/Kconfig.renesas_ra"
+
+source "drivers/adc/Kconfig.max32"
+
+source "drivers/adc/Kconfig.ad4114"
+
+source "drivers/adc/Kconfig.ad7124"
 
 endif # ADC

@@ -40,23 +40,12 @@
 #    to get test coverage as broad as possible.
 # 2. Keep tag entries sorted alphabetically
 
+# zephyr-keep-sorted-start
 bluetooth:
   files:
     - drivers/bluetooth/
     - subsys/bluetooth/
     - subsys/net/l2/bluetooth/
-
-net:
-  files:
-    - subsys/net/
-    - include/zephyr/net/
-
-test_framework:
-  files:
-    - subsys/testsuite/
-    - samples/subsys/testsuite/
-    - tests/subsys/testsuite/
-    - tests/ztest/
 
 cmsis_dsp:
   files:
@@ -65,20 +54,49 @@ cmsis_dsp:
     # change to west.yml is updating something we need to re-test for.
     - west.yml
 
-mcumgr:
-  files:
-    - subsys/mcumgr/
-    - tests/subsys/mgmt/mcumgr/
-    - samples/subsys/mgmt/mcumgr/
-    - include/zephyr/mgmt/mcumgr/
 kernel:
   files:
     - kernel/
     - arch/
 
+mcumgr:
+  files:
+    - subsys/mgmt/mcumgr/
+    - tests/subsys/mgmt/mcumgr/
+    - samples/subsys/mgmt/mcumgr/
+    - include/zephyr/mgmt/mcumgr/
+
+net:
+  files:
+    - subsys/net/
+    - include/zephyr/net/
+    - drivers/wifi/
+    - drivers/net/
+    - drivers/ethernet/
+    - drivers/ieee802154/
+    - drivers/ptp_clock/
+
 posix:
   files:
     - lib/posix/
+
+test_framework:
+  files:
+    - subsys/testsuite/
+    - samples/subsys/testsuite/
+    - tests/subsys/testsuite/
+    - tests/ztest/
+
+wifi:
+  files:
+    - modules/hostap/
+    - subsys/net/l2/wifi/
+    - drivers/wifi/
+    - include/zephyr/net/wifi.h
+    - include/zephyr/net/wifi_mgmt.h
+    - include/zephyr/net/wifi_nm.h
+    - include/zephyr/net/wifi_utils.h
+# zephyr-keep-sorted-stop
 
 # cbprintf:
 #    files:

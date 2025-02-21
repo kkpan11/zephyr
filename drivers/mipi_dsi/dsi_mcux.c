@@ -32,12 +32,11 @@ LOG_MODULE_REGISTER(dsi_mcux, CONFIG_MIPI_DSI_LOG_LEVEL);
 #define DSI_DPHY_PLL_CM_MIN 16U
 #define DSI_DPHY_PLL_CM_MAX 255U
 
-/* PLL VCO output frequency max value is 1.5GHz, VCO output is (ref_clk / CN ) * CM. */
-#define DSI_DPHY_PLL_VCO_MAX MHZ(1500)
-#define DSI_DPHY_PLL_VCO_MIN (DSI_DPHY_PLL_REFCLK_CN_MIN * DSI_DPHY_PLL_CM_MIN)
-
 #define DSI_DPHY_PLL_CO_MIN 0
 #define DSI_DPHY_PLL_CO_MAX 3
+
+/* MAX DSI TX payload */
+#define DSI_TX_MAX_PAYLOAD_BYTE (64U * 4U)
 
 struct display_mcux_mipi_dsi_config {
 	MIPI_DSI_Type base;
@@ -251,6 +250,14 @@ static ssize_t dsi_mcux_transfer(const struct device *dev, uint8_t channel,
 		dsi_xfer.dscCmd = msg->cmd;
 		dsi_xfer.flags = kDSI_TransferUseHighSpeed;
 		dsi_xfer.txDataType = kDSI_TxDataDcsLongWr;
+		/*
+		 * Cap transfer size. Note that we subtract six bytes here,
+		 * one for the DSC command and one to insure that
+		 * transfers are still aligned on a pixel boundary
+		 * (two or three byte pixel sizes are supported).
+		 */
+		dsi_xfer.txDataSize = MIN(dsi_xfer.txDataSize,
+					(DSI_TX_MAX_PAYLOAD_BYTE - 6));
 		break;
 	case MIPI_DSI_GENERIC_SHORT_WRITE_0_PARAM:
 		dsi_xfer.txDataType = kDSI_TxDataGenShortWrNoParam;
@@ -285,15 +292,15 @@ static ssize_t dsi_mcux_transfer(const struct device *dev, uint8_t channel,
 
 	if (msg->rx_len != 0) {
 		/* Return rx_len on a read */
-		return msg->rx_len;
+		return dsi_xfer.rxDataSize;
 	}
 
 	/* Return tx_len on a write */
-	return msg->tx_len;
+	return dsi_xfer.txDataSize;
 
 }
 
-static struct mipi_dsi_driver_api dsi_mcux_api = {
+static DEVICE_API(mipi_dsi, dsi_mcux_api) = {
 	.attach = dsi_mcux_attach,
 	.transfer = dsi_mcux_transfer,
 };

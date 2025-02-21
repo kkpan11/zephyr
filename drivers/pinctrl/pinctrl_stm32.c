@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/init.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <gpio/gpio_stm32.h>
@@ -57,6 +58,12 @@ static const struct device *const gpio_ports[] = {
 	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpioi)),
 	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpioj)),
 	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpiok)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpiol)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpiom)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpion)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpioo)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpiop)),
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpioq)),
 };
 
 /** Number of GPIO ports. */
@@ -79,8 +86,8 @@ int stm32_pinmux_init_remap(void)
 
 #if REMAP_PA11 || REMAP_PA12
 
-#if !defined(CONFIG_SOC_SERIES_STM32G0X)
-#error "Pin remap property available only on STM32G0 SoC series"
+#if !defined(CONFIG_SOC_SERIES_STM32G0X) && !defined(CONFIG_SOC_SERIES_STM32C0X)
+#error "Pin remap property available only on STM32G0 and STM32C0 SoC series"
 #endif
 
 	LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_SYSCFG);
@@ -162,17 +169,21 @@ static int stm32_pins_remap(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt)
 	uint32_t reg_val;
 	uint16_t remap;
 
-	remap = (uint16_t)STM32_DT_PINMUX_REMAP(pins[0].pinmux);
+	remap = NO_REMAP;
+
+	for (size_t i = 0U; i < pin_cnt; i++) {
+		if (remap == NO_REMAP) {
+			remap = STM32_DT_PINMUX_REMAP(pins[i].pinmux);
+		} else if (STM32_DT_PINMUX_REMAP(pins[i].pinmux) == NO_REMAP) {
+			continue;
+		} else if (STM32_DT_PINMUX_REMAP(pins[i].pinmux) != remap) {
+			return -EINVAL;
+		}
+	}
 
 	/* not remappable */
 	if (remap == NO_REMAP) {
 		return 0;
-	}
-
-	for (size_t i = 1U; i < pin_cnt; i++) {
-		if (STM32_DT_PINMUX_REMAP(pins[i].pinmux) != remap) {
-			return -EINVAL;
-		}
 	}
 
 	/* A valid remapping configuration is available */

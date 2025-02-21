@@ -11,6 +11,7 @@ from west import log
 from zspdx.licenses import LICENSES
 from zspdx.util import getHashes
 
+
 # ScannerConfig contains settings used to configure how the SPDX
 # Document scanning should occur.
 class ScannerConfig:
@@ -30,11 +31,12 @@ class ScannerConfig:
         self.numLinesScanned = 20
 
         # should we calculate SHA256 hashes for each Package's Files?
-        # note that SHA1 hashes are mandatory, per SPDX 2.2
+        # note that SHA1 hashes are mandatory, per SPDX 2.3
         self.doSHA256 = True
 
         # should we calculate MD5 hashes for each Package's Files?
         self.doMD5 = False
+
 
 def parseLineForExpression(line):
     """Return parsed SPDX expression if tag found in line, or None otherwise."""
@@ -46,6 +48,7 @@ def parseLineForExpression(line):
     expression = expression.rstrip("/*")
     expression = expression.strip()
     return expression
+
 
 def getExpressionData(filePath, numLines):
     """
@@ -77,6 +80,7 @@ def getExpressionData(filePath, numLines):
     # if we get here, we didn't find an expression
     return None
 
+
 def splitExpression(expression):
     """
     Parse a license expression into its constituent identifiers.
@@ -96,6 +100,7 @@ def splitExpression(expression):
 
     return sorted(e4)
 
+
 def calculateVerificationCode(pkg):
     """
     Calculate the SPDX Package Verification Code for all files in the package.
@@ -114,6 +119,7 @@ def calculateVerificationCode(pkg):
     hSHA1.update(filelist.encode('utf-8'))
     return hSHA1.hexdigest()
 
+
 def checkLicenseValid(lic, doc):
     """
     Check whether this license ID is a valid SPDX license ID, and add it
@@ -125,6 +131,7 @@ def checkLicenseValid(lic, doc):
     """
     if lic not in LICENSES:
         doc.customLicenseIDs.add(lic)
+
 
 def getPackageLicenses(pkg):
     """
@@ -143,6 +150,7 @@ def getPackageLicenses(pkg):
             licsFromFiles.add(licInfo)
     return sorted(list(licsConcluded)), sorted(list(licsFromFiles))
 
+
 def normalizeExpression(licsConcluded):
     """
     Combine array of license expressions into one AND'd expression,
@@ -159,7 +167,7 @@ def normalizeExpression(licsConcluded):
         return licsConcluded[0]
 
     # more than one, so we'll need to combine them
-    # iff an expression has spaces, it needs parens
+    # if and only if an expression has spaces, it needs parens
     revised = []
     for lic in licsConcluded:
         if lic in ["NONE", "NOASSERTION"]:
@@ -169,6 +177,7 @@ def normalizeExpression(licsConcluded):
         else:
             revised.append(lic)
     return " AND ".join(revised)
+
 
 def scanDocument(cfg, doc):
     """

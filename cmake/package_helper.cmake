@@ -44,20 +44,6 @@
 
 cmake_minimum_required(VERSION 3.20.5)
 
-# add_custom_target and set_target_properties are not supported in script mode.
-# However, several Zephyr CMake modules create custom target for user convenience
-# like menuconfig, boards, shields, etc.
-# As we are not generating a build system with this tool, only running part of
-# the modules, then we simply override those functions to allow running those
-# modules.
-function(add_custom_target)
-  # This silence the error: 'add_custom_target command is not scriptable'
-endfunction()
-
-function(set_target_properties)
-  # This silence the error: 'set_target_properties command is not scriptable'
-endfunction()
-
 # Find last `-B` and `-S` instances.
 foreach(i RANGE ${CMAKE_ARGC})
   if(CMAKE_ARGV${i} MATCHES "^-B(.*)")

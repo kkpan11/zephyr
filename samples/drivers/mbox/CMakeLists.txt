@@ -1,38 +1,47 @@
 #
 # Copyright (c) 2021 Carlo Caione <ccaione@baylibre.com>
+# Copyright 2023-2025 NXP
 #
 # SPDX-License-Identifier: Apache-2.0
 #
 
 cmake_minimum_required(VERSION 3.20.0)
 
-set(REMOTE_ZEPHYR_DIR ${CMAKE_CURRENT_BINARY_DIR}/mbox_ipc_remote-prefix/src/mbox_ipc_remote-build/zephyr)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 
-if("${BOARD}" STREQUAL "nrf5340dk_nrf5340_cpuapp")
-  set(BOARD_REMOTE "nrf5340dk_nrf5340_cpunet")
-elseif("${BOARD}" STREQUAL "adp_xc7k_ae350")
-  set(BOARD_REMOTE "adp_xc7k_ae350")
+set(REMOTE_ZEPHYR_DIR ${CMAKE_CURRENT_BINARY_DIR}/../remote/zephyr)
+
+if(CONFIG_BOARD_NRF5340DK_NRF5340_CPUAPP OR
+   CONFIG_BOARD_NRF5340BSIM_NRF5340_CPUAPP OR
+   CONFIG_BOARD_ADP_XC7K_AE350 OR
+   CONFIG_BOARD_MIMXRT1170_EVK_MIMXRT1176_CM7 OR
+   CONFIG_BOARD_MIMXRT1160_EVK_MIMXRT1166_CM7 OR
+   CONFIG_BOARD_MIMXRT1180_EVK_MIMXRT1189_CM33 OR
+   CONFIG_BOARD_LPCXPRESSO55S69_LPC55S69_CPU0 OR
+   CONFIG_BOARD_FRDM_MCXN947_MCXN947_CPU0 OR
+   CONFIG_BOARD_ESP32_DEVKITC_WROOM_ESP32_PROCPU OR
+   CONFIG_BOARD_ESP32S3_DEVKITM_ESP32S3_PROCPU OR
+   CONFIG_BOARD_NRF54H20DK_NRF54H20_CPUAPP OR
+   CONFIG_BOARD_NRF54H20DK_NRF54H20_CPURAD OR
+   CONFIG_BOARD_NRF54L15DK_NRF54L15_CPUAPP OR
+   CONFIG_BOARD_STM32H747I_DISCO_STM32H747XX_M7)
+  message(STATUS "${BOARD}${BOARD_QUALIFIERS} compile as Main in this sample")
 else()
-  message(FATAL_ERROR "${BOARD} is not supported for this sample")
+  message(FATAL_ERROR "${BOARD}${BOARD_QUALIFIERS} is not supported for this sample")
 endif()
 
-message(STATUS "${BOARD} compile as Main in this sample")
-
-find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(mbox_ipc)
 
 enable_language(C ASM)
 
-target_sources(app PRIVATE src/main.c)
+if(CONFIG_INCLUDE_REMOTE_DIR)
+  target_include_directories(zephyr_interface
+    INTERFACE ${REMOTE_ZEPHYR_DIR}/include/public)
+endif()
 
-include(ExternalProject)
-
-ExternalProject_Add(
-  mbox_ipc_remote
-  SOURCE_DIR ${APPLICATION_SOURCE_DIR}/remote
-  INSTALL_COMMAND ""      # This particular build system has no install command
-  CMAKE_CACHE_ARGS -DBOARD:STRING=${BOARD_REMOTE}
-  BUILD_BYPRODUCTS "${REMOTE_ZEPHYR_DIR}/${KERNEL_BIN_NAME}"
-  # NB: Do we need to pass on more CMake variables?
-  BUILD_ALWAYS True
-)
+if("${BOARD}" STREQUAL "esp32_devkitc_wrover_procpu" OR "${BOARD}" STREQUAL "esp32s3_devkitm_procpu")
+  set_source_files_properties(${REMOTE_ZEPHYR_DIR}/esp32_appcpu_firmware.c PROPERTIES GENERATED TRUE)
+  target_sources(app PRIVATE src/main.c ${REMOTE_ZEPHYR_DIR}/esp32_appcpu_firmware.c)
+else()
+  target_sources(app PRIVATE src/main.c)
+endif()

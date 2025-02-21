@@ -11,6 +11,7 @@ Overview
 ********
 
 The CoAP client library allows application to send CoAP requests and parse CoAP responses.
+The library can be enabled with :kconfig:option:`CONFIG_COAP_CLIENT` Kconfig option.
 The application is notified about the response via a callback that is provided to the API
 in the request. The CoAP client handles the communication over sockets.
 As the CoAP client doesn't create socket it is using, the application is responsible for creating
@@ -51,10 +52,10 @@ The callback provided in the callback will be called in following cases:
 - There is a response for the request
 - The request failed for some reason
 
-The callback contains a flag `last_block`, which indicates if there is more data to come in the
-response and means that the current response is part of a blockwise transfer. When the `last_block`
-is set to true, the response is finished and the client is ready for the next request after
-returning from the callback.
+The callback contains a flag ``last_block``, which indicates if there is more data to come in the
+response and means that the current response is part of a blockwise transfer. When the
+``last_block`` is set to true, the response is finished and the client is ready for the next request
+after returning from the callback.
 
 If the server responds to the request, the library provides the response to the
 application through the response callback registered in the request structure.
@@ -77,6 +78,34 @@ The following is an example of a very simple response handling function:
                 LOG_ERR("Error in sending request %d", code);
         }
     }
+
+CoAP options may also be added to the request by the application. The following is an example of
+the application adding a Block2 option to the initial request, to suggest a maximum block size to
+the server for a resource that it expects to be large enough to require a blockwise transfer (see
+RFC7959 Figure 3: Block-Wise GET with Early Negotiation).
+
+.. code-block:: c
+
+    static struct coap_client;
+    struct coap_client_request req = { 0 };
+
+    /* static, since options must remain valid throughout the whole execution of the request */
+    static struct coap_client_option block2_option;
+
+    coap_client_init(&client, NULL);
+    block2_option = coap_client_option_initial_block2();
+
+    req.method = COAP_METHOD_GET;
+    req.confirmable = true;
+    req.path = "test";
+    req.fmt = COAP_CONTENT_FORMAT_TEXT_PLAIN;
+    req.cb = response_cb;
+    req.options = &block2_option;
+    req.num_options = 1;
+    req.payload = NULL;
+    req.len = 0;
+
+    ret = coap_client_req(&client, sock, &address, &req, -1);
 
 API Reference
 *************

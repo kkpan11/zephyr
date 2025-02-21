@@ -1,7 +1,8 @@
-.. _watchdog-sample:
+.. zephyr:code-sample:: watchdog
+   :name: Watchdog
+   :relevant-api: watchdog_interface
 
-Watchdog Sample
-###############
+   Use the watchdog driver API to reset the board when it gets stuck in an infinite loop.
 
 Overview
 ********
@@ -24,7 +25,7 @@ Building and Running for ST Nucleo F091RC
 =========================================
 
 The sample can be built and executed for the
-:ref:`nucleo_f091rc_board` as follows:
+:zephyr:board:`nucleo_f091rc` as follows:
 
 .. zephyr-app-commands::
 	:zephyr-app: samples/drivers/watchdog

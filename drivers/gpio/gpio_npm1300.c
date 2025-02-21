@@ -118,8 +118,15 @@ static inline int gpio_npm1300_configure(const struct device *dev, gpio_pin_t pi
 
 	/* Configure mode */
 	if ((flags & GPIO_INPUT) != 0U) {
-		ret = mfd_npm1300_reg_write(config->mfd, NPM_GPIO_BASE, NPM_GPIO_OFFSET_MODE + pin,
-					    NPM1300_GPIO_GPIINPUT);
+		if (flags & GPIO_ACTIVE_LOW) {
+			ret = mfd_npm1300_reg_write(config->mfd, NPM_GPIO_BASE,
+						    NPM_GPIO_OFFSET_MODE + pin,
+						    NPM1300_GPIO_GPIEVENTFALL);
+		} else {
+			ret = mfd_npm1300_reg_write(config->mfd, NPM_GPIO_BASE,
+						    NPM_GPIO_OFFSET_MODE + pin,
+						    NPM1300_GPIO_GPIEVENTRISE);
+		}
 	} else if ((flags & NPM1300_GPIO_WDT_RESET_ON) != 0U) {
 		ret = mfd_npm1300_reg_write(config->mfd, NPM_GPIO_BASE, NPM_GPIO_OFFSET_MODE + pin,
 					    NPM1300_GPIO_GPORESET);
@@ -185,25 +192,13 @@ static int gpio_npm1300_port_toggle_bits(const struct device *dev, gpio_port_pin
 	return gpio_npm1300_port_set_masked_raw(dev, pins, ~value);
 }
 
-static int gpio_npm1300_pin_interrupt_configure(const struct device *dev, gpio_pin_t pin,
-						enum gpio_int_mode mode, enum gpio_int_trig trig)
-{
-	ARG_UNUSED(dev);
-	ARG_UNUSED(pin);
-	ARG_UNUSED(mode);
-	ARG_UNUSED(trig);
-
-	return -ENOTSUP;
-}
-
-static const struct gpio_driver_api gpio_npm1300_api = {
+static DEVICE_API(gpio, gpio_npm1300_api) = {
 	.pin_configure = gpio_npm1300_configure,
 	.port_get_raw = gpio_npm1300_port_get_raw,
 	.port_set_masked_raw = gpio_npm1300_port_set_masked_raw,
 	.port_set_bits_raw = gpio_npm1300_port_set_bits_raw,
 	.port_clear_bits_raw = gpio_npm1300_port_clear_bits_raw,
 	.port_toggle_bits = gpio_npm1300_port_toggle_bits,
-	.pin_interrupt_configure = gpio_npm1300_pin_interrupt_configure,
 };
 
 static int gpio_npm1300_init(const struct device *dev)
@@ -227,7 +222,7 @@ static int gpio_npm1300_init(const struct device *dev)
                                                                                                    \
 		static struct gpio_npm1300_data gpio_npm1300_data##n;                              \
                                                                                                    \
-	DEVICE_DT_INST_DEFINE(n, &gpio_npm1300_init, NULL, &gpio_npm1300_data##n,                  \
+	DEVICE_DT_INST_DEFINE(n, gpio_npm1300_init, NULL, &gpio_npm1300_data##n,                   \
 			      &gpio_npm1300_config##n, POST_KERNEL,                                \
 			      CONFIG_GPIO_NPM1300_INIT_PRIORITY, &gpio_npm1300_api);
 

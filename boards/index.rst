@@ -1,26 +1,53 @@
 .. _boards:
 
-Supported Boards
-################
+Supported Boards and Shields
+############################
 
-Zephyr project developers are continually adding board-specific support as
-documented below.
+If you are looking to add Zephyr support for a new board, please start with the
+:ref:`board_porting_guide`.
 
-To add support documentation for a new board, please use the template available
-under :zephyr_file:`doc/templates/board.tmpl`
+When adding support documentation for a board, remember to use the template
+available under :zephyr_file:`doc/templates/board.tmpl`.
 
+Shields are hardware add-ons that can be stacked on top of a board to add extra
+functionality. They are listed separately from boards, towards :ref:`the end of
+this page <boards-shields>`.
+
+.. admonition:: Search Tips
+   :class: dropdown
+
+   * Use the form below to filter the list of supported boards. If a field is left empty, it will
+     not be used in the filtering process.
+
+   * A board must meet **all** criteria selected across different fields. For example, if you select
+     both a vendor and an architecture, only boards that match both will be displayed. Within a
+     single field, selecting multiple options (such as two architectures) will show boards matching
+     **either** option.
+
+   * The list of supported hardware features for each board is automatically generated using
+     information from the Devicetree. It may not be reflecting the full list of supported features
+     since some of them may not be enabled by default.
+
+   * Can't find your exact board? Don't worry! If a similar board with the same or a closely related
+     MCU exists, you can use it as a :ref:`starting point <create-your-board-directory>` for adding
+     support for your own board.
 
 .. toctree::
    :maxdepth: 2
+   :glob:
+   :hidden:
 
-   arc/index.rst
-   arm/index.rst
-   arm64/index.rst
-   mips/index.rst
-   nios2/index.rst
-   posix/index.rst
-   riscv/index.rst
-   sparc/index.rst
-   x86/index.rst
-   xtensa/index.rst
-   shields/index.rst
+   */index
+
+.. zephyr:board-catalog::
+
+.. _boards-shields:
+
+Shields
+#######
+
+.. toctree::
+   :maxdepth: 1
+   :glob:
+
+   shields/**/*

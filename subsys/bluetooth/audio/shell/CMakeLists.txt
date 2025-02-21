@@ -4,6 +4,14 @@ zephyr_library()
 zephyr_library_link_libraries(subsys__bluetooth)
 
 zephyr_library_sources_ifdef(
+  CONFIG_BT_CCP_CALL_CONTROL_SERVER
+  ccp_call_control_server.c
+  )
+zephyr_library_sources_ifdef(
+  CONFIG_BT_CCP_CALL_CONTROL_CLIENT
+  ccp_call_control_client.c
+  )
+zephyr_library_sources_ifdef(
   CONFIG_BT_VCP_VOL_REND
   vcp_vol_rend.c
   )
@@ -60,6 +68,10 @@ zephyr_library_sources_ifdef(
   cap_initiator.c
   )
 zephyr_library_sources_ifdef(
+  CONFIG_BT_CAP_COMMANDER
+  cap_commander.c
+  )
+zephyr_library_sources_ifdef(
   CONFIG_BT_HAS_CLIENT
   has_client.c
   )
@@ -67,12 +79,19 @@ zephyr_library_sources_ifdef(
   CONFIG_BT_TMAP
   tmap.c
   )
+zephyr_library_sources_ifdef(
+  CONFIG_BT_GMAP
+  gmap.c
+  )
 # We use BT_BAP_STREAM as a common ground for audio, as that is set whenever
 # any audio stream functionality is enabled.
 zephyr_library_sources_ifdef(
   CONFIG_BT_BAP_STREAM
   bap.c
   )
+if (CONFIG_LIBLC3 AND CONFIG_USB_DEVICE_AUDIO)
+	zephyr_library_sources(bap_usb.c)
+endif()
 zephyr_library_sources_ifdef(
   CONFIG_BT_BAP_SCAN_DELEGATOR
   bap_scan_delegator.c
@@ -80,4 +99,8 @@ zephyr_library_sources_ifdef(
 zephyr_library_sources_ifdef(
   CONFIG_BT_BAP_BROADCAST_ASSISTANT
   bap_broadcast_assistant.c
+  )
+zephyr_library_sources_ifdef(
+  CONFIG_BT_PBP
+  pbp.c
   )

@@ -55,7 +55,7 @@ TEST_NSIM_CORE2 = [TEST_DRIVER_CMD, '-pset=2', '-psetname=core1',
               '-prop=download=2', '-nooptions', '-nogoifmain',
               '-toggle=include_local_symbols=1',
               '-nsim', TEST_BOARD_NSIM_ARGS, RC_KERNEL_ELF]
-TEST_NSIM_CORES_LAUNCH = [TEST_DRIVER_CMD, '-multifiles=core1,core0',
+TEST_NSIM_CORES_LAUNCH = [TEST_DRIVER_CMD, '-multifiles=core0,core1',
               '-run', '-cl']
 
 # mdb-hw
@@ -92,8 +92,8 @@ TEST_HW_FLASH_CASES_ERR = [
         'i': ['--jtag=test_debug', '--cores=1'],
         'e': "unsupported jtag adapter test_debug"
     },{
-        'i': ['--jtag=digilent', '--cores=16'],
-        'e': "unsupported cores 16"
+        'i': ['--jtag=digilent', '--cores=13'],
+        'e': "unsupported cores 13"
     }]
 
 TEST_HW_DEBUG_CASES = [
@@ -116,8 +116,8 @@ TEST_HW_DEBUG_CASES_ERR = [
         'i': ['--jtag=test_debug', '--cores=1'],
         'e': "unsupported jtag adapter test_debug"
     }, {
-        'i': ['--jtag=digilent', '--cores=16'],
-        'e': "unsupported cores 16"
+        'i': ['--jtag=digilent', '--cores=13'],
+        'e': "unsupported cores 13"
     }]
 
 TEST_HW_MULTICORE_CASES = [['--jtag=digilent', '--cores=2']]

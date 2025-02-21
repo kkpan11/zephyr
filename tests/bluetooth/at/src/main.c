@@ -8,9 +8,9 @@
 #include <stddef.h>
 #include <string.h>
 
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
-#include "subsys/bluetooth/host/at.h"
+#include "subsys/bluetooth/host/classic/at.h"
 
 #include <zephyr/ztest.h>
 

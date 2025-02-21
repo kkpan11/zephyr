@@ -13,7 +13,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(dma_intel_adsp_hda_dma_link_out);
 
-static const struct dma_driver_api intel_adsp_hda_dma_link_out_api = {
+static DEVICE_API(dma, intel_adsp_hda_dma_link_out_api) = {
 	.config = intel_adsp_hda_dma_link_out_config,
 	.reload = intel_adsp_hda_dma_link_reload,
 	.start = intel_adsp_hda_dma_start,
@@ -29,7 +29,8 @@ static const struct dma_driver_api intel_adsp_hda_dma_link_out_api = {
 		.base = DT_INST_REG_ADDR(inst),                                                    \
 		.regblock_size  = DT_INST_REG_SIZE(inst),					   \
 		.dma_channels = DT_INST_PROP(inst, dma_channels),                                  \
-		.direction = MEMORY_TO_PERIPHERAL						   \
+		.direction = MEMORY_TO_PERIPHERAL,						   \
+		.irq_config = NULL								   \
 	};											   \
 												   \
 	static struct intel_adsp_hda_dma_data intel_adsp_hda_dma##inst##_data = {};                \

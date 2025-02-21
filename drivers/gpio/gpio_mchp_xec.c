@@ -66,7 +66,6 @@ static int gpio_xec_configure(const struct device *dev,
 	__IO uint32_t *current_pcr1;
 	uint32_t pcr1 = 0U;
 	uint32_t mask = 0U;
-	__IO uint32_t *gpio_out_reg = GPIO_OUT_BASE(config);
 
 	/* Validate pin number range in terms of current port */
 	if ((valid_ctrl_masks[config->port_num] & BIT(pin)) == 0U) {
@@ -88,7 +87,22 @@ static int gpio_xec_configure(const struct device *dev,
 	mask |= MCHP_GPIO_CTRL_DIR_MASK;
 	mask |= MCHP_GPIO_CTRL_INPAD_DIS_MASK;
 	mask |= MCHP_GPIO_CTRL_PWRG_MASK;
-	pcr1 |= MCHP_GPIO_CTRL_DIR_INPUT;
+	mask |= MCHP_GPIO_CTRL_AOD_MASK;
+
+	current_pcr1 = config->pcr1_base + pin;
+
+	if (flags == GPIO_DISCONNECTED) {
+		pcr1 |= MCHP_GPIO_CTRL_PWRG_OFF;
+		*current_pcr1 = (*current_pcr1 & ~mask) | pcr1;
+		return 0;
+	}
+
+	pcr1 = MCHP_GPIO_CTRL_PWRG_VTR_IO;
+
+	/* Always enable input pad */
+	if (*current_pcr1 & BIT(MCHP_GPIO_CTRL_INPAD_DIS_POS)) {
+		*current_pcr1 &= ~BIT(MCHP_GPIO_CTRL_INPAD_DIS_POS);
+	}
 
 	/* Figure out the pullup/pulldown configuration and keep it in the
 	 * pcr1 variable
@@ -114,37 +128,32 @@ static int gpio_xec_configure(const struct device *dev,
 		pcr1 |= MCHP_GPIO_CTRL_BUFT_PUSHPULL;
 	}
 
-	/* Use GPIO output register to control pin output, instead of
-	 * using the control register (=> alternate output disable).
-	 */
-	mask |= MCHP_GPIO_CTRL_AOD_MASK;
-	pcr1 |= MCHP_GPIO_CTRL_AOD_DIS;
-
-	/* Make sure disconnected on first control register write */
-	if (flags == GPIO_DISCONNECTED) {
-		pcr1 |= MCHP_GPIO_CTRL_PWRG_OFF;
-	}
-
-	/* Now write contents of pcr1 variable to the PCR1 register that
-	 * corresponds to the GPIO being configured.
-	 * AOD is 1 and direction is input. HW will allow use to set the
-	 * GPIO parallel output bit for this pin and with the pin direction
-	 * as input no glitch will occur.
-	 */
-	current_pcr1 = config->pcr1_base + pin;
-	*current_pcr1 = (*current_pcr1 & ~mask) | pcr1;
-
 	if ((flags & GPIO_OUTPUT) != 0U) {
+		mask |= MCHP_GPIO_CTRL_OUTV_HI;
 		if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0U) {
-			*gpio_out_reg |= BIT(pin);
+			pcr1 |= BIT(MCHP_GPIO_CTRL_OUTVAL_POS);
 		} else if ((flags & GPIO_OUTPUT_INIT_LOW) != 0U) {
-			*gpio_out_reg &= ~BIT(pin);
+			pcr1 &= ~BIT(MCHP_GPIO_CTRL_OUTVAL_POS);
+		} else { /* Copy current input state to output state */
+			if ((*current_pcr1 & MCHP_GPIO_CTRL_PWRG_MASK) ==
+			     MCHP_GPIO_CTRL_PWRG_OFF) {
+				*current_pcr1 = (*current_pcr1 &
+						 ~MCHP_GPIO_CTRL_PWRG_MASK) |
+						 MCHP_GPIO_CTRL_PWRG_VTR_IO;
+			}
+			if (*current_pcr1 & BIT(MCHP_GPIO_CTRL_INPAD_VAL_POS)) {
+				pcr1 |= BIT(MCHP_GPIO_CTRL_OUTVAL_POS);
+			} else {
+				pcr1 &= ~BIT(MCHP_GPIO_CTRL_OUTVAL_POS);
+			}
 		}
 
-		mask = MCHP_GPIO_CTRL_DIR_MASK;
-		pcr1 = MCHP_GPIO_CTRL_DIR_OUTPUT;
-		*current_pcr1 = (*current_pcr1 & ~mask) | pcr1;
+		pcr1 |= MCHP_GPIO_CTRL_DIR_OUTPUT;
 	}
+
+	*current_pcr1 = (*current_pcr1 & ~mask) | pcr1;
+	/* Control output bit becomes ready only and parallel output r/w */
+	*current_pcr1 = *current_pcr1 | BIT(MCHP_GPIO_CTRL_AOD_POS);
 
 	return 0;
 }
@@ -321,7 +330,7 @@ static void gpio_gpio_xec_port_isr(const struct device *dev)
 	gpio_fire_callbacks(&data->callbacks, dev, girq_result);
 }
 
-static const struct gpio_driver_api gpio_xec_driver_api = {
+static DEVICE_API(gpio, gpio_xec_driver_api) = {
 	.pin_configure = gpio_xec_configure,
 	.port_get_raw = gpio_xec_port_get_raw,
 	.port_set_masked_raw = gpio_xec_port_set_masked_raw,
@@ -332,7 +341,7 @@ static const struct gpio_driver_api gpio_xec_driver_api = {
 	.manage_callback = gpio_xec_manage_callback,
 };
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_000_036), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_000_036))
 static int gpio_xec_port000_036_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port000_036_config = {
@@ -376,9 +385,9 @@ static int gpio_xec_port000_036_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_000_036), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_000_036)) */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_040_076), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_040_076))
 static int gpio_xec_port040_076_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port040_076_config = {
@@ -422,9 +431,9 @@ static int gpio_xec_port040_076_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_040_076), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_040_076)) */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_100_136), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_100_136))
 static int gpio_xec_port100_136_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port100_136_config = {
@@ -468,9 +477,9 @@ static int gpio_xec_port100_136_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_100_136), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_100_136)) */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_140_176), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_140_176))
 static int gpio_xec_port140_176_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port140_176_config = {
@@ -514,9 +523,9 @@ static int gpio_xec_port140_176_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_140_176), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_140_176)) */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_200_236), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_200_236))
 static int gpio_xec_port200_236_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port200_236_config = {
@@ -560,9 +569,9 @@ static int gpio_xec_port200_236_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_200_236), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_200_236)) */
 
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_240_276), okay)
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_240_276))
 static int gpio_xec_port240_276_init(const struct device *dev);
 
 static const struct gpio_xec_config gpio_xec_port240_276_config = {
@@ -606,4 +615,4 @@ static int gpio_xec_port240_276_init(const struct device *dev)
 #endif
 	return 0;
 }
-#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(gpio_240_276), okay) */
+#endif /* DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gpio_240_276)) */

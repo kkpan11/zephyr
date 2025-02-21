@@ -11,6 +11,7 @@ LOG_MODULE_REGISTER(spi_opentitan);
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <soc.h>
 #include <stdbool.h>
 
@@ -169,7 +170,7 @@ static void spi_opentitan_xfer(const struct device *dev, const bool gpio_cs_cont
 		}
 
 		/* Keep CS asserted if another Tx segment remains or if two more Rx
-		 * segements remain (because we will handle one Rx segment after the
+		 * segments remain (because we will handle one Rx segment after the
 		 * forthcoming transaction).
 		 */
 		if (ctx->tx_count > 0 || ctx->rx_count > 1)  {
@@ -301,10 +302,13 @@ static int spi_opentitan_release(const struct device *dev,
 
 /* Device Instantiation */
 
-static struct spi_driver_api spi_opentitan_api = {
+static DEVICE_API(spi, spi_opentitan_api) = {
 	.transceive = spi_opentitan_transceive,
 #ifdef CONFIG_SPI_ASYNC
 	.transceive_async = spi_opentitan_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = spi_opentitan_release,
 };
@@ -319,7 +323,7 @@ static struct spi_driver_api spi_opentitan_api = {
 		.base = DT_INST_REG_ADDR(n), \
 		.f_input = DT_INST_PROP(n, clock_frequency), \
 	}; \
-	DEVICE_DT_INST_DEFINE(n, \
+	SPI_DEVICE_DT_INST_DEFINE(n, \
 			spi_opentitan_init, \
 			NULL, \
 			&spi_opentitan_data_##n, \

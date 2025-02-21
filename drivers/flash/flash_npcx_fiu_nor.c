@@ -14,7 +14,7 @@
 #include <soc.h>
 #ifdef CONFIG_USERSPACE
 #include <zephyr/syscall.h>
-#include <zephyr/syscall_handler.h>
+#include <zephyr/internal/syscall_handler.h>
 #endif
 
 #include "flash_npcx_fiu_qspi.h"
@@ -453,7 +453,7 @@ static int flash_npcx_nor_ex_op(const struct device *dev, uint16_t code,
 		struct npcx_ex_ops_uma_out out_copy;
 
 		if (syscall_trap) {
-			Z_OOPS(z_user_from_copy(&in_copy, op_in, sizeof(in_copy)));
+			K_OOPS(k_usermode_from_copy(&in_copy, op_in, sizeof(in_copy)));
 			op_in = &in_copy;
 			op_out = &out_copy;
 		}
@@ -462,7 +462,7 @@ static int flash_npcx_nor_ex_op(const struct device *dev, uint16_t code,
 		ret = flash_npcx_nor_ex_exec_uma(dev, op_in, op_out);
 #ifdef CONFIG_USERSPACE
 		if (ret == 0 && syscall_trap) {
-			Z_OOPS(z_user_to_copy(out, op_out, sizeof(out_copy)));
+			K_OOPS(k_usermode_to_copy(out, op_out, sizeof(out_copy)));
 		}
 #endif
 		break;
@@ -474,7 +474,7 @@ static int flash_npcx_nor_ex_op(const struct device *dev, uint16_t code,
 		struct npcx_ex_ops_qspi_oper_in in_copy;
 
 		if (syscall_trap) {
-			Z_OOPS(z_user_from_copy(&in_copy, op_in, sizeof(in_copy)));
+			K_OOPS(k_usermode_from_copy(&in_copy, op_in, sizeof(in_copy)));
 			op_in = &in_copy;
 		}
 #endif
@@ -495,7 +495,7 @@ static int flash_npcx_nor_ex_op(const struct device *dev, uint16_t code,
 		ret = flash_npcx_nor_ex_get_spi_spec(dev, op_out);
 #ifdef CONFIG_USERSPACE
 		if (ret == 0 && syscall_trap) {
-			Z_OOPS(z_user_to_copy(out, op_out, sizeof(out_copy)));
+			K_OOPS(k_usermode_to_copy(out, op_out, sizeof(out_copy)));
 		}
 #endif
 		break;
@@ -509,7 +509,7 @@ static int flash_npcx_nor_ex_op(const struct device *dev, uint16_t code,
 }
 #endif
 
-static const struct flash_driver_api flash_npcx_nor_driver_api = {
+static DEVICE_API(flash, flash_npcx_nor_driver_api) = {
 	.read = flash_npcx_nor_read,
 	.write = flash_npcx_nor_write,
 	.erase = flash_npcx_nor_erase,
@@ -587,8 +587,22 @@ static int flash_npcx_nor_init(const struct device *dev)
 		}
 	}
 
+	if (config->qspi_cfg.is_logical_low_dev && IS_ENABLED(CONFIG_FLASH_NPCX_FIU_DRA_V2)) {
+		qspi_npcx_fiu_set_spi_size(config->qspi_bus, &config->qspi_cfg);
+	}
+
 	return 0;
 }
+
+#define NPCX_FLASH_IS_LOGICAL_LOW_DEV(n)					\
+	(DT_PROP(DT_PARENT(DT_DRV_INST(n)), en_direct_access_2dev) &&		\
+	 (DT_PROP(DT_PARENT(DT_DRV_INST(n)), flash_dev_inv) ==			\
+	  ((DT_INST_PROP(n, qspi_flags) & NPCX_QSPI_SEC_FLASH_SL) ==		\
+	   NPCX_QSPI_SEC_FLASH_SL)))
+
+#define NPCX_FLASH_SPI_ALLOCATE_SIZE(n)						\
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, spi_dev_size),			\
+		    (DT_INST_STRING_TOKEN(n, spi_dev_size)), (0xFF))
 
 #define NPCX_FLASH_NOR_INIT(n)							\
 BUILD_ASSERT(DT_INST_QUAD_EN_PROP_OR(n) == JESD216_DW15_QER_NONE ||		\
@@ -606,6 +620,8 @@ static const struct flash_npcx_nor_config flash_npcx_nor_config_##n = {		\
 		.enter_4ba = DT_INST_PROP_OR(n, enter_4byte_addr, 0),		\
 		.qer_type = DT_INST_QUAD_EN_PROP_OR(n),				\
 		.rd_mode = DT_INST_STRING_TOKEN(n, rd_mode),			\
+		.is_logical_low_dev = NPCX_FLASH_IS_LOGICAL_LOW_DEV(n),		\
+		.spi_dev_sz = NPCX_FLASH_SPI_ALLOCATE_SIZE(n),			\
 	},									\
 	IF_ENABLED(CONFIG_FLASH_PAGE_LAYOUT, (					\
 		.layout = {							\

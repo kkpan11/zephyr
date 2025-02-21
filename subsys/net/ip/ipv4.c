@@ -17,14 +17,16 @@ LOG_MODULE_REGISTER(net_ipv4, CONFIG_NET_IPV4_LOG_LEVEL);
 #include <zephyr/net/net_stats.h>
 #include <zephyr/net/net_context.h>
 #include <zephyr/net/virtual.h>
+#include <zephyr/net/ethernet.h>
 #include "net_private.h"
 #include "connection.h"
 #include "net_stats.h"
 #include "icmpv4.h"
 #include "udp_internal.h"
 #include "tcp_internal.h"
-#include "dhcpv4.h"
+#include "dhcpv4/dhcpv4_internal.h"
 #include "ipv4.h"
+#include "pmtu.h"
 
 BUILD_ASSERT(sizeof(struct in_addr) == NET_IPV4_ADDR_SIZE);
 
@@ -37,8 +39,7 @@ int net_ipv4_create_full(struct net_pkt *pkt,
 			 uint8_t tos,
 			 uint16_t id,
 			 uint8_t flags,
-			 uint16_t offset,
-			 uint8_t ttl)
+			 uint16_t offset)
 {
 	NET_PKT_DATA_ACCESS_CONTIGUOUS_DEFINE(ipv4_access, struct net_ipv4_hdr);
 	struct net_ipv4_hdr *ipv4_hdr;
@@ -55,10 +56,24 @@ int net_ipv4_create_full(struct net_pkt *pkt,
 	ipv4_hdr->id[1]     = id;
 	ipv4_hdr->offset[0] = (offset >> 8) | (flags << 5);
 	ipv4_hdr->offset[1] = offset;
-	ipv4_hdr->ttl       = ttl;
 
-	if (ttl == 0U) {
-		ipv4_hdr->ttl = net_if_ipv4_get_ttl(net_pkt_iface(pkt));
+	ipv4_hdr->ttl = net_pkt_ipv4_ttl(pkt);
+	if (ipv4_hdr->ttl == 0U) {
+		if (net_ipv4_is_addr_mcast(dst)) {
+			if (net_pkt_context(pkt) != NULL) {
+				ipv4_hdr->ttl =
+					net_context_get_ipv4_mcast_ttl(net_pkt_context(pkt));
+			} else {
+				ipv4_hdr->ttl = net_if_ipv4_get_mcast_ttl(net_pkt_iface(pkt));
+			}
+		} else {
+			if (net_pkt_context(pkt) != NULL) {
+				ipv4_hdr->ttl =
+					net_context_get_ipv4_ttl(net_pkt_context(pkt));
+			} else {
+				ipv4_hdr->ttl = net_if_ipv4_get_ttl(net_pkt_iface(pkt));
+			}
+		}
 	}
 
 	ipv4_hdr->proto     = 0U;
@@ -77,14 +92,18 @@ int net_ipv4_create(struct net_pkt *pkt,
 		    const struct in_addr *dst)
 {
 	uint8_t tos = 0;
+	uint8_t flags = 0U;
 
 	if (IS_ENABLED(CONFIG_NET_IP_DSCP_ECN)) {
 		net_ipv4_set_dscp(&tos, net_pkt_ip_dscp(pkt));
 		net_ipv4_set_ecn(&tos, net_pkt_ip_ecn(pkt));
 	}
 
-	return net_ipv4_create_full(pkt, src, dst, tos, 0U, 0U, 0U,
-				    net_pkt_ipv4_ttl(pkt));
+	if (IS_ENABLED(CONFIG_NET_IPV4_PMTU) && net_pkt_ipv4_pmtu(pkt)) {
+		flags = NET_IPV4_DF;
+	}
+
+	return net_ipv4_create_full(pkt, src, dst, tos, 0U, flags, 0U);
 }
 
 int net_ipv4_finalize(struct net_pkt *pkt, uint8_t next_header_proto)
@@ -110,20 +129,21 @@ int net_ipv4_finalize(struct net_pkt *pkt, uint8_t next_header_proto)
 	ipv4_hdr->len   = htons(net_pkt_get_len(pkt));
 	ipv4_hdr->proto = next_header_proto;
 
-	if (net_if_need_calc_tx_checksum(net_pkt_iface(pkt))) {
+	if (net_if_need_calc_tx_checksum(net_pkt_iface(pkt), NET_IF_CHECKSUM_IPV4_HEADER)) {
 		ipv4_hdr->chksum = net_calc_chksum_ipv4(pkt);
 	}
 
 	net_pkt_set_data(pkt, &ipv4_access);
+	net_pkt_set_ll_proto_type(pkt, NET_ETH_PTYPE_IP);
 
 	if (IS_ENABLED(CONFIG_NET_UDP) &&
 	    next_header_proto == IPPROTO_UDP) {
-		return net_udp_finalize(pkt);
+		return net_udp_finalize(pkt, false);
 	} else if (IS_ENABLED(CONFIG_NET_TCP) &&
 		   next_header_proto == IPPROTO_TCP) {
-		return net_tcp_finalize(pkt);
+		return net_tcp_finalize(pkt, false);
 	} else if (next_header_proto == IPPROTO_ICMP) {
-		return net_icmpv4_finalize(pkt);
+		return net_icmpv4_finalize(pkt, false);
 	}
 
 	return 0;
@@ -184,7 +204,7 @@ int net_ipv4_parse_hdr_options(struct net_pkt *pkt,
 			break;
 
 		case NET_IPV4_OPTS_EO:
-			/* Options length should be zero, when cursor reachs to
+			/* Options length should be zero, when cursor reaches to
 			 * End of options.
 			 */
 			if (total_opts_len) {
@@ -220,7 +240,7 @@ int net_ipv4_parse_hdr_options(struct net_pkt *pkt,
 }
 #endif
 
-enum net_verdict net_ipv4_input(struct net_pkt *pkt)
+enum net_verdict net_ipv4_input(struct net_pkt *pkt, bool is_loopback)
 {
 	NET_PKT_DATA_ACCESS_CONTIGUOUS_DEFINE(ipv4_access, struct net_ipv4_hdr);
 	NET_PKT_DATA_ACCESS_DEFINE(udp_access, struct net_udp_hdr);
@@ -234,7 +254,7 @@ enum net_verdict net_ipv4_input(struct net_pkt *pkt)
 	uint8_t opts_len;
 	int pkt_len;
 
-#if defined(CONFIG_NET_L2_VIRTUAL)
+#if defined(CONFIG_NET_L2_IPIP)
 	struct net_pkt_cursor hdr_start;
 
 	net_pkt_cursor_backup(pkt, &hdr_start);
@@ -281,6 +301,19 @@ enum net_verdict net_ipv4_input(struct net_pkt *pkt)
 		net_pkt_update_length(pkt, pkt_len);
 	}
 
+	if (!is_loopback) {
+		if (net_ipv4_is_addr_loopback((struct in_addr *)hdr->dst) ||
+		    net_ipv4_is_addr_loopback((struct in_addr *)hdr->src)) {
+			NET_DBG("DROP: localhost packet");
+			goto drop;
+		}
+
+		if (net_ipv4_is_my_addr((struct in_addr *)hdr->src)) {
+			NET_DBG("DROP: src addr is %s", "mine");
+			goto drop;
+		}
+	}
+
 	if (net_ipv4_is_addr_mcast((struct in_addr *)hdr->src)) {
 		NET_DBG("DROP: src addr is %s", "mcast");
 		goto drop;
@@ -292,12 +325,13 @@ enum net_verdict net_ipv4_input(struct net_pkt *pkt)
 	}
 
 	if (net_ipv4_is_addr_unspecified((struct in_addr *)hdr->src) &&
-	    !net_ipv4_is_addr_bcast(net_pkt_iface(pkt), (struct in_addr *)hdr->dst)) {
+	    !net_ipv4_is_addr_bcast(net_pkt_iface(pkt), (struct in_addr *)hdr->dst) &&
+	    (hdr->proto != IPPROTO_IGMP)) {
 		NET_DBG("DROP: src addr is %s", "unspecified");
 		goto drop;
 	}
 
-	if (net_if_need_calc_rx_checksum(net_pkt_iface(pkt)) &&
+	if (net_if_need_calc_rx_checksum(net_pkt_iface(pkt), NET_IF_CHECKSUM_IPV4_HEADER) &&
 	    net_calc_chksum_ipv4(pkt) != 0U) {
 		NET_DBG("DROP: invalid chksum");
 		goto drop;
@@ -377,21 +411,27 @@ enum net_verdict net_ipv4_input(struct net_pkt *pkt)
 		}
 		break;
 
-#if defined(CONFIG_NET_L2_VIRTUAL)
+#if defined(CONFIG_NET_L2_IPIP)
 	case IPPROTO_IPV6:
 	case IPPROTO_IPIP: {
-		struct net_addr remote_addr;
+		struct sockaddr_in remote_addr = { 0 };
+		struct net_if *tunnel_iface;
 
-		remote_addr.family = AF_INET;
-		net_ipv4_addr_copy_raw((uint8_t *)&remote_addr.in_addr, hdr->src);
+		remote_addr.sin_family = AF_INET;
+		net_ipv4_addr_copy_raw((uint8_t *)&remote_addr.sin_addr, hdr->src);
+
+		net_pkt_set_remote_address(pkt, (struct sockaddr *)&remote_addr,
+					   sizeof(struct sockaddr_in));
 
 		/* Get rid of the old IP header */
 		net_pkt_cursor_restore(pkt, &hdr_start);
 		net_pkt_pull(pkt, net_pkt_ip_hdr_len(pkt) +
 			     net_pkt_ipv4_opts_len(pkt));
 
-		return net_virtual_input(net_pkt_iface(pkt), &remote_addr,
-					 pkt);
+		tunnel_iface = net_ipip_get_virtual_interface(net_pkt_iface(pkt));
+		if (tunnel_iface != NULL && net_if_l2(tunnel_iface)->recv != NULL) {
+			return net_if_l2(tunnel_iface)->recv(net_pkt_iface(pkt), pkt);
+		}
 	}
 #endif
 	}
@@ -412,9 +452,43 @@ drop:
 	return NET_DROP;
 }
 
+enum net_verdict net_ipv4_prepare_for_send(struct net_pkt *pkt)
+{
+	if (IS_ENABLED(CONFIG_NET_IPV4_PMTU)) {
+		struct net_pmtu_entry *entry;
+		struct sockaddr_in dst = {
+			.sin_family = AF_INET,
+		};
+		int ret;
+
+		net_ipv4_addr_copy_raw((uint8_t *)&dst.sin_addr,
+				       NET_IPV4_HDR(pkt)->dst);
+		entry = net_pmtu_get_entry((struct sockaddr *)&dst);
+		if (entry == NULL) {
+			ret = net_pmtu_update_mtu((struct sockaddr *)&dst,
+						  net_if_get_mtu(net_pkt_iface(pkt)));
+			if (ret < 0) {
+				NET_DBG("Cannot update PMTU for %s (%d)",
+					net_sprint_ipv4_addr(&dst.sin_addr),
+					ret);
+			}
+		}
+	}
+
+#if defined(CONFIG_NET_IPV4_FRAGMENT)
+	return net_ipv4_prepare_for_send_fragment(pkt);
+#else
+	return NET_OK;
+#endif
+}
+
 void net_ipv4_init(void)
 {
 	if (IS_ENABLED(CONFIG_NET_IPV4_FRAGMENT)) {
 		net_ipv4_setup_fragment_buffers();
+	}
+
+	if (IS_ENABLED(CONFIG_NET_IPV4_ACD)) {
+		net_ipv4_acd_init();
 	}
 }

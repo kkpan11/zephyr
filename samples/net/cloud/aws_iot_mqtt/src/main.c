@@ -5,7 +5,6 @@
  */
 
 #include "creds/creds.h"
-#include "dhcp.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -14,12 +13,11 @@
 #include <zephyr/net/socket.h>
 #include <zephyr/net/dns_resolve.h>
 #include <zephyr/net/mqtt.h>
-#include <zephyr/net/sntp.h>
 #include <zephyr/net/tls_credentials.h>
 #include <zephyr/data/json.h>
-#include <zephyr/random/rand32.h>
-#include <zephyr/posix/time.h>
+#include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
+#include "net_sample_common.h"
 
 
 #if defined(CONFIG_MBEDTLS_MEMORY_DEBUG)
@@ -30,7 +28,7 @@ LOG_MODULE_REGISTER(aws, LOG_LEVEL_DBG);
 
 #define SNTP_SERVER "0.pool.ntp.org"
 
-#define AWS_BROKER_PORT "8883"
+#define AWS_BROKER_PORT CONFIG_AWS_MQTT_PORT
 
 #define MQTT_BUFFER_SIZE 256u
 #define APP_BUFFER_SIZE	 4096u
@@ -54,11 +52,15 @@ static uint32_t messages_received_counter;
 static bool do_publish;	  /* Trigger client to publish */
 static bool do_subscribe; /* Trigger client to subscribe */
 
+#if (CONFIG_AWS_MQTT_PORT == 443 && !defined(CONFIG_MQTT_LIB_WEBSOCKET))
+static const char * const alpn_list[] = {"x-amzn-mqtt-ca"};
+#endif
+
 #define TLS_TAG_DEVICE_CERTIFICATE 1
 #define TLS_TAG_DEVICE_PRIVATE_KEY 1
 #define TLS_TAG_AWS_CA_CERTIFICATE 2
 
-static sec_tag_t sec_tls_tags[] = {
+static const sec_tag_t sec_tls_tags[] = {
 	TLS_TAG_DEVICE_CERTIFICATE,
 	TLS_TAG_AWS_CA_CERTIFICATE,
 };
@@ -125,6 +127,7 @@ static int publish_message(const char *topic, size_t topic_len, uint8_t *payload
 	struct mqtt_publish_param msg;
 
 	msg.retain_flag = 0u;
+	msg.dup_flag = 0u;
 	msg.message.topic.topic.utf8 = topic;
 	msg.message.topic.topic.size = topic_len;
 	msg.message.topic.qos = CONFIG_AWS_QOS;
@@ -266,6 +269,10 @@ static void aws_client_setup(void)
 	tls_config->sec_tag_count = ARRAY_SIZE(sec_tls_tags);
 	tls_config->hostname = CONFIG_AWS_ENDPOINT;
 	tls_config->cert_nocopy = TLS_CERT_NOCOPY_NONE;
+#if (CONFIG_AWS_MQTT_PORT == 443 && !defined(CONFIG_MQTT_LIB_WEBSOCKET))
+	tls_config->alpn_protocol_name_list = alpn_list;
+	tls_config->alpn_protocol_name_count = ARRAY_SIZE(alpn_list);
+#endif
 }
 
 struct backoff_context {
@@ -356,7 +363,7 @@ void aws_client_loop(void)
 {
 	int rc;
 	int timeout;
-	struct zsock_pollfd fds;
+	struct pollfd fds;
 
 	aws_client_setup();
 
@@ -366,13 +373,13 @@ void aws_client_loop(void)
 	}
 
 	fds.fd = client_ctx.transport.tcp.sock;
-	fds.events = ZSOCK_POLLIN;
+	fds.events = POLLIN;
 
 	for (;;) {
 		timeout = mqtt_keepalive_time_left(&client_ctx);
-		rc = zsock_poll(&fds, 1u, timeout);
+		rc = poll(&fds, 1u, timeout);
 		if (rc >= 0) {
-			if (fds.revents & ZSOCK_POLLIN) {
+			if (fds.revents & POLLIN) {
 				rc = mqtt_input(&client_ctx);
 				if (rc != 0) {
 					LOG_ERR("Failed to read MQTT input: %d", rc);
@@ -380,7 +387,7 @@ void aws_client_loop(void)
 				}
 			}
 
-			if (fds.revents & (ZSOCK_POLLHUP | ZSOCK_POLLERR)) {
+			if (fds.revents & (POLLHUP | POLLERR)) {
 				LOG_ERR("Socket closed/error");
 				break;
 			}
@@ -409,67 +416,45 @@ void aws_client_loop(void)
 cleanup:
 	mqtt_disconnect(&client_ctx);
 
-	zsock_close(fds.fd);
+	close(fds.fd);
 	fds.fd = -1;
-}
-
-int sntp_sync_time(void)
-{
-	int rc;
-	struct sntp_time now;
-	struct timespec tspec;
-
-	rc = sntp_simple(SNTP_SERVER, SYS_FOREVER_MS, &now);
-	if (rc == 0) {
-		tspec.tv_sec = now.seconds;
-		tspec.tv_nsec = ((uint64_t)now.fraction * (1000lu * 1000lu * 1000lu)) >> 32;
-
-		clock_settime(CLOCK_REALTIME, &tspec);
-
-		LOG_DBG("Acquired time from NTP server: %u", (uint32_t)tspec.tv_sec);
-	} else {
-		LOG_ERR("Failed to acquire SNTP, code %d\n", rc);
-	}
-	return rc;
 }
 
 static int resolve_broker_addr(struct sockaddr_in *broker)
 {
 	int ret;
-	struct zsock_addrinfo *ai = NULL;
+	struct addrinfo *ai = NULL;
 
-	const struct zsock_addrinfo hints = {
+	const struct addrinfo hints = {
 		.ai_family = AF_INET,
 		.ai_socktype = SOCK_STREAM,
 		.ai_protocol = 0,
 	};
+	char port_string[6] = {0};
 
-	ret = zsock_getaddrinfo(CONFIG_AWS_ENDPOINT, AWS_BROKER_PORT, &hints, &ai);
+	sprintf(port_string, "%d", AWS_BROKER_PORT);
+	ret = getaddrinfo(CONFIG_AWS_ENDPOINT, port_string, &hints, &ai);
 	if (ret == 0) {
 		char addr_str[INET_ADDRSTRLEN];
 
 		memcpy(broker, ai->ai_addr, MIN(ai->ai_addrlen, sizeof(struct sockaddr_storage)));
 
-		zsock_inet_ntop(AF_INET, &broker->sin_addr, addr_str, sizeof(addr_str));
+		inet_ntop(AF_INET, &broker->sin_addr, addr_str, sizeof(addr_str));
 		LOG_INF("Resolved: %s:%u", addr_str, htons(broker->sin_port));
 	} else {
 		LOG_ERR("failed to resolve hostname err = %d (errno = %d)", ret, errno);
 	}
 
-	zsock_freeaddrinfo(ai);
+	freeaddrinfo(ai);
 
 	return ret;
 }
 
 int main(void)
 {
-#if defined(CONFIG_NET_DHCPV4)
-	app_dhcpv4_startup();
-#endif
-
-	sntp_sync_time();
-
 	setup_credentials();
+
+	wait_for_network();
 
 	for (;;) {
 		resolve_broker_addr(&aws_broker);

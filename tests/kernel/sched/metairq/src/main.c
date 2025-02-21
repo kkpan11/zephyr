@@ -40,7 +40,7 @@
 #define CREATE_PARTICIPANT_THREAD(id, pri, entry)                                      \
 		k_thread_create(&thread_##id##_thread_data, thread_##id##_stack_area,  \
 			K_THREAD_STACK_SIZEOF(thread_##id##_stack_area),               \
-			(k_thread_entry_t)entry,                                       \
+			entry,                                                         \
 			NULL, NULL, NULL,                                              \
 			pri, PARTICIPANT_THREAD_OPTIONS, K_FOREVER);
 #define START_PARTICIPANT_THREAD(id) k_thread_start(&(thread_##id##_thread_data));
@@ -59,8 +59,12 @@ volatile int coop_cnt2;
 #define LOOP_CNT  4 /* Number of times low priority thread waits */
 
 /* Meta-IRQ thread */
-void metairq_thread(void)
+void metairq_thread(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	k_sem_take(&metairq_sem, K_FOREVER);
 
 	printk("metairq start\n");
@@ -73,6 +77,8 @@ void metairq_thread(void)
 
 	k_msleep(WAIT_MS);
 
+	zassert_not_equal(coop_cnt2, LOOP_CNT, "thread2 wasn't preempted");
+
 	printk("give sem1\n");
 	k_sem_give(&coop_sem1);
 
@@ -82,8 +88,12 @@ void metairq_thread(void)
 }
 
 /* High-priority cooperative thread */
-void coop_thread1(void)
+void coop_thread1(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	int cnt1, cnt2;
 
 	printk("thread1 take sem\n");
@@ -105,12 +115,18 @@ void coop_thread1(void)
 	cnt2 = coop_cnt2;
 	zassert_equal(cnt2, LOOP_CNT, "Unexpected cnt2 at end: %d", cnt2);
 
+	printk("thread1 end\n");
+
 	k_sem_give(&coop_sem1);
 }
 
 /* Low-priority cooperative thread */
-void coop_thread2(void)
+void coop_thread2(void *p1, void *p2, void *p3)
 {
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
 	int cnt1, cnt2;
 
 	printk("thread2 take sem\n");
@@ -142,6 +158,8 @@ void coop_thread2(void)
 	zassert_equal(cnt1, 0, "Unexpected cnt1 at end: %d", cnt1);
 	cnt2 = coop_cnt2;
 	zassert_equal(cnt2, LOOP_CNT, "Unexpected cnt2 at end: %d", cnt2);
+
+	printk("thread2 end\n");
 
 	k_sem_give(&coop_sem2);
 }
