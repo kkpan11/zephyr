@@ -114,6 +114,12 @@ Entropy
   And :kconfig:option:`CONFIG_FAKE_ENTROPY_NATIVE_POSIX` and its related options with
   :kconfig:option:`CONFIG_FAKE_ENTROPY_NATIVE_SIM` (:github:`86615`).
 
+Eeprom
+========
+
+* :dtcompatible:`ti,tmp116-eeprom` has been renamed to :dtcompatible:`ti,tmp11x-eeprom` because it
+  supports both tmp117 and tmp119.
+
 Ethernet
 ========
 
@@ -132,6 +138,9 @@ Ethernet
 * ``ethernet_native_posix`` has been renamed ``ethernet_native_tap``, and with it its
   kconfig options: :kconfig:option:`CONFIG_ETH_NATIVE_POSIX` and its related options have been
   deprecated in favor of :kconfig:option:`CONFIG_ETH_NATIVE_TAP` (:github:`86578`).
+
+* NuMaker Ethernet driver ``eth_numaker.c`` now supports ``gen_random_mac``,
+  and the EMAC data flash feature has been removed (:github:`87953`).
 
 Enhanced Serial Peripheral Interface (eSPI)
 ===========================================
@@ -161,6 +170,9 @@ Sensors
   :dtcompatible:`ltr,f216a` name has been replaced by :dtcompatible:`liteon,ltrf216a`.
   The choice :kconfig:option:`DT_HAS_LTR_F216A_ENABLED` has been replaced with
   :kconfig:option:`DT_HAS_LITEON_LTRF216A_ENABLED` (:github:`85453`)
+
+* :dtcompatible:`ti,tmp116` has been renamed to :dtcompatible:`ti,tmp11x` because it supports
+  tmp116, tmp117 and tmp119.
 
 Serial
 =======
@@ -262,6 +274,11 @@ Networking
   as ``AF_PACKET`` sockets should only accept IEEE 802.3 protocol numbers. As an
   alternative, ``AF_PACKET/SOCK_DGRAM/ETH_P_ALL`` or ``AF_INET(6)/SOCK_RAW/IPPROTO_IP``
   sockets can be used, depending on the actual use case.
+
+* The HTTP server now respects the configured ``_concurrent`` and  ``_backlog`` values. Check that
+  you provide applicable values to :c:macro:`HTTP_SERVICE_DEFINE_EMPTY`,
+  :c:macro:`HTTPS_SERVICE_DEFINE_EMPTY`, :c:macro:`HTTP_SERVICE_DEFINE` and
+  :c:macro:`HTTPS_SERVICE_DEFINE`.
 
 SPI
 ===
