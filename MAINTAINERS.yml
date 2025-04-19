@@ -886,7 +886,6 @@ Demand Paging:
 Device Driver Model:
   status: maintained
   maintainers:
-    - gmarull
     - tbursztyka
   collaborators:
     - dcpleung
@@ -1034,9 +1033,9 @@ Documentation:
 Documentation Infrastructure:
   status: maintained
   maintainers:
-    - gmarull
     - kartben
   collaborators:
+    - gmarull
     - carlescufi
     - nashif
   files:
@@ -1822,7 +1821,6 @@ Release Notes:
 "Drivers: MFD":
   status: odd fixes
   collaborators:
-    - gmarull
     - aasinclair
   files:
     - drivers/mfd/
@@ -1933,8 +1931,8 @@ Release Notes:
     - samples.drivers.peci
 
 "Drivers: Pin Control":
-  status: maintained
-  maintainers:
+  status: odd fixes
+  collaborators:
     - gmarull
   files:
     - doc/hardware/pinctrl/
@@ -2392,8 +2390,6 @@ Input:
   status: maintained
   maintainers:
     - fabiobaltieri
-  collaborators:
-    - gmarull
   files:
     - doc/services/input/
     - drivers/input/
@@ -3459,19 +3455,23 @@ ADI Platforms:
     - microbuilder
   files:
     - boards/adi/
+    - boards/shields/eval*ardz/
     - boards/shields/pmod_acl/
     - drivers/*/*max*
     - drivers/*/*max*/
     - drivers/dac/dac_ltc*
     - drivers/ethernet/eth_adin*
+    - drivers/ethernet/phy/phy_adin*
     - drivers/mdio/mdio_adin*
-    - drivers/regulator/regulator_adp5360*
     - drivers/sensor/adi/
+    - drivers/stepper/adi_tmc/
     - dts/arm/adi/
     - dts/bindings/*/adi,*
     - dts/bindings/*/lltc,*
     - dts/bindings/*/maxim,*
     - soc/adi/
+  files-regex:
+    - ^drivers/(adc|dac|gpio|mfd|regulator)/.*adp?\d+
   labels:
     - "platform: ADI"
 
@@ -3487,7 +3487,6 @@ GD32 Platforms:
   maintainers:
     - nandojve
   collaborators:
-    - gmarull
     - soburi
     - cameled
   files:
@@ -4949,7 +4948,6 @@ West:
   maintainers:
     - nandojve
   collaborators:
-    - gmarull
     - soburi
   files:
     - modules/hal_gigadevice/
