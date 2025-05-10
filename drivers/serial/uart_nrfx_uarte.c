@@ -2435,11 +2435,30 @@ static int uarte_instance_init(const struct device *dev,
 	return pm_device_driver_init(dev, uarte_nrfx_pm_action);
 }
 
-#define UARTE_IRQ_CONFIGURE(idx, isr_handler)				       \
-	do {								       \
-		IRQ_CONNECT(DT_IRQN(UARTE(idx)), DT_IRQ(UARTE(idx), priority), \
-			    isr_handler, DEVICE_DT_GET(UARTE(idx)), 0);	       \
-		irq_enable(DT_IRQN(UARTE(idx)));			       \
+#define UARTE_GET_ISR(idx) \
+	COND_CODE_1(CONFIG_UART_##idx##_ASYNC, (uarte_nrfx_isr_async), (uarte_nrfx_isr_int))
+
+/* Declare interrupt handler for direct ISR. */
+#define UARTE_DIRECT_ISR_DECLARE(idx)					       \
+	IF_ENABLED(CONFIG_UART_NRFX_UARTE_DIRECT_ISR, (			       \
+		ISR_DIRECT_DECLARE(uarte_##idx##_direct_isr)		       \
+		{							       \
+			ISR_DIRECT_PM();				       \
+			UARTE_GET_ISR(idx)(DEVICE_DT_GET(UARTE(idx)));	       \
+			return 1;					       \
+		}							       \
+		))
+
+/* Depending on configuration standard or direct IRQ is connected. */
+#define UARTE_IRQ_CONNECT(idx, irqn, prio)							\
+	COND_CODE_1(CONFIG_UART_NRFX_UARTE_DIRECT_ISR,						\
+		(IRQ_DIRECT_CONNECT(irqn, prio, uarte_##idx##_direct_isr, 0)),			\
+		(IRQ_CONNECT(irqn, prio, UARTE_GET_ISR(idx), DEVICE_DT_GET(UARTE(idx)), 0)))
+
+#define UARTE_IRQ_CONFIGURE(idx)							   \
+	do {										   \
+		UARTE_IRQ_CONNECT(idx, DT_IRQN(UARTE(idx)), DT_IRQ(UARTE(idx), priority)); \
+		irq_enable(DT_IRQN(UARTE(idx)));					   \
 	} while (false)
 
 /* Low power mode is used when disable_rx is not defined or in async mode if
@@ -2512,6 +2531,18 @@ static int uarte_instance_init(const struct device *dev,
 			     : UART_CFG_FLOW_CTRL_NONE,			       \
 	}
 
+/* Macro determines if PM actions are interrupt safe. They are in case of
+ * asynchronous API (except for instance in fast power domain) and non-asynchronous
+ * API if RX is disabled. Macro must resolve to a literal 1 or 0.
+ */
+#define UARTE_PM_ISR_SAFE(idx)						       \
+	COND_CODE_1(INSTANCE_IS_FAST_PD(_, /*empty*/, idx, _),		       \
+		    (0),						       \
+		    (COND_CODE_1(CONFIG_UART_##idx##_ASYNC,		       \
+				 (PM_DEVICE_ISR_SAFE),			       \
+				 (COND_CODE_1(UARTE_PROP(idx, disable_rx),     \
+					      (PM_DEVICE_ISR_SAFE), (0))))))   \
+
 #define UART_NRF_UARTE_DEVICE(idx)					       \
 	NRF_DT_CHECK_NODE_HAS_PINCTRL_SLEEP(UARTE(idx));		       \
 	UARTE_INT_DRIVEN(idx);						       \
@@ -2573,19 +2604,17 @@ static int uarte_instance_init(const struct device *dev,
 				.precision = NRF_CLOCK_CONTROL_PRECISION_DEFAULT,\
 				},))					       \
 	};								       \
+	UARTE_DIRECT_ISR_DECLARE(idx)					       \
 	static int uarte_##idx##_init(const struct device *dev)		       \
 	{								       \
-		COND_CODE_1(CONFIG_UART_##idx##_ASYNC,			       \
-			   (UARTE_IRQ_CONFIGURE(idx, uarte_nrfx_isr_async);),  \
-			   (UARTE_IRQ_CONFIGURE(idx, uarte_nrfx_isr_int);))    \
+		UARTE_IRQ_CONFIGURE(idx);				       \
 		return uarte_instance_init(				       \
 			dev,						       \
 			IS_ENABLED(CONFIG_UART_##idx##_INTERRUPT_DRIVEN));     \
 	}								       \
 									       \
 	PM_DEVICE_DT_DEFINE(UARTE(idx), uarte_nrfx_pm_action,		       \
-			    COND_CODE_1(INSTANCE_IS_FAST_PD(_, /*empty*/, idx, _),\
-				    (0), (PM_DEVICE_ISR_SAFE)));	       \
+			    UARTE_PM_ISR_SAFE(idx));			       \
 									       \
 	DEVICE_DT_DEFINE(UARTE(idx),					       \
 		      uarte_##idx##_init,				       \
