@@ -20,12 +20,19 @@
 #include "sl_net_default_values.h"
 #include "sl_wifi.h"
 #include "sl_net.h"
+#include "sl_wifi_constants.h"
 
 #define SIWX91X_DRIVER_VERSION KERNEL_VERSION_STRING
 
 LOG_MODULE_REGISTER(siwx91x_wifi);
 
 NET_BUF_POOL_FIXED_DEFINE(siwx91x_tx_pool, 1, _NET_ETH_MAX_FRAME_SIZE, 0, NULL);
+
+enum {
+	REQUEST_TWT = 0,
+	SUGGEST_TWT = 1,
+	DEMAND_TWT = 2,
+};
 
 static int siwx91x_sl_to_z_mode(sl_wifi_interface_t interface)
 {
@@ -71,6 +78,55 @@ static int siwx91x_map_ap_security(enum wifi_security_type security)
 	}
 }
 
+static enum wifi_mfp_options siwx91x_set_sta_mfp_option(sl_wifi_security_t security,
+							enum wifi_mfp_options mfp_conf)
+{
+	uint8_t join_config;
+
+	switch (security) {
+	case SL_WIFI_OPEN:
+	case SL_WIFI_WPA:
+		return WIFI_MFP_DISABLE;
+	case SL_WIFI_WPA2:
+	case SL_WIFI_WPA_WPA2_MIXED:
+		if (mfp_conf == WIFI_MFP_REQUIRED) {
+			/* Handling the case for WPA2_SHA256 security type */
+			/* Directly enabling the MFP Required bit in the Join Feature
+			 * bitmap. This ensures that MFP is enforced for connections using
+			 * WPA2_SHA256.
+			 *
+			 * Note: This is a workaround to configure MFP as the current SDK
+			 * does not provide a dedicated API to configure MFP settings.
+			 * By manipulating the join feature bitmap directly, we achieve
+			 * the desired MFP configuration for enhanced security.
+			 *
+			 * This case will be updated in the future when the SDK adds
+			 * dedicated support for configuring MFP.
+			 */
+			sl_si91x_get_join_configuration(SL_WIFI_CLIENT_INTERFACE, &join_config);
+			join_config |= SL_SI91X_JOIN_FEAT_MFP_CAPABLE_REQUIRED;
+			sl_si91x_set_join_configuration(SL_WIFI_CLIENT_INTERFACE, join_config);
+			return WIFI_MFP_REQUIRED;
+		}
+		/* Handling the case for WPA2 security type */
+		/* Ensuring the connection happened in WPA2-PSK
+		 * by clearing the MFP Required bit in the Join Feature bitmap.
+		 */
+		sl_si91x_get_join_configuration(SL_WIFI_CLIENT_INTERFACE, &join_config);
+		join_config &= ~(SL_SI91X_JOIN_FEAT_MFP_CAPABLE_REQUIRED);
+		sl_si91x_set_join_configuration(SL_WIFI_CLIENT_INTERFACE, join_config);
+		return WIFI_MFP_OPTIONAL;
+	case SL_WIFI_WPA3:
+		return WIFI_MFP_REQUIRED;
+	case SL_WIFI_WPA3_TRANSITION:
+		return WIFI_MFP_OPTIONAL;
+	default:
+		return WIFI_MFP_DISABLE;
+	}
+
+	return WIFI_MFP_UNKNOWN;
+}
+
 static unsigned int siwx91x_on_join(sl_wifi_event_t event,
 				    char *result, uint32_t result_size, void *arg)
 {
@@ -96,6 +152,245 @@ static unsigned int siwx91x_on_join(sl_wifi_event_t event,
 	return 0;
 }
 
+static int siwx91x_status(const struct device *dev, struct wifi_iface_status *status)
+{
+	sl_si91x_rsp_wireless_info_t wlan_info = { };
+	struct siwx91x_dev *sidev = dev->data;
+	uint8_t join_config;
+	sl_wifi_interface_t interface;
+	int32_t rssi;
+	int ret;
+
+	__ASSERT(status, "status cannot be NULL");
+
+	memset(status, 0, sizeof(*status));
+
+	status->state = sidev->state;
+	if (sidev->state <= WIFI_STATE_INACTIVE) {
+		return 0;
+	}
+
+	interface = sl_wifi_get_default_interface();
+	ret = sl_wifi_get_wireless_info(&wlan_info);
+	if (ret) {
+		LOG_ERR("Failed to get the wireless info: 0x%x", ret);
+		return -EIO;
+	}
+
+	strncpy(status->ssid, wlan_info.ssid, WIFI_SSID_MAX_LEN);
+	status->ssid_len = strlen(status->ssid);
+	memcpy(status->bssid, wlan_info.mac_address, WIFI_MAC_ADDR_LEN);
+	status->wpa3_ent_type = WIFI_WPA3_ENTERPRISE_NA;
+
+	ret = sl_si91x_get_join_configuration(interface, &join_config);
+	if (ret != SL_STATUS_OK) {
+		LOG_ERR("Failed to get join configuration: 0x%x", ret);
+		return -EINVAL;
+	}
+
+	if (join_config & SL_SI91X_JOIN_FEAT_MFP_CAPABLE_REQUIRED) {
+		status->mfp = WIFI_MFP_REQUIRED;
+	} else if (join_config & SL_SI91X_JOIN_FEAT_MFP_CAPABLE_ONLY) {
+		status->mfp = WIFI_MFP_OPTIONAL;
+	} else {
+		status->mfp = WIFI_MFP_DISABLE;
+	}
+
+	if (interface & SL_WIFI_2_4GHZ_INTERFACE) {
+		status->band = WIFI_FREQ_BAND_2_4_GHZ;
+	}
+
+	if (FIELD_GET(SIWX91X_INTERFACE_MASK, interface) == SL_WIFI_CLIENT_INTERFACE) {
+		sl_wifi_operational_statistics_t operational_statistics = { };
+
+		status->link_mode = WIFI_LINK_MODE_UNKNOWN;
+		status->iface_mode = WIFI_MODE_INFRA;
+		status->channel = wlan_info.channel_number;
+		status->twt_capable = true;
+		ret = sl_wifi_get_signal_strength(SL_WIFI_CLIENT_INTERFACE, &rssi);
+		if (ret) {
+			LOG_ERR("Failed to get signal strength: 0x%x", ret);
+			return -EINVAL;
+		}
+		status->rssi = rssi;
+
+		ret = sl_wifi_get_operational_statistics(SL_WIFI_CLIENT_INTERFACE,
+							 &operational_statistics);
+		if (ret) {
+			LOG_ERR("Failed to get operational statistics: 0x%x", ret);
+			return -EINVAL;
+		}
+
+		status->beacon_interval = sys_get_le16(operational_statistics.beacon_interval);
+		status->dtim_period = operational_statistics.dtim_period;
+	} else if (FIELD_GET(SIWX91X_INTERFACE_MASK, interface) == SL_WIFI_AP_INTERFACE) {
+		sl_wifi_ap_configuration_t sl_ap_cfg = { };
+
+		ret = sl_wifi_get_ap_configuration(SL_WIFI_AP_INTERFACE, &sl_ap_cfg);
+		if (ret) {
+			LOG_ERR("Failed to get the AP configuration: 0x%x", ret);
+			return -EINVAL;
+		}
+
+		status->twt_capable = false;
+		status->link_mode = WIFI_4;
+		status->iface_mode = WIFI_MODE_AP;
+		status->channel = sl_ap_cfg.channel.channel;
+		status->beacon_interval = sl_ap_cfg.beacon_interval;
+		status->dtim_period = sl_ap_cfg.dtim_beacon_count;
+		wlan_info.sec_type = (uint8_t)sl_ap_cfg.security;
+	} else {
+		status->link_mode = WIFI_LINK_MODE_UNKNOWN;
+		status->iface_mode = WIFI_MODE_UNKNOWN;
+		status->channel = 0;
+
+		return -EINVAL;
+	}
+
+	switch (wlan_info.sec_type) {
+	case SL_WIFI_OPEN:
+		status->security = WIFI_SECURITY_TYPE_NONE;
+		break;
+	case SL_WIFI_WPA:
+		status->security = WIFI_SECURITY_TYPE_WPA_PSK;
+		break;
+	case SL_WIFI_WPA2:
+		status->security = WIFI_SECURITY_TYPE_PSK;
+		break;
+	case SL_WIFI_WPA_WPA2_MIXED:
+		status->security = WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL;
+		break;
+	case SL_WIFI_WPA3:
+		status->security = WIFI_SECURITY_TYPE_SAE;
+		break;
+	default:
+		status->security = WIFI_SECURITY_TYPE_UNKNOWN;
+	}
+
+	return ret;
+}
+
+static int siwx91x_disconnect(const struct device *dev)
+{
+	struct siwx91x_dev *sidev = dev->data;
+	int ret;
+
+	ret = sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
+	if (ret) {
+		return -EIO;
+	}
+	if (IS_ENABLED(CONFIG_WIFI_SILABS_SIWX91X_NET_STACK_NATIVE)) {
+		net_if_dormant_on(sidev->iface);
+	}
+	sidev->state = WIFI_STATE_DISCONNECTED;
+	return 0;
+}
+
+static int siwx91x_ap_disable(const struct device *dev)
+{
+	struct siwx91x_dev *sidev = dev->data;
+	int ret;
+
+	ret = sl_wifi_stop_ap(SL_WIFI_AP_2_4GHZ_INTERFACE);
+	if (ret) {
+		LOG_ERR("Failed to disable Wi-Fi AP mode: 0x%x", ret);
+		return -EIO;
+	}
+
+	sidev->state = WIFI_STATE_INTERFACE_DISABLED;
+	return ret;
+}
+
+static bool siwx91x_param_changed(struct wifi_iface_status *prev_params,
+				     struct wifi_connect_req_params *new_params)
+{
+	__ASSERT(prev_params, "prev params cannot be NULL");
+	__ASSERT(new_params, "new params cannot be NULL");
+
+	if (new_params->ssid_length != prev_params->ssid_len ||
+	    memcmp(new_params->ssid, prev_params->ssid, prev_params->ssid_len) != 0 ||
+	    new_params->security != prev_params->security) {
+		return true;
+	} else if (new_params->channel != WIFI_CHANNEL_ANY &&
+		   new_params->channel != prev_params->channel) {
+		return true;
+	}
+
+	return false;
+}
+
+static int siwx91x_ap_disable_if_required(const struct device *dev,
+					  struct wifi_connect_req_params *new_params)
+{
+	struct wifi_iface_status prev_params = { };
+	uint32_t prev_psk_length = WIFI_PSK_MAX_LEN;
+	uint8_t prev_psk[WIFI_PSK_MAX_LEN];
+	sl_net_credential_type_t psk_type;
+	int ret;
+
+	ret = siwx91x_status(dev, &prev_params);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (siwx91x_param_changed(&prev_params, new_params)) {
+		return siwx91x_ap_disable(dev);
+	}
+
+	if (new_params->security != WIFI_SECURITY_TYPE_NONE) {
+		ret = sl_net_get_credential(SL_NET_DEFAULT_WIFI_AP_CREDENTIAL_ID, &psk_type,
+					    prev_psk, &prev_psk_length);
+		if (ret < 0) {
+			LOG_ERR("Failed to get credentials: 0x%x", ret);
+			return -EIO;
+		}
+
+		if (new_params->psk_length != prev_psk_length ||
+		    memcmp(new_params->psk, prev_psk, prev_psk_length) != 0) {
+			return siwx91x_ap_disable(dev);
+		}
+	}
+
+	LOG_ERR("Device already in active state");
+	return -EALREADY;
+}
+
+static int siwx91x_disconnect_if_required(const struct device *dev,
+					  struct wifi_connect_req_params *new_params)
+{
+	struct wifi_iface_status prev_params = { };
+	uint32_t prev_psk_length = WIFI_PSK_MAX_LEN;
+	uint8_t prev_psk[WIFI_PSK_MAX_LEN];
+	sl_net_credential_type_t psk_type;
+	int ret;
+
+	ret = siwx91x_status(dev, &prev_params);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (siwx91x_param_changed(&prev_params, new_params)) {
+		return siwx91x_disconnect(dev);
+	}
+
+	if (new_params->security != WIFI_SECURITY_TYPE_NONE) {
+		ret = sl_net_get_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID, &psk_type,
+					    prev_psk, &prev_psk_length);
+		if (ret < 0) {
+			LOG_ERR("Failed to get credentials: 0x%x", ret);
+			return -EIO;
+		}
+
+		if (new_params->psk_length != prev_psk_length ||
+		    memcmp(new_params->psk, prev_psk, prev_psk_length) != 0) {
+			return siwx91x_disconnect(dev);
+		}
+	}
+
+	LOG_ERR("Device already in active state");
+	return -EALREADY;
+}
+
 static int siwx91x_ap_enable(const struct device *dev, struct wifi_connect_req_params *params)
 {
 	struct siwx91x_dev *sidev = dev->data;
@@ -119,6 +414,13 @@ static int siwx91x_ap_enable(const struct device *dev, struct wifi_connect_req_p
 		.options             = 0,
 		.is_11n_enabled      = 1,
 	};
+
+	if (sidev->state == WIFI_STATE_COMPLETED) {
+		ret = siwx91x_ap_disable_if_required(dev, params);
+		if (ret < 0) {
+			return ret;
+		}
+	}
 
 	if (params->band != WIFI_FREQ_BAND_UNKNOWN && params->band != WIFI_FREQ_BAND_2_4_GHZ) {
 		return -ENOTSUP;
@@ -154,7 +456,13 @@ static int siwx91x_ap_enable(const struct device *dev, struct wifi_connect_req_p
 	}
 
 	if (ret != SL_STATUS_OK) {
+		LOG_ERR("Failed to set credentials: 0x%x", ret);
 		return -EINVAL;
+	}
+
+	if (params->mfp != WIFI_MFP_DISABLE) {
+		LOG_WRN("Needed MFP disable but got MFP %s, hence setting to MFP disable",
+			wifi_mfp_txt(params->mfp));
 	}
 
 	ret = sl_wifi_start_ap(SL_WIFI_AP_INTERFACE | SL_WIFI_2_4GHZ_INTERFACE, &siwx91x_ap_cfg);
@@ -165,21 +473,6 @@ static int siwx91x_ap_enable(const struct device *dev, struct wifi_connect_req_p
 
 	sidev->state = WIFI_STATE_COMPLETED;
 	return 0;
-}
-
-static int siwx91x_ap_disable(const struct device *dev)
-{
-	struct siwx91x_dev *sidev = dev->data;
-	int ret;
-
-	ret = sl_wifi_stop_ap(SL_WIFI_AP_2_4GHZ_INTERFACE);
-	if (ret) {
-		LOG_ERR("Failed to disable Wi-Fi AP mode: 0x%x", ret);
-		return -EIO;
-	}
-
-	sidev->state = WIFI_STATE_INTERFACE_DISABLED;
-	return ret;
 }
 
 static int siwx91x_ap_sta_disconnect(const struct device *dev, const uint8_t *mac_addr)
@@ -245,7 +538,16 @@ static int siwx91x_connect(const struct device *dev, struct wifi_connect_req_par
 		.encryption = SL_WIFI_DEFAULT_ENCRYPTION,
 		.credential_id = SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID,
 	};
-	int ret;
+	struct siwx91x_dev *sidev = dev->data;
+	enum wifi_mfp_options mfp_conf;
+	int ret = 0;
+
+	if (sidev->state == WIFI_STATE_COMPLETED) {
+		ret = siwx91x_disconnect_if_required(dev, params);
+		if (ret < 0) {
+			return ret;
+		}
+	}
 
 	switch (params->security) {
 	case WIFI_SECURITY_TYPE_NONE:
@@ -287,13 +589,28 @@ static int siwx91x_connect(const struct device *dev, struct wifi_connect_req_par
 	}
 
 	if (params->psk_length) {
-		sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID, SL_NET_WIFI_PSK,
-				      params->psk, params->psk_length);
+		ret = sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID,
+					    SL_NET_WIFI_PSK, params->psk, params->psk_length);
+	} else if (params->sae_password_length) {
+		ret = sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID,
+					    SL_NET_WIFI_PSK, params->sae_password,
+					    params->sae_password_length);
 	}
 
-	if (params->sae_password_length) {
-		sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID, SL_NET_WIFI_PSK,
-				      params->sae_password, params->sae_password_length);
+	if (ret != SL_STATUS_OK) {
+		LOG_ERR("Failed to set credentials: 0x%x", ret);
+		return -EINVAL;
+	}
+
+	if (params->security == WIFI_SECURITY_TYPE_PSK_SHA256) {
+		mfp_conf = siwx91x_set_sta_mfp_option(wifi_config.security, WIFI_MFP_REQUIRED);
+	} else {
+		mfp_conf = siwx91x_set_sta_mfp_option(wifi_config.security, params->mfp);
+	}
+
+	if (params->mfp != mfp_conf) {
+		LOG_WRN("Needed MFP %s but got MFP %s, hence setting to MFP %s",
+			wifi_mfp_txt(mfp_conf), wifi_mfp_txt(params->mfp), wifi_mfp_txt(mfp_conf));
 	}
 
 	if (params->channel != WIFI_CHANNEL_ANY) {
@@ -308,22 +625,6 @@ static int siwx91x_connect(const struct device *dev, struct wifi_connect_req_par
 		return -EIO;
 	}
 
-	return 0;
-}
-
-static int siwx91x_disconnect(const struct device *dev)
-{
-	struct siwx91x_dev *sidev = dev->data;
-	int ret;
-
-	ret = sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
-	if (ret) {
-		return -EIO;
-	}
-	if (IS_ENABLED(CONFIG_WIFI_SILABS_SIWX91X_NET_STACK_NATIVE)) {
-		net_if_dormant_on(sidev->iface);
-	}
-	sidev->state = WIFI_STATE_DISCONNECTED;
 	return 0;
 }
 
@@ -405,10 +706,71 @@ static unsigned int siwx91x_on_scan(sl_wifi_event_t event, sl_wifi_scan_result_t
 	return 0;
 }
 
+static int
+siwx91x_configure_scan_dwell_time(sl_wifi_scan_type_t scan_type, uint16_t dwell_time_active,
+				  uint16_t dwell_time_passive,
+				  sl_wifi_advanced_scan_configuration_t *advanced_scan_config)
+{
+	int ret = 0;
+
+	if (dwell_time_active && (dwell_time_active < 5 || dwell_time_active > 1000)) {
+		LOG_ERR("Invalid active scan dwell time");
+		return -EINVAL;
+	}
+
+	if (dwell_time_passive && (dwell_time_passive < 10 || dwell_time_passive > 1000)) {
+		LOG_ERR("Invalid passive scan dwell time");
+		return -EINVAL;
+	}
+
+	switch (scan_type) {
+	case SL_WIFI_SCAN_TYPE_ACTIVE:
+		ret = sl_si91x_configure_timeout(SL_SI91X_CHANNEL_ACTIVE_SCAN_TIMEOUT,
+						 dwell_time_active);
+		break;
+	case SL_WIFI_SCAN_TYPE_PASSIVE:
+		ret = sl_si91x_configure_timeout(SL_SI91X_CHANNEL_PASSIVE_SCAN_TIMEOUT,
+						 dwell_time_passive);
+		break;
+	case SL_WIFI_SCAN_TYPE_ADV_SCAN:
+		__ASSERT(advanced_scan_config, "advanced_scan_config cannot be NULL");
+
+		if (!dwell_time_active) {
+			dwell_time_active = CONFIG_WIFI_SILABS_SIWX91X_ADV_ACTIVE_SCAN_DURATION;
+		}
+		advanced_scan_config->active_channel_time = dwell_time_active;
+
+		if (!dwell_time_passive) {
+			dwell_time_passive = CONFIG_WIFI_SILABS_SIWX91X_ADV_PASSIVE_SCAN_DURATION;
+		}
+		advanced_scan_config->passive_channel_time = dwell_time_passive;
+		break;
+	default:
+		break;
+	}
+
+	return ret;
+}
+
 static int siwx91x_scan(const struct device *dev, struct wifi_scan_params *z_scan_config,
 			scan_result_cb_t cb)
 {
 	sl_wifi_scan_configuration_t sl_scan_config = { };
+	sl_wifi_advanced_scan_configuration_t advanced_scan_config = {
+		.trigger_level = CONFIG_WIFI_SILABS_SIWX91X_ADV_SCAN_THRESHOLD,
+		.trigger_level_change = CONFIG_WIFI_SILABS_SIWX91X_ADV_RSSI_TOLERANCE_THRESHOLD,
+		.enable_multi_probe = CONFIG_WIFI_SILABS_SIWX91X_ADV_MULTIPROBE,
+		.enable_instant_scan = CONFIG_WIFI_SILABS_SIWX91X_ENABLE_INSTANT_SCAN,
+	};
+	sl_wifi_roam_configuration_t roam_configuration = {
+#ifdef CONFIG_WIFI_SILABS_SIWX91X_ENABLE_ROAMING
+		.trigger_level = CONFIG_WIFI_SILABS_SIWX91X_ROAMING_TRIGGER_LEVEL,
+		.trigger_level_change = CONFIG_WIFI_SILABS_SIWX91X_ROAMING_TRIGGER_LEVEL_CHANGE,
+#else
+		.trigger_level = SL_WIFI_NEVER_ROAM,
+		.trigger_level_change = 0,
+#endif
+	};
 	struct siwx91x_dev *sidev = dev->data;
 	sl_wifi_interface_t interface;
 	sl_wifi_ssid_t ssid = { };
@@ -433,17 +795,45 @@ static int siwx91x_scan(const struct device *dev, struct wifi_scan_params *z_sca
 		return -EINVAL;
 	}
 
-	if (z_scan_config->scan_type == WIFI_SCAN_TYPE_ACTIVE) {
-		sl_scan_config.type = SL_WIFI_SCAN_TYPE_ACTIVE;
-		ret = sl_si91x_configure_timeout(SL_SI91X_CHANNEL_ACTIVE_SCAN_TIMEOUT,
-						 z_scan_config->dwell_time_active);
+	if (sidev->state == WIFI_STATE_COMPLETED) {
+		siwx91x_configure_scan_dwell_time(SL_WIFI_SCAN_TYPE_ADV_SCAN,
+						  z_scan_config->dwell_time_active,
+						  z_scan_config->dwell_time_passive,
+						  &advanced_scan_config);
+
+		ret = sl_wifi_set_advanced_scan_configuration(&advanced_scan_config);
+		if (ret != SL_STATUS_OK) {
+			LOG_ERR("advanced scan configuration failed with status %x", ret);
+			return -EINVAL;
+		}
+
+		ret = sl_wifi_set_roam_configuration(interface, &roam_configuration);
+		if (ret != SL_STATUS_OK) {
+			LOG_ERR("roaming configuration failed with status %x", ret);
+			return -EINVAL;
+		}
+
+		sl_scan_config.type = SL_WIFI_SCAN_TYPE_ADV_SCAN;
+		sl_scan_config.periodic_scan_interval =
+			CONFIG_WIFI_SILABS_SIWX91X_ADV_SCAN_PERIODICITY;
 	} else {
-		sl_scan_config.type = SL_WIFI_SCAN_TYPE_PASSIVE;
-		ret = sl_si91x_configure_timeout(SL_SI91X_CHANNEL_PASSIVE_SCAN_TIMEOUT,
-						 z_scan_config->dwell_time_passive);
-	}
-	if (ret) {
-		return -EINVAL;
+		if (z_scan_config->scan_type == WIFI_SCAN_TYPE_ACTIVE) {
+			sl_scan_config.type = SL_WIFI_SCAN_TYPE_ACTIVE;
+			ret = siwx91x_configure_scan_dwell_time(SL_WIFI_SCAN_TYPE_ACTIVE,
+								z_scan_config->dwell_time_active,
+								z_scan_config->dwell_time_passive,
+								NULL);
+		} else {
+			sl_scan_config.type = SL_WIFI_SCAN_TYPE_PASSIVE;
+			ret = siwx91x_configure_scan_dwell_time(SL_WIFI_SCAN_TYPE_PASSIVE,
+								z_scan_config->dwell_time_active,
+								z_scan_config->dwell_time_passive,
+								NULL);
+		}
+		if (ret != SL_STATUS_OK) {
+			LOG_ERR("Failed to configure timeout");
+			return -EINVAL;
+		}
 	}
 
 	for (int i = 0; i < ARRAY_SIZE(z_scan_config->band_chan); i++) {
@@ -481,110 +871,6 @@ static int siwx91x_scan(const struct device *dev, struct wifi_scan_params *z_sca
 	sidev->state = WIFI_STATE_SCANNING;
 
 	return 0;
-}
-
-static int siwx91x_status(const struct device *dev, struct wifi_iface_status *status)
-{
-	sl_si91x_rsp_wireless_info_t wlan_info = { };
-	struct siwx91x_dev *sidev = dev->data;
-	sl_wifi_interface_t interface;
-	int32_t rssi;
-	int ret;
-
-	__ASSERT(status, "status cannot be NULL");
-
-	memset(status, 0, sizeof(*status));
-
-	status->state = sidev->state;
-	if (sidev->state <= WIFI_STATE_INACTIVE) {
-		return 0;
-	}
-
-	interface = sl_wifi_get_default_interface();
-	ret = sl_wifi_get_wireless_info(&wlan_info);
-	if (ret) {
-		LOG_ERR("Failed to get the wireless info: 0x%x", ret);
-		return -EIO;
-	}
-
-	strncpy(status->ssid, wlan_info.ssid, WIFI_SSID_MAX_LEN);
-	status->ssid_len = strlen(status->ssid);
-	memcpy(status->bssid, wlan_info.mac_address, WIFI_MAC_ADDR_LEN);
-	status->mfp = WIFI_MFP_UNKNOWN;
-	status->wpa3_ent_type = WIFI_WPA3_ENTERPRISE_NA;
-
-	if (interface & SL_WIFI_2_4GHZ_INTERFACE) {
-		status->band = WIFI_FREQ_BAND_2_4_GHZ;
-	}
-
-	if (FIELD_GET(SIWX91X_INTERFACE_MASK, interface) == SL_WIFI_CLIENT_INTERFACE) {
-		sl_wifi_operational_statistics_t operational_statistics = { };
-
-		status->link_mode = WIFI_LINK_MODE_UNKNOWN;
-		status->iface_mode = WIFI_MODE_INFRA;
-		status->channel = wlan_info.channel_number;
-		status->twt_capable = true;
-		ret = sl_wifi_get_signal_strength(SL_WIFI_CLIENT_INTERFACE, &rssi);
-		if (ret) {
-			LOG_ERR("Failed to get signal strength: 0x%x", ret);
-			return -EINVAL;
-		}
-		status->rssi = rssi;
-
-		ret = sl_wifi_get_operational_statistics(SL_WIFI_CLIENT_INTERFACE,
-							 &operational_statistics);
-		if (ret) {
-			LOG_ERR("Failed to get operational statistics: 0x%x", ret);
-			return -EINVAL;
-		}
-
-		status->beacon_interval = sys_get_le16(operational_statistics.beacon_interval);
-		status->dtim_period = operational_statistics.dtim_period;
-	} else if (FIELD_GET(SIWX91X_INTERFACE_MASK, interface) == SL_WIFI_AP_INTERFACE) {
-		sl_wifi_ap_configuration_t sl_ap_cfg = { };
-
-		ret = sl_wifi_get_ap_configuration(SL_WIFI_AP_INTERFACE, &sl_ap_cfg);
-		if (ret) {
-			LOG_ERR("Failed to get the AP configuration: 0x%x", ret);
-			return -EINVAL;
-		}
-
-		status->twt_capable = false;
-		status->link_mode = WIFI_4;
-		status->iface_mode = WIFI_MODE_AP;
-		status->channel = sl_ap_cfg.channel.channel;
-		status->beacon_interval = sl_ap_cfg.beacon_interval;
-		status->dtim_period = sl_ap_cfg.dtim_beacon_count;
-		wlan_info.sec_type = (uint8_t)sl_ap_cfg.security;
-	} else {
-		status->link_mode = WIFI_LINK_MODE_UNKNOWN;
-		status->iface_mode = WIFI_MODE_UNKNOWN;
-		status->channel = 0;
-
-		return -EINVAL;
-	}
-
-	switch (wlan_info.sec_type) {
-	case SL_WIFI_OPEN:
-		status->security = WIFI_SECURITY_TYPE_NONE;
-		break;
-	case SL_WIFI_WPA:
-		status->security = WIFI_SECURITY_TYPE_WPA_PSK;
-		break;
-	case SL_WIFI_WPA2:
-		status->security = WIFI_SECURITY_TYPE_PSK;
-		break;
-	case SL_WIFI_WPA_WPA2_MIXED:
-		status->security = WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL;
-		break;
-	case SL_WIFI_WPA3:
-		status->security = WIFI_SECURITY_TYPE_SAE;
-		break;
-	default:
-		status->security = WIFI_SECURITY_TYPE_UNKNOWN;
-	}
-
-	return ret;
 }
 
 static int siwx91x_mode(const struct device *dev, struct wifi_mode_info *mode)
@@ -787,6 +1073,137 @@ static int siwx91x_dev_init(const struct device *dev)
 	return 0;
 }
 
+static int siwx91x_convert_z_sl_twt_req_type(enum wifi_twt_setup_cmd z_req_cmd)
+{
+	switch (z_req_cmd) {
+	case WIFI_TWT_SETUP_CMD_REQUEST:
+		return REQUEST_TWT;
+	case WIFI_TWT_SETUP_CMD_SUGGEST:
+		return SUGGEST_TWT;
+	case WIFI_TWT_SETUP_CMD_DEMAND:
+		return DEMAND_TWT;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int siwx91x_set_twt_setup(struct wifi_twt_params *params)
+{
+	sl_status_t status;
+	int twt_req_type = siwx91x_convert_z_sl_twt_req_type(params->setup_cmd);
+
+	sl_wifi_twt_request_t twt_req = {
+		.wake_duration_unit = 0,
+		.wake_int_mantissa = params->setup.twt_mantissa,
+		.un_announced_twt = !params->setup.announce,
+		.wake_duration = params->setup.twt_wake_interval,
+		.triggered_twt = params->setup.trigger,
+		.wake_int_exp = params->setup.twt_exponent,
+		.implicit_twt = 1,
+		.twt_flow_id = params->flow_id,
+		.twt_enable = 1,
+		.req_type = twt_req_type,
+	};
+
+	if (twt_req_type < 0) {
+		params->fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+		return -EINVAL;
+	}
+
+	if (!params->setup.twt_info_disable) {
+		params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+		return -ENOTSUP;
+	}
+
+	if (params->setup.responder) {
+		params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+		return -ENOTSUP;
+	}
+
+	/* implicit -> won't do renegotiation
+	 * explicit -> must do renegotiation for each session
+	 */
+	if (!params->setup.implicit) {
+		/* explicit twt is not supported */
+		params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+		return -ENOTSUP;
+	}
+
+	if (params->setup.twt_wake_interval > 255 * 256) {
+		twt_req.wake_duration_unit = 1;
+		twt_req.wake_duration = params->setup.twt_wake_interval / 256;
+	} else {
+		twt_req.wake_duration_unit = 0;
+		twt_req.wake_duration = params->setup.twt_wake_interval / 1024;
+	}
+
+	status = sl_wifi_enable_target_wake_time(&twt_req);
+	if (status != SL_STATUS_OK) {
+		params->fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+		params->resp_status = WIFI_TWT_RESP_NOT_RECEIVED;
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int siwx91x_set_twt_teardown(struct wifi_twt_params *params)
+{
+	sl_status_t status;
+	sl_wifi_twt_request_t twt_req = { };
+
+	twt_req.twt_enable = 0;
+
+	if (params->teardown.teardown_all) {
+		twt_req.twt_flow_id = 0xFF;
+	} else {
+		twt_req.twt_flow_id = params->flow_id;
+	}
+
+	status = sl_wifi_disable_target_wake_time(&twt_req);
+	if (status != SL_STATUS_OK) {
+		params->fail_reason = WIFI_TWT_FAIL_CMD_EXEC_FAIL;
+		params->teardown_status = WIFI_TWT_TEARDOWN_FAILED;
+		return -EINVAL;
+	}
+
+	params->teardown_status = WIFI_TWT_TEARDOWN_SUCCESS;
+
+	return 0;
+}
+
+static int siwx91x_set_twt(const struct device *dev, struct wifi_twt_params *params)
+{
+	sl_wifi_interface_t interface = sl_wifi_get_default_interface();
+	struct siwx91x_dev *sidev = dev->data;
+
+	__ASSERT(params, "params cannot be a NULL");
+
+	if (FIELD_GET(SIWX91X_INTERFACE_MASK, interface) != SL_WIFI_CLIENT_INTERFACE) {
+		params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+		return -ENOTSUP;
+	}
+
+	if (sidev->state != WIFI_STATE_DISCONNECTED && sidev->state != WIFI_STATE_INACTIVE &&
+	    sidev->state != WIFI_STATE_COMPLETED) {
+		LOG_ERR("Command given in invalid state");
+		return -EBUSY;
+	}
+
+	if (params->negotiation_type != WIFI_TWT_INDIVIDUAL) {
+		params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+		return -ENOTSUP;
+	}
+
+	if (params->operation == WIFI_TWT_SETUP) {
+		return siwx91x_set_twt_setup(params);
+	} else if (params->operation == WIFI_TWT_TEARDOWN) {
+		return siwx91x_set_twt_teardown(params);
+	}
+	params->fail_reason = WIFI_TWT_FAIL_OPERATION_NOT_SUPPORTED;
+	return -ENOTSUP;
+}
+
 static const struct wifi_mgmt_ops siwx91x_mgmt = {
 	.scan			= siwx91x_scan,
 	.connect		= siwx91x_connect,
@@ -796,6 +1213,7 @@ static const struct wifi_mgmt_ops siwx91x_mgmt = {
 	.ap_sta_disconnect	= siwx91x_ap_sta_disconnect,
 	.iface_status		= siwx91x_status,
 	.mode			= siwx91x_mode,
+	.set_twt		= siwx91x_set_twt,
 #if defined(CONFIG_NET_STATISTICS_WIFI)
 	.get_stats		= siwx91x_stats,
 #endif

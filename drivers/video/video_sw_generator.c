@@ -11,6 +11,9 @@
 #include <zephyr/drivers/video-controls.h>
 #include <zephyr/logging/log.h>
 
+#include "video_ctrls.h"
+#include "video_device.h"
+
 LOG_MODULE_REGISTER(video_sw_generator, CONFIG_VIDEO_LOG_LEVEL);
 
 #define VIDEO_PATTERN_COLOR_BAR 0
@@ -24,17 +27,20 @@ LOG_MODULE_REGISTER(video_sw_generator, CONFIG_VIDEO_LOG_LEVEL);
  */
 #define MAX_FRAME_RATE          60
 
+struct sw_ctrls {
+	struct video_ctrl hflip;
+};
+
 struct video_sw_generator_data {
 	const struct device *dev;
+	struct sw_ctrls ctrls;
 	struct video_format fmt;
 	struct k_fifo fifo_in;
 	struct k_fifo fifo_out;
 	struct k_work_delayable buf_work;
 	struct k_work_sync work_sync;
 	int pattern;
-	bool ctrl_hflip;
-	bool ctrl_vflip;
-	struct k_poll_signal *signal;
+	struct k_poll_signal *sig;
 	uint32_t frame_rate;
 };
 
@@ -57,15 +63,10 @@ static const struct video_format_cap fmts[] = {{
 					       },
 					       {0}};
 
-static int video_sw_generator_set_fmt(const struct device *dev, enum video_endpoint_id ep,
-				      struct video_format *fmt)
+static int video_sw_generator_set_fmt(const struct device *dev, struct video_format *fmt)
 {
 	struct video_sw_generator_data *data = dev->data;
 	int i = 0;
-
-	if (ep != VIDEO_EP_OUT && ep != VIDEO_EP_ALL) {
-		return -EINVAL;
-	}
 
 	for (i = 0; i < ARRAY_SIZE(fmts); ++i) {
 		if (fmt->pixelformat == fmts[i].pixelformat && fmt->width >= fmts[i].width_min &&
@@ -85,21 +86,17 @@ static int video_sw_generator_set_fmt(const struct device *dev, enum video_endpo
 	return 0;
 }
 
-static int video_sw_generator_get_fmt(const struct device *dev, enum video_endpoint_id ep,
-				      struct video_format *fmt)
+static int video_sw_generator_get_fmt(const struct device *dev, struct video_format *fmt)
 {
 	struct video_sw_generator_data *data = dev->data;
-
-	if (ep != VIDEO_EP_OUT && ep != VIDEO_EP_ALL) {
-		return -EINVAL;
-	}
 
 	*fmt = data->fmt;
 
 	return 0;
 }
 
-static int video_sw_generator_set_stream(const struct device *dev, bool enable)
+static int video_sw_generator_set_stream(const struct device *dev, bool enable,
+					 enum video_buf_type type)
 {
 	struct video_sw_generator_data *data = dev->data;
 
@@ -125,7 +122,7 @@ static void __fill_buffer_colorbar(struct video_sw_generator_data *data, struct 
 
 	for (h = 0; h < data->fmt.height; h++) {
 		for (w = 0; w < data->fmt.width; w++) {
-			int color_idx = data->ctrl_vflip ? 7 - w / bw : w / bw;
+			int color_idx = data->ctrls.hflip.val ? 7 - w / bw : w / bw;
 			if (data->fmt.pixelformat == VIDEO_PIX_FMT_RGB565) {
 				uint16_t *pixel = (uint16_t *)&vbuf->buffer[i];
 				*pixel = rgb565_colorbar_value[color_idx];
@@ -166,35 +163,26 @@ static void __buffer_work(struct k_work *work)
 
 	k_fifo_put(&data->fifo_out, vbuf);
 
-	if (IS_ENABLED(CONFIG_POLL) && data->signal) {
-		k_poll_signal_raise(data->signal, VIDEO_BUF_DONE);
+	if (IS_ENABLED(CONFIG_POLL) && data->sig) {
+		k_poll_signal_raise(data->sig, VIDEO_BUF_DONE);
 	}
 
 	k_yield();
 }
 
-static int video_sw_generator_enqueue(const struct device *dev, enum video_endpoint_id ep,
-				      struct video_buffer *vbuf)
+static int video_sw_generator_enqueue(const struct device *dev, struct video_buffer *vbuf)
 {
 	struct video_sw_generator_data *data = dev->data;
-
-	if (ep != VIDEO_EP_OUT && ep != VIDEO_EP_ALL) {
-		return -EINVAL;
-	}
 
 	k_fifo_put(&data->fifo_in, vbuf);
 
 	return 0;
 }
 
-static int video_sw_generator_dequeue(const struct device *dev, enum video_endpoint_id ep,
-				      struct video_buffer **vbuf, k_timeout_t timeout)
+static int video_sw_generator_dequeue(const struct device *dev, struct video_buffer **vbuf,
+				      k_timeout_t timeout)
 {
 	struct video_sw_generator_data *data = dev->data;
-
-	if (ep != VIDEO_EP_OUT && ep != VIDEO_EP_ALL) {
-		return -EINVAL;
-	}
 
 	*vbuf = k_fifo_get(&data->fifo_out, timeout);
 	if (*vbuf == NULL) {
@@ -204,8 +192,7 @@ static int video_sw_generator_dequeue(const struct device *dev, enum video_endpo
 	return 0;
 }
 
-static int video_sw_generator_flush(const struct device *dev, enum video_endpoint_id ep,
-				    bool cancel)
+static int video_sw_generator_flush(const struct device *dev, bool cancel)
 {
 	struct video_sw_generator_data *data = dev->data;
 	struct video_buffer *vbuf;
@@ -218,8 +205,8 @@ static int video_sw_generator_flush(const struct device *dev, enum video_endpoin
 	} else {
 		while ((vbuf = k_fifo_get(&data->fifo_in, K_NO_WAIT))) {
 			k_fifo_put(&data->fifo_out, vbuf);
-			if (IS_ENABLED(CONFIG_POLL) && data->signal) {
-				k_poll_signal_raise(data->signal, VIDEO_BUF_ABORTED);
+			if (IS_ENABLED(CONFIG_POLL) && data->sig) {
+				k_poll_signal_raise(data->sig, VIDEO_BUF_ABORTED);
 			}
 		}
 	}
@@ -227,8 +214,7 @@ static int video_sw_generator_flush(const struct device *dev, enum video_endpoin
 	return 0;
 }
 
-static int video_sw_generator_get_caps(const struct device *dev, enum video_endpoint_id ep,
-				       struct video_caps *caps)
+static int video_sw_generator_get_caps(const struct device *dev, struct video_caps *caps)
 {
 	caps->format_caps = fmts;
 	caps->min_vbuf_count = 0;
@@ -240,39 +226,21 @@ static int video_sw_generator_get_caps(const struct device *dev, enum video_endp
 }
 
 #ifdef CONFIG_POLL
-static int video_sw_generator_set_signal(const struct device *dev, enum video_endpoint_id ep,
-					 struct k_poll_signal *signal)
+static int video_sw_generator_set_signal(const struct device *dev, struct k_poll_signal *sig)
 {
 	struct video_sw_generator_data *data = dev->data;
 
-	if (data->signal && signal != NULL) {
+	if (data->sig && sig != NULL) {
 		return -EALREADY;
 	}
 
-	data->signal = signal;
+	data->sig = sig;
 
 	return 0;
 }
 #endif
 
-static inline int video_sw_generator_set_ctrl(const struct device *dev, unsigned int cid,
-					      void *value)
-{
-	struct video_sw_generator_data *data = dev->data;
-
-	switch (cid) {
-	case VIDEO_CID_VFLIP:
-		data->ctrl_vflip = (bool)value;
-		break;
-	default:
-		return -ENOTSUP;
-	}
-
-	return 0;
-}
-
-static int video_sw_generator_set_frmival(const struct device *dev, enum video_endpoint_id ep,
-					  struct video_frmival *frmival)
+static int video_sw_generator_set_frmival(const struct device *dev, struct video_frmival *frmival)
 {
 	struct video_sw_generator_data *data = dev->data;
 
@@ -289,8 +257,7 @@ static int video_sw_generator_set_frmival(const struct device *dev, enum video_e
 	return 0;
 }
 
-static int video_sw_generator_get_frmival(const struct device *dev, enum video_endpoint_id ep,
-					  struct video_frmival *frmival)
+static int video_sw_generator_get_frmival(const struct device *dev, struct video_frmival *frmival)
 {
 	struct video_sw_generator_data *data = dev->data;
 
@@ -300,14 +267,9 @@ static int video_sw_generator_get_frmival(const struct device *dev, enum video_e
 	return 0;
 }
 
-static int video_sw_generator_enum_frmival(const struct device *dev, enum video_endpoint_id ep,
-					   struct video_frmival_enum *fie)
+static int video_sw_generator_enum_frmival(const struct device *dev, struct video_frmival_enum *fie)
 {
 	int i = 0;
-
-	if (ep != VIDEO_EP_OUT || fie->index) {
-		return -EINVAL;
-	}
 
 	while (fmts[i].pixelformat && (fmts[i].pixelformat != fie->format->pixelformat)) {
 		i++;
@@ -340,7 +302,6 @@ static DEVICE_API(video, video_sw_generator_driver_api) = {
 	.enqueue = video_sw_generator_enqueue,
 	.dequeue = video_sw_generator_dequeue,
 	.get_caps = video_sw_generator_get_caps,
-	.set_ctrl = video_sw_generator_set_ctrl,
 	.set_frmival = video_sw_generator_set_frmival,
 	.get_frmival = video_sw_generator_get_frmival,
 	.enum_frmival = video_sw_generator_enum_frmival,
@@ -357,6 +318,14 @@ static struct video_sw_generator_data video_sw_generator_data_0 = {
 	.frame_rate = DEFAULT_FRAME_RATE,
 };
 
+static int video_sw_generator_init_controls(const struct device *dev)
+{
+	struct video_sw_generator_data *data = dev->data;
+
+	return video_init_ctrl(&data->ctrls.hflip, dev, VIDEO_CID_HFLIP,
+			       (struct video_ctrl_range){.min = 0, .max = 1, .step = 1, .def = 0});
+}
+
 static int video_sw_generator_init(const struct device *dev)
 {
 	struct video_sw_generator_data *data = dev->data;
@@ -366,9 +335,11 @@ static int video_sw_generator_init(const struct device *dev)
 	k_fifo_init(&data->fifo_out);
 	k_work_init_delayable(&data->buf_work, __buffer_work);
 
-	return 0;
+	return video_sw_generator_init_controls(dev);
 }
 
 DEVICE_DEFINE(video_sw_generator, "VIDEO_SW_GENERATOR", &video_sw_generator_init, NULL,
 	      &video_sw_generator_data_0, NULL, POST_KERNEL, CONFIG_VIDEO_INIT_PRIORITY,
 	      &video_sw_generator_driver_api);
+
+VIDEO_DEVICE_DEFINE(video_sw_generator, DEVICE_GET(video_sw_generator), NULL);

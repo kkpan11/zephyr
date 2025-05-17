@@ -15,6 +15,7 @@
 
 #include <zephyr/ztest.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/pm/device_runtime.h>
 #include <zephyr/kernel.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -104,9 +105,12 @@ static void spi_loopback_transceive(struct spi_dt_spec *const spec,
 				    const struct spi_buf_set *const tx,
 				    const struct spi_buf_set *const rx)
 {
-	int ret = spi_transceive_dt(spec, tx, rx);
+	int ret;
 
-	zassert_false(ret, "SPI transceive failed, code %d", ret);
+	zassert_ok(pm_device_runtime_get(spec->bus));
+	ret = spi_transceive_dt(spec, tx, rx);
+	zassert_ok(ret, "SPI transceive failed, code %d", ret);
+	zassert_ok(pm_device_runtime_put(spec->bus));
 }
 
 /* The most spi buf currently used by any test case is 4, change if needed */
@@ -321,6 +325,30 @@ ZTEST(spi_loopback, test_spi_complete_large_transfers)
 			"Large Buffer contents are different");
 }
 
+ZTEST(spi_loopback, test_spi_null_tx_buf_set)
+{
+	struct spi_dt_spec *spec = loopback_specs[spec_idx];
+	static const uint8_t expected_nop_return_buf[BUF_SIZE] = { 0 };
+	const struct spi_buf_set rx = spi_loopback_setup_xfer(rx_bufs_pool, 1,
+							      buffer_rx, BUF_SIZE);
+
+	(void)memset(buffer_rx, 0x77, BUF_SIZE);
+
+	spi_loopback_transceive(spec, NULL, &rx);
+
+	spi_loopback_compare_bufs(expected_nop_return_buf, buffer_rx, BUF_SIZE,
+				  buffer_print_rx, buffer_print_rx);
+}
+
+ZTEST(spi_loopback, test_spi_null_rx_buf_set)
+{
+	struct spi_dt_spec *spec = loopback_specs[spec_idx];
+	const struct spi_buf_set tx = spi_loopback_setup_xfer(tx_bufs_pool, 1,
+							      NULL, BUF_SIZE);
+
+	spi_loopback_transceive(spec, &tx, NULL);
+}
+
 ZTEST(spi_loopback, test_nop_nil_bufs)
 {
 	struct spi_dt_spec *spec = loopback_specs[spec_idx];
@@ -419,9 +447,10 @@ ZTEST(spi_extra_api_features, test_spi_lock_release)
 
 	lock_spec->config.operation |= SPI_LOCK_ON;
 
+	zassert_ok(pm_device_runtime_get(lock_spec->bus));
 	spi_loopback_transceive(lock_spec, &tx, &rx);
-
 	zassert_false(spi_release_dt(lock_spec), "SPI release failed");
+	zassert_ok(pm_device_runtime_put(lock_spec->bus));
 
 	spi_loopback_transceive(try_spec, &tx, &rx);
 
